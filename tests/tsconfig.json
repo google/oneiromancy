@@ -1,0 +1,36 @@
+{
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "./dist",
+    "target": "es2022",
+    "moduleResolution": "bundler",
+    "skipLibCheck": true,
+    "rootDir": "..",
+    "ignoreDeprecations": "6.0",
+    "noImplicitAny": false,
+    "strict": false,
+    "jsx": "react",
+    "jsxFactory": "React.createElement",
+    "jsxFragmentFactory": "React.Fragment",
+    "baseUrl": "..",
+    "paths": {
+      "@core/*": ["core/*"],
+      "@/lib/*": ["core/lib/*", "lib/*"],
+      "@/types/*": ["core/types/*", "types/*"],
+      "@/*": ["*"],
+      "*": ["../node_modules/*"]
+    },
+    "typeRoots": [
+      "../node_modules/@types"
+    ]
+  },
+  "include": [
+    "../core/lib/**/*.ts",
+    "../core/types/**/*.ts",
+    "../lib/**/*.ts",
+    "../components/**/*.tsx",
+    "../context/**/*.tsx",
+    "../types/**/*.ts",
+    "./helpers/ambient.d.ts"
+  ]
+}
