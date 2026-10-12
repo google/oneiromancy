@@ -20,6 +20,8 @@ import React, { useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import { CosmicPlayer } from '@/types/oneiromancy';
+import { starsVerdictLabel } from '@/lib/scoring';
+import { starsScore } from '@/lib/oracle';
 import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 
 export interface RecommendedPickHeroProps {
@@ -114,11 +116,11 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
         <p className="font-mono text-xs text-slate-400 flex flex-wrap gap-2 items-center">
           <span>{player.team}</span>
           <span>•</span>
-          <span>Bye {player.bye_week}</span>
+          <span>Bye {player.bye_week || '—'}</span>
           <span>•</span>
           <span>#{player.jersey_number}</span>
           <span>•</span>
-          <span>ADP {player.adp.toFixed(1)}</span>
+          <span>ADP {player.adp ? player.adp.toFixed(1) : '—'}</span>
         </p>
       </div>
 
@@ -163,7 +165,7 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
             Squad Harmony
           </span>
           <span className="font-mono text-2xl font-bold text-amber-300">
-            {player.harmony_score.toFixed(1)}
+            {Math.round(player.harmony_score)}%
           </span>
           <span className="text-[9px] font-mono text-slate-500">Synergy Resonance</span>
         </div>
@@ -171,17 +173,13 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
         {/* Weekly Favorability */}
         <div className="flex flex-col">
           <span className="text-[10px] font-mono text-teal-300 uppercase font-bold tracking-wider">
-            Wk Favorability
+            Stars
           </span>
           <span className="font-mono text-2xl font-bold text-teal-300">
-            {(player.favorability_score ?? 75).toFixed(0)}
+            {starsScore(player).toFixed(0)}
           </span>
           <span className="text-[9px] font-mono text-slate-500">
-            {(player.favorability_score ?? 75) >= 84
-              ? 'Heavily Favored'
-              : (player.favorability_score ?? 75) >= 75
-                ? 'Astrally Favored'
-                : 'Challenged Transit'}
+            {starsVerdictLabel(starsScore(player))}
           </span>
         </div>
       </div>

@@ -116,6 +116,25 @@ docker run -p 8080:8080 oneiromancy
 ```
 The container is lightweight (based on `node:22-alpine`), runs as a non-root user (`UID 1001`), and is directly deployable to **Google Cloud Run**.
 
+#### Option C: Edge static hosting with CI deploys
+`npm run build` produces a fully static site in `out/`, so it can be served from any edge or CDN host without a server. The included `wrangler.jsonc` describes this deployment:
+
+- **Static assets only.** `out/` is the asset directory; there is no server code.
+- **SPA fallback.** Unmatched routes serve `index.html` (same as `app.yaml` and `server.js`).
+- **Security headers.** `public/_headers` sets `X-Content-Type-Options: nosniff` on every response.
+
+Best practices for a CI-driven deployment:
+
+| Setting | Value |
+| --- | --- |
+| Production branch | `main` (deploy on every push) |
+| Build command | `npm ci && npm run build` (clean, lockfile-exact install) |
+| Deploy command | `npx wrangler deploy` |
+| Node version | 22 LTS (matches the `Dockerfile`) |
+| Environment variables / secrets | none needed; the app calls Sleeper's public API from the browser |
+
+Keep the deploy tool out of `package.json`: its native binary needs glibc and would break `npm ci` on the Alpine-based `Dockerfile`. `npx` fetches it at deploy time.
+
 ---
 
 ## Testing & Quality Verification

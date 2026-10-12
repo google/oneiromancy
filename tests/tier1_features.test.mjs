@@ -20,7 +20,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { register } from 'node:module';
 register(new URL('./loader.mjs', import.meta.url));
-import * as oracle from './helpers/oneiromancy_oracle.mjs';
+// Register the TypeScript loader before loading app code: static imports are
+// evaluated before this module's body, so the oracle helper is imported
+// dynamically after registration.
+const oracle = await import('./helpers/oneiromancy_oracle.mjs');
 
 describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
   // ============================================================================
@@ -208,23 +211,19 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
     });
 
     it('5.2 should compute rotation duration scaling inversely with Chaos lambda in Astrolabe.tsx', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The fallback λ now reads DEFAULT_CHAOS_LAMBDA instead of a literal.
       const astrolabeSource = fs.readFileSync(astrolabePath, 'utf8');
       assert.ok(astrolabeSource.includes('const mult ='), 'Astrolabe must compute speed multiplier');
-      assert.ok(astrolabeSource.includes('Math.max(0.2, 1 + (lambda ?? 0.35) * 3)'), 'Astrolabe must scale mult with lambda');
+      assert.ok(astrolabeSource.includes('Math.max(0.2, 1 + (lambda ?? DEFAULT_CHAOS_LAMBDA) * 3)'), 'Astrolabe must scale mult with lambda');
       assert.ok(astrolabeSource.includes('outerDuration = Math.max(3, 60 / mult)'), 'Astrolabe must compute outerDuration inversely');
       assert.ok(astrolabeSource.includes('middleDuration = Math.max(2.5, 40 / mult)'), 'Astrolabe must compute middleDuration inversely');
       assert.ok(astrolabeSource.includes('innerDuration = Math.max(1.5, 20 / mult)'), 'Astrolabe must compute innerDuration inversely');
-
-      const calcDurations = (l) => {
-        const mult = Math.max(0.2, 1 + l * 3);
-        return {
-          outer: Math.max(3, 60 / mult),
-          middle: Math.max(2.5, 40 / mult),
-          inner: Math.max(1.5, 20 / mult),
-        };
+      const durations = (lambda) => {
+        const mult = Math.max(0.2, 1 + lambda * 3);
+        return { outer: Math.max(3, 60 / mult) };
       };
-      const d0 = calcDurations(0.0);
-      const d1 = calcDurations(1.0);
+      const d0 = durations(0);
+      const d1 = durations(1);
       assert.equal(d0.outer, 60);
       assert.equal(d1.outer, 15);
       assert.ok(d1.outer < d0.outer, 'Higher lambda must produce faster rotation (shorter duration)');
@@ -259,21 +258,23 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
   describe('Feature 6: Mobile-First Navigation Shell & Tabs', () => {
     const navPath = path.resolve('components/common/NavigationShell.tsx');
 
-    it('6.1 should define all 5 screen tabs in exact order: oneiromancy, matchups, board, dial, marketplace in NavigationShell.tsx', () => {
+    it('6.1 should define the 4 in-season tabs in order: oneiromancy (This Week), market (Waivers), trades, league', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). Seven tabs became four; old ids resolve via TAB_ALIASES.
       const navSource = fs.readFileSync(navPath, 'utf8');
-      assert.ok(navSource.includes("id: 'oneiromancy'"), 'TABS must define oneiromancy tab');
-      assert.ok(navSource.includes("id: 'matchups'"), 'TABS must define matchups tab');
-      assert.ok(navSource.includes("id: 'board'"), 'TABS must define board tab');
-      assert.ok(navSource.includes("id: 'dial'"), 'TABS must define dial tab');
-      assert.ok(navSource.includes("id: 'marketplace'"), 'TABS must define marketplace tab');
-      assert.ok(navSource.includes("OneiromancyTab"), 'Type OneiromancyTab must cover tabs');
+      for (const id of ['oneiromancy', 'market', 'trades', 'league']) {
+        assert.ok(navSource.includes(`id: '${id}'`), `TABS must define ${id} tab`);
+      }
+      assert.ok(navSource.includes('TAB_ALIASES'), 'Legacy tab ids must resolve through TAB_ALIASES');
+      assert.ok(navSource.includes('OneiromancyTab'), 'Type OneiromancyTab must cover tabs');
     });
 
     it('6.2 should adhere to mobile touch target minimum height with h-16 bottom bar in NavigationShell.tsx', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The phone bar has 4 tabs and is hidden on desktop (md:hidden).
       const navSource = fs.readFileSync(navPath, 'utf8');
       assert.ok(navSource.includes('h-16'), 'Bottom navigation bar must have h-16 (64px >= 44px touch target)');
-      assert.ok(navSource.includes('grid-cols-5'), 'Bottom nav must divide width evenly into 5 columns');
+      assert.ok(navSource.includes('grid-cols-4'), 'Bottom nav must divide width evenly into 4 columns');
       assert.ok(navSource.includes('h-full w-full'), 'Tab buttons must occupy full height and width of container');
+      assert.ok(navSource.includes('md:hidden fixed bottom-0'), 'Bottom nav is phone-only');
     });
 
     it('6.3 should specify sticky header displaying draft status and live synchronization pulse in NavigationShell.tsx', () => {
@@ -416,10 +417,11 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
   // Feature 9: Screen 3: The Chaos Dial View
   // --------------------------------------------------------------------------
   describe('Feature 9: Screen 3: The Chaos Dial View', () => {
-    it('9.1 should provide interactive slider for Chaos lambda in range [0.0, 1.0] defaulting to 0.35', () => {
-      assert.equal(oracle.DEFAULT_CHAOS_LAMBDA, 0.35);
-      const testVal = oracle.clamp(0.35, 0.0, 1.0);
-      assert.equal(testVal, 0.35);
+    it('9.1 should provide interactive slider for Chaos lambda in range [0.0, 1.0] defaulting to 0.75', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The owner set the default λ to 0.75 (upstream shipped 0.35).
+      assert.equal(oracle.DEFAULT_CHAOS_LAMBDA, 0.75);
+      assert.equal(oracle.clamp(0.75, 0.0, 1.0), 0.75);
+      assert.equal(oracle.clamp(1.4, 0.0, 1.0), 1.0);
     });
 
     it('9.2 should display live blended formula: DraftScore = (1 - lambda)*VOR + lambda*SpiritScore', () => {
@@ -819,37 +821,18 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       );
     });
 
-    it('17.6 should verify SettingsDrawer simplification with username only, dynamic league dropdown, and chaos slider', () => {
+    it('17.6 should verify SettingsDrawer simplification with username only and dynamic league dropdown; λ lives in the Oracle panel', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The λ slider moved to the Oracle panel; polling options and the fake "Engine Calibration" box were removed.
       const settingsContent = fs.readFileSync(settingsPath, 'utf8');
-      assert.ok(
-        settingsContent.includes('id="username-input"'),
-        'SettingsDrawer must contain id="username-input"'
-      );
-      assert.ok(
-        settingsContent.includes('id="league-select"'),
-        'SettingsDrawer must contain id="league-select"'
-      );
-      assert.ok(
-        settingsContent.includes('id="apply-sync-btn"'),
-        'SettingsDrawer must contain id="apply-sync-btn"'
-      );
-      assert.ok(
-        settingsContent.includes('id="load-mock-btn"'),
-        'SettingsDrawer must contain id="load-mock-btn"'
-      );
-      assert.ok(
-        settingsContent.includes('id="chaos-lambda-slider"'),
-        'SettingsDrawer must contain id="chaos-lambda-slider"'
-      );
-      // Verify removed manual inputs
-      assert.ok(
-        !settingsContent.includes('id="draft-id-input"'),
-        'SettingsDrawer must not contain manual draft-id-input'
-      );
-      assert.ok(
-        !settingsContent.includes('id="team-slot-select"'),
-        'SettingsDrawer must not contain manual team-slot-select'
-      );
+      for (const id of ['username-input', 'league-select', 'apply-sync-btn', 'load-mock-btn']) {
+        assert.ok(settingsContent.includes(`id="${id}"`), `SettingsDrawer must contain id="${id}"`);
+      }
+      assert.ok(!settingsContent.includes('id="draft-id-input"'), 'SettingsDrawer must not contain manual draft-id-input');
+      assert.ok(!settingsContent.includes('id="team-slot-select"'), 'SettingsDrawer must not contain manual team-slot-select');
+      assert.ok(!settingsContent.includes('Polling Frequency Interval'), 'Polling frequency options were removed');
+      assert.ok(!settingsContent.includes('Engine Calibration'), 'The fake engine calibration box was removed');
+      const oraclePanel = fs.readFileSync(path.resolve('components/oracle/OraclePanel.tsx'), 'utf8');
+      assert.ok(oraclePanel.includes('id="oracle-lambda"'), 'The Oracle panel owns the λ slider');
     });
 
     it('17.5 should detect pick count delta and trigger state recalculation via detectPollerDelta', () => {
@@ -982,19 +965,25 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(controlsSource.includes('border-amber-400'), 'BoardControls must style TE in amber');
     });
 
-    it('20.2 should verify PlayerMarketplace renders side-by-side head-to-head comparison with all 10 stats and deltas', () => {
-      const marketSource = fs.readFileSync(path.resolve('components/screens/PlayerMarketplace.tsx'), 'utf8');
-      assert.ok(marketSource.includes('Head-to-Head') || marketSource.includes('Comparative Head-to-Head Delta Matrix'), 'Marketplace must include Head-to-Head Stat Comparison');
-      assert.ok(marketSource.includes('Proj PPG'), 'Marketplace must compare Proj PPG');
-      assert.ok(marketSource.includes('Season VOR'), 'Marketplace must compare Season VOR');
-      assert.ok(marketSource.includes('DraftScore'), 'Marketplace must compare DraftScore');
-      assert.ok(marketSource.includes('SpiritScore'), 'Marketplace must compare SpiritScore');
-      assert.ok(marketSource.includes('Elemental Trait'), 'Marketplace must compare Elemental Trait & Score');
-      assert.ok(marketSource.includes('Bye Week'), 'Marketplace must compare Bye Week');
-      assert.ok(marketSource.includes('Catalysts'), 'Marketplace must compare Catalysts');
-      assert.ok(marketSource.includes('Risks'), 'Marketplace must compare Risks');
-      assert.ok(marketSource.includes('Injury Status'), 'Marketplace must compare Injury Status');
-      assert.ok(marketSource.includes('Net Delta Badges'), 'Marketplace must display Net Delta Badges');
+    it('20.2 should verify head-to-head player comparison opens from swap recommendations', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The Marketplace delta matrix was replaced by the player popup's head-to-head mode,
+      // opened by clicking either name in a "start X over Y" / "add X for Y" / trade recommendation.
+      const modal = fs.readFileSync(path.resolve('components/modals/PlayerDetailModal.tsx'), 'utf8');
+      assert.ok(modal.includes('compareWith'), 'PlayerDetailModal must accept compareWith');
+      assert.ok(modal.includes('Head-to-head:'), 'PlayerDetailModal must label head-to-head mode');
+      // Updated in the 2026-10-11 wording pass: "Wk Fav" is now called Stars everywhere.
+      // The popup's Stars card and its head-to-head row must show the same number: both use the live
+      // starsScore(), never the cached favorability_score (owner saw 62 vs 60 for the same player).
+      assert.ok(modal.includes('const candidateFav = starsScore(player);') && modal.includes('const rosFav = starsScore(rosterPlayer);'),
+        'Head-to-head Stars must come from starsScore');
+      assert.ok(!/favorability_score/.test(modal), 'PlayerDetailModal must not read the cached favorability_score');
+      for (const col of ['Proj Pts', 'Oracle', 'VOR', 'Spirit', 'Harmony', 'Stars']) {
+        assert.ok(modal.includes(col), `Head-to-head must compare ${col}`);
+      }
+      for (const f of ['components/oneiromancy/WeeklyMoves.tsx', 'components/screens/PlayerMarketplace.tsx', 'components/screens/TradesScreen.tsx', 'components/oracle/OraclePanel.tsx']) {
+        const src = fs.readFileSync(path.resolve(f), 'utf8');
+        assert.ok(src.includes('<PlayerLink') && src.includes('vs={'), `${f} must open head-to-head comparisons`);
+      }
     });
 
     it('20.3 should verify ChaosDial includes educational reference guide with planetary aspects, lambda equilibrium, and external links', () => {
@@ -1003,20 +992,26 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(chaosSource.includes('Natal Chart Planetary Aspects'), 'ChaosDial must explain Natal Chart Planetary Aspects');
       assert.ok(chaosSource.includes('Mars Aspects (Aggression') && chaosSource.includes('Saturn Transits (Durability'), 'ChaosDial must detail Mars and Saturn aspects');
       assert.ok(chaosSource.includes('Mercury Retrogrades') && chaosSource.includes('Jupiter Alignments'), 'ChaosDial must detail Mercury and Jupiter aspects');
-      assert.ok(chaosSource.includes('DraftScore = (1 -') && chaosSource.includes('VOR_norm') && chaosSource.includes('SpiritScore'), 'ChaosDial must document Chaos Dial mathematical formula');
+      // Updated in the 2026-10-11 wording pass: "SpiritScore" is shown as "Spirit", the app's one name for it.
+      assert.ok(chaosSource.includes('DraftScore = (1 -') && chaosSource.includes('VOR_norm') && chaosSource.includes('&lambda; &times; Spirit'), 'ChaosDial must document Chaos Dial mathematical formula');
       assert.ok(chaosSource.includes('Elemental Triplicities in Gridiron Divination'), 'ChaosDial must explain Elemental Triplicities');
       assert.ok(chaosSource.includes('href="https://en.wikipedia.org/wiki/Astrological_aspect"'), 'ChaosDial must link to external Wikipedia reference');
       assert.ok(chaosSource.includes('href="https://www.astro.com/astrology/in_sports_e.htm"'), 'ChaosDial must link to Astrodienst reference');
       assert.ok(chaosSource.includes('href="https://ssd.jpl.nasa.gov/horizons/"'), 'ChaosDial must link to NASA JPL Horizons ephemeris');
     });
 
-    it('20.4 should verify OneiromancyDashboard explains Harmony Score and documents all 3 core pillars', () => {
+    it('20.4 should verify OneiromancyDashboard explains Squad Harmony with the 3 bonuses it actually adds', () => {
+      // Updated in the 2026-10-11 wording pass (see changes/2026-10-10-ux-rework.md). The explainer now matches
+      // computeRosterHarmonyBreakdown: base 50 + elemental trine + QB stacks + four-element balance.
+      // REMOVED: "Schedule Symmetry" (byes never fed the Harmony score).
       const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('What is Harmony Score?'), 'OneiromancyDashboard must explain Harmony Score');
-      assert.ok(oneiromancySource.includes('1. Elemental Triplicity'), 'OneiromancyDashboard must explain Elemental Triplicity pillar');
-      assert.ok(oneiromancySource.includes('2. Celestial Conjunction') || oneiromancySource.includes('2. Stack Amplification'), 'OneiromancyDashboard must explain Celestial Conjunction / Major Aspects pillar');
-      assert.ok(oneiromancySource.includes('3. Schedule Symmetry'), 'OneiromancyDashboard must explain Schedule Symmetry pillar');
-      assert.ok(oneiromancySource.includes('HARMONY'), 'OneiromancyDashboard must display Harmony score');
+      assert.ok(oneiromancySource.includes('How Squad Harmony is scored'), 'OneiromancyDashboard must explain Squad Harmony');
+      assert.ok(oneiromancySource.includes('1. Elemental Trine'), 'OneiromancyDashboard must explain the trine bonus');
+      assert.ok(oneiromancySource.includes('2. QB Stacks'), 'OneiromancyDashboard must explain the stack bonus');
+      assert.ok(oneiromancySource.includes('3. Four-Element Balance'), 'OneiromancyDashboard must explain the balance bonus');
+      assert.ok(!oneiromancySource.includes('Schedule Symmetry'), 'Harmony explainer must not claim byes affect Harmony');
+      // Owner decision 2026-10-11: Harmony reads as a percentage everywhere ("62%"), as on the leaderboard.
+      assert.ok(oneiromancySource.includes('Squad Harmony') && oneiromancySource.includes('{harmonyScore}%'), 'OneiromancyDashboard must display Harmony score');
     });
 
     it('20.5 should verify OneiromancyDashboard renders interactive SVG Team Synergy Radar Graph with 5 spokes', () => {
@@ -1039,24 +1034,29 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(oneiromancySource.includes('Earth Bedrock Floor Anchoring'), 'OneiromancyDashboard must explain Earth Bedrock Floor Anchoring');
     });
 
-    it('20.7 should verify OneiromancyDashboard documents 18-Week Bye Week Coverage schedule matrix', () => {
+    it('20.7 should verify OneiromancyDashboard documents bye coverage and its three states', () => {
+      // Updated in the 2026-10-11 wording pass (see changes/2026-10-10-ux-rework.md): shorter, and the
+      // states match the code (none / 1–2 / 3+ players on bye).
       const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('Why 18-Week Coverage Matters'), 'OneiromancyDashboard must include 18-Week Coverage explanation');
-      assert.ok(oneiromancySource.includes('Weeks 1–14'), 'Must explain fantasy regular season Weeks 1-14');
+      assert.ok(oneiromancySource.includes('How bye coverage works'), 'OneiromancyDashboard must explain bye coverage');
+      assert.ok(oneiromancySource.includes('Weeks 5–14'), 'Must say when byes fall');
       assert.ok(oneiromancySource.includes('Weeks 15–17'), 'Must explain fantasy playoffs Weeks 15-17');
-      assert.ok(oneiromancySource.includes('Full Roster (OK)'), 'Must explain Full Roster state');
-      assert.ok(oneiromancySource.includes('Conflict (Warning)'), 'Must explain Conflict state');
-      assert.ok(oneiromancySource.includes('Playoffs (W15–17)'), 'Must explain Playoff state');
+      assert.ok(oneiromancySource.includes('No one on bye.'), 'Must explain the OK state');
+      assert.ok(oneiromancySource.includes('One or two players on bye.'), 'Must explain the amber state');
+      assert.ok(oneiromancySource.includes('Three or more on bye'), 'Must explain the conflict state');
     });
 
-    it('20.8 should verify OneiromancyDashboard renders Sleeper competitor team names and Weekly Matchup Oracle', () => {
+    it('20.8 should verify This Week leads with the team telemetry and ranked moves; League lists competitor teams', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The owner removed the "Weekly Matchup & Start/Sit Oracle" card as redundant; start/sit lives in Your moves.
       const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('Weekly Matchup & Start/Sit Oracle'), 'OneiromancyDashboard must include Weekly Matchup Oracle');
-      assert.ok(oneiromancySource.includes('Win Prob'), 'Matchup card must display Win Probability');
-      assert.ok(oneiromancySource.includes('START') && oneiromancySource.includes('SIT'), 'Oracle must recommend START and SIT');
-      assert.ok(oneiromancySource.includes('synergy_reason'), 'Oracle must provide synergy rationale');
-      assert.ok(oneiromancySource.includes('competitorTeams.map'), 'OneiromancyDashboard must iterate competitorTeams');
-      assert.ok(oneiromancySource.includes('team.name'), 'OneiromancyDashboard must render competitor team names');
+      assert.ok(!oneiromancySource.includes('Weekly Matchup & Start/Sit Oracle'), 'The redundant matchup card stays removed');
+      assert.ok(oneiromancySource.includes('<MatchupsScreen embedded part="comparison" />'), 'This Week must lead with the team comparison');
+      assert.ok(oneiromancySource.includes('<WeeklyMoves />'), 'This Week must show the ranked moves');
+      const moves = fs.readFileSync(path.resolve('components/oneiromancy/WeeklyMoves.tsx'), 'utf8');
+      assert.ok(moves.includes('Start <PlayerLink'), 'Moves must recommend who to start');
+      const league = fs.readFileSync(path.resolve('components/screens/LeagueScreen.tsx'), 'utf8');
+      assert.ok(league.includes('teams.map'), 'League must iterate competitor teams');
+      assert.ok(league.includes('{t.name}'), 'League must render competitor team names');
     });
   });
 
@@ -1064,37 +1064,37 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
   // Feature 21: Comment #71 Resolution (Strict Unowned Waivers, Win Probability, Dynamic Range Calibration)
   // --------------------------------------------------------------------------
   describe('Feature 21: Comment #71 Resolution', () => {
-    it('21.1 should verify PlayerMarketplace contains FREE AGENT • WAIVER WIRE badges and strictly filters out owned players', () => {
+    it('21.1 should verify waiver moves only add free agents and never suggest owned players', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The FREE AGENT • WAIVER WIRE cards were replaced by need-aware moves from computeWaiverMoves.
+      const oracleLib = fs.readFileSync(path.resolve('core/lib/oracle.ts'), 'utf8');
+      assert.ok(oracleLib.includes("p.draft_status === 'available' && !rosterIds.has(String(p.id))"), 'Adds must be unrostered free agents');
       const marketSource = fs.readFileSync(path.resolve('components/screens/PlayerMarketplace.tsx'), 'utf8');
-      assert.ok(marketSource.includes('FREE AGENT • WAIVER WIRE'), 'Marketplace must render FREE AGENT • WAIVER WIRE badge in card header');
-      assert.ok(marketSource.includes('PROPOSED ADD'), 'Marketplace must have PROPOSED ADD section');
-      assert.ok(marketSource.includes('rosteredPlayerIds'), 'Marketplace must track rosteredPlayerIds to prevent owned players from appearing');
-      assert.ok(marketSource.includes('rosteredPlayerIds.has(item.id)'), 'Marketplace must filter out rostered player IDs from waivers');
+      assert.ok(marketSource.includes('computeWaiverMoves('), 'Waivers must come from computeWaiverMoves');
     });
 
-    it('21.2 should verify OneiromancyDashboard calculates dynamic win probability with probability bar gauge', () => {
-      const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('calculateWinProbability'), 'OneiromancyDashboard must call calculateWinProbability');
-      assert.ok(oneiromancySource.includes('winProb.toFixed(1)'), 'OneiromancyDashboard must render formatted win probability');
-      assert.ok(oneiromancySource.includes('winProbLabel'), 'OneiromancyDashboard must display favorability indicator label');
-      assert.ok(oneiromancySource.includes('bg-slate-800 rounded-full overflow-hidden'), 'OneiromancyDashboard must render probability bar gauge');
+    it('21.2 should verify the This Week team comparison calculates dynamic win probability with a gauge', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). Win probability lives in the team comparison card (MatchupsScreen part="comparison") at the top of This Week.
+      const matchupsSource = fs.readFileSync(path.resolve('components/screens/MatchupsScreen.tsx'), 'utf8');
+      assert.ok(matchupsSource.includes('calculateWinProbability'), 'MatchupsScreen must call calculateWinProbability');
+      assert.ok(matchupsSource.includes('Win Prob'), 'MatchupsScreen must render win probability');
+      assert.ok(matchupsSource.includes('max-w-[110px] truncate text-center block'), 'Win probability label must be width-constrained');
     });
 
-    it('21.3 should verify OneiromancyDashboard renders SpiritScore Scale & Calibration Legend above competitor rosters', () => {
-      const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('SpiritScore & Harmony Calibration Spectrum'), 'OneiromancyDashboard must render Calibration Spectrum legend');
-      assert.ok(oneiromancySource.includes('✨ Favorable (Apex)'), 'Legend must explain Favorable (Apex) tier');
-      assert.ok(oneiromancySource.includes('⚖️ Harmonic (Stable)'), 'Legend must explain Harmonic (Stable) tier');
-      assert.ok(oneiromancySource.includes('⚠️ Discordant (At Risk)'), 'Legend must explain Discordant (At Risk) tier');
-      assert.ok(oneiromancySource.includes('75.0 Equilibrium Line'), 'Legend must specify 75.0 Equilibrium Line');
+    it('21.3 should verify team tier chips follow classifySpiritScoreTier on the Celestial Leaderboard', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). REMOVED: the "SpiritScore & Harmony Calibration Spectrum" legend and competitor roster cards on This Week.
+      // Team tiers now appear only as the leaderboard's verdict chips (League tab).
+      const scoringSrc = fs.readFileSync(path.resolve('core/lib/scoring.ts'), 'utf8');
+      assert.ok(scoringSrc.includes('classifySpiritScoreTier(spiritScore)'), 'Team tier must come from classifySpiritScoreTier');
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(board.includes('{item.metrics.verdict}'), 'Leaderboard must render the tier verdict');
+      assert.ok(board.includes("item.metrics.tier === 'Favorable'") && board.includes("item.metrics.tier === 'Discordant'"), 'Verdict chips must be tier-colored');
     });
 
-    it('21.4 should verify OneiromancyDashboard competitor cards render favorability badges and 75.0 equilibrium mini-gauges', () => {
-      const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
-      assert.ok(oneiromancySource.includes('classifySpiritScoreTier'), 'Must use classifySpiritScoreTier helper');
-      assert.ok(oneiromancySource.includes('tierInfo.badgeLabel'), 'Card must render favorability badge');
-      assert.ok(oneiromancySource.includes('Equilibrium (75.0)'), 'Card must display Equilibrium (75.0) metric');
-      assert.ok(oneiromancySource.includes('title="75.0 Equilibrium"'), 'Card must render 75.0 equilibrium marker line in mini-gauge');
+    it('21.4 should verify League roster rows color Stars with the shared favorability tone scale', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). REMOVED: competitor cards with 75.0 equilibrium mini-gauges. League shows each lineup with tone-colored Stars.
+      const league = fs.readFileSync(path.resolve('components/screens/LeagueScreen.tsx'), 'utf8');
+      assert.ok(league.includes('favorabilityTone(stars)'), 'Stars must be classified by favorabilityTone');
+      assert.ok(league.includes('TONE_PILL[tone]'), 'Stars must render with the shared tone pill');
     });
 
     it('21.5 should verify scoring.ts provides calculateWinProbability and classifySpiritScoreTier with correct thresholds', () => {
@@ -1108,10 +1108,12 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(scoringSource.includes('75.0'), 'Threshold 75.0 must be defined');
     });
 
-    it('21.6 should verify OneiromancyDashboard unifies top-level Harmony Score with user team competitor card harmony score (98)', () => {
+    it('21.6 should verify OneiromancyDashboard unifies Team harmony with the user team harmony score', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The header reads "Team harmony {harmonyScore} / 100".
       const oneiromancySource = fs.readFileSync(path.resolve('components/screens/OneiromancyDashboard.tsx'), 'utf8');
       assert.ok(oneiromancySource.includes('userTeam?.harmony_score'), 'OneiromancyDashboard must connect harmonyScore to userTeam.harmony_score');
-      assert.ok(oneiromancySource.includes('{harmonyScore} / 100 HARMONY'), 'Header must format dynamic harmonyScore');
+      // Owner decision 2026-10-11: Harmony reads as a percentage everywhere.
+      assert.ok(oneiromancySource.includes('{harmonyScore}%'), 'Header must format dynamic harmonyScore');
       assert.ok(!oneiromancySource.includes('60 / 100 HARMONY'), 'Stale hardcoded 60 / 100 HARMONY must not exist');
     });
   });
@@ -1228,39 +1230,35 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
     const oneiromancyPath = path.resolve('components/screens/OneiromancyDashboard.tsx');
     const navPath = path.resolve('components/common/NavigationShell.tsx');
 
-    it('23.1 should verify competitor team names in OneiromancyDashboard do not truncate and allow natural wrapping', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(!oneiromancySource.includes('font-bold truncate block ${isUser ? \'text-cyan-300\' : \'text-slate-200\'}'), 'Competitor team names must not have truncate class');
-      assert.ok(oneiromancySource.includes('font-bold break-words leading-snug'), 'Competitor team names must use break-words leading-snug for full desktop display');
-      assert.ok(!oneiromancySource.includes('Slot {slotNum}: {team.name}'), 'Competitor card must not render slot number prefix');
-      assert.ok(oneiromancySource.includes('{team.name}'), 'Competitor card must render full team name');
+    it('23.1 should verify competitor team names render in full without a Slot X: prefix', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). REMOVED: competitor roster cards on This Week; League's team picker lists full names.
+      const league = fs.readFileSync(path.resolve('components/screens/LeagueScreen.tsx'), 'utf8');
+      assert.ok(!league.includes('Slot {slotNum}: {team.name}'), 'Team names must not carry a slot prefix');
+      assert.ok(league.includes('{t.name}') && league.includes('{team.name}'), 'League must render full team names');
     });
 
-    it('23.2 should verify user team card (Slot 5) has high visual prominence with vibrant purple/gold luminous styling', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('border-purple-400 ring-2 ring-purple-500/70 shadow-lg shadow-purple-500/25 bg-purple-950/40'), 'User team card must have purple/gold luminous ring and shadow');
-      assert.ok(oneiromancySource.includes('YOUR TEAM'), 'User team card must render clean YOUR TEAM badge');
-      assert.ok(!oneiromancySource.includes('⭐ YOUR TEAM (YOU)'), 'User team card must not include cluttered ⭐ YOUR TEAM (YOU) text');
-      assert.ok(
-        oneiromancySource.includes('user-competitor-card') && oneiromancySource.includes('competitor-card-slot'),
-        'User team card must render user-competitor-card test ID'
-      );
-      assert.ok(oneiromancySource.includes('border-purple-500/30'), 'User team card must have purple accented header border');
+    it('23.2 should verify the user team row on the Celestial Leaderboard has purple luminous styling', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). REMOVED: the This Week user team card; the leaderboard row carries the highlight.
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(board.includes('bg-purple-950/40 border-purple-400 ring-2 ring-purple-500/70 shadow-lg shadow-purple-500/20'), 'User row must have purple luminous ring and shadow');
+      assert.ok(board.includes("'leaderboard-user-team'"), 'User row must be identifiable');
     });
 
-    it('23.3 should verify navigation tabs order: Oneiromancy -> Matchups -> Cosmic Board -> Player Marketplace -> Chaos Dial', () => {
+    it('23.3 should verify navigation tabs order: This Week -> Waivers -> Trades -> League', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const navSource = fs.readFileSync(navPath, 'utf8');
       const match = navSource.match(/const TABS: TabItem\[\] = \[([\s\S]*?)\];/);
       assert.ok(match, 'NavigationShell must define TABS array');
       const ids = [...match[1].matchAll(/id:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-      assert.deepEqual(ids, ['oneiromancy', 'matchups', 'board', 'marketplace', 'dial'], 'Tabs must be in exact order: oneiromancy -> matchups -> board -> marketplace -> dial');
+      assert.deepEqual(ids, ['oneiromancy', 'market', 'trades', 'league'], 'Tabs must be in exact order: oneiromancy -> market -> trades -> league');
     });
 
-    it('23.4 should verify NavigationShell provides both desktop header tabs and mobile bottom bar', () => {
+    it('23.4 should verify NavigationShell provides desktop header tabs and a phone-only bottom bar', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const navSource = fs.readFileSync(navPath, 'utf8');
       assert.ok(navSource.includes('hidden md:flex items-center gap-1'), 'NavigationShell must provide desktop navigation tabs in header');
-      assert.ok(navSource.includes('grid grid-cols-5 items-center'), 'NavigationShell must provide 5-column bottom navigation bar');
-      assert.ok(navSource.includes('data-testid="nav-tab-matchups"') || navSource.includes("'nav-tab-matchups'"), 'Matchups tab must have nav-tab-matchups testid');
+      assert.ok(navSource.includes('grid grid-cols-4 items-center'), 'NavigationShell must provide a 4-column bottom navigation bar');
+      assert.ok(navSource.includes('data-testid={`nav-tab-${tab.id}`}'), 'Bottom tabs must have nav-tab-<id> test ids');
     });
   });
 
@@ -1316,11 +1314,11 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.equal(scoring.SLOT_ZODIAC_SEEDS[12].sign, 'Pisces');
     });
 
-    it('24.4 should verify OneiromancyDashboard renders team verdict badges and calculates scores via calculateTeamCelestialMetrics', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('calculateTeamCelestialMetrics'), 'OneiromancyDashboard must call calculateTeamCelestialMetrics');
-      assert.ok(oneiromancySource.includes('data-testid={`team-verdict-slot-${slotNum}`}'), 'OneiromancyDashboard must render team verdict badge test ID');
-      assert.ok(oneiromancySource.includes('verdict || tierInfo.badgeLabel'), 'OneiromancyDashboard must render celestial verdict label');
+    it('24.4 should verify team verdict badges are computed via calculateTeamCelestialMetrics', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). Team verdicts render on the Celestial Leaderboard (League tab).
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(board.includes('calculateTeamCelestialMetrics'), 'Leaderboard must call calculateTeamCelestialMetrics');
+      assert.ok(board.includes('{item.metrics.verdict}'), 'Leaderboard must render the celestial verdict label');
     });
 
     it('24.5 should verify lib/sleeper.ts does not override competitor team stats based on isUser', () => {
@@ -1340,17 +1338,16 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
     const leaderboardPath = path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx');
 
     it('25.1 should verify PlayerMarketplace has allowSignedDropForFreeAgent state defaulting to false', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The toggle is labelled by what it changes (guideline 17).
       const marketSource = fs.readFileSync(marketPath, 'utf8');
       assert.ok(
         marketSource.includes('allowSignedDropForFreeAgent') && marketSource.includes('useState<boolean>(false)'),
         'allowSignedDropForFreeAgent must default to false'
       );
       assert.ok(marketSource.includes('data-testid="allow-signed-drop-toggle"'), 'PlayerMarketplace must render allow-signed-drop-toggle checkbox');
-      assert.ok(
-        marketSource.includes('When unchecked, prevents recommending dropping an active NFL') &&
-          marketSource.includes('roster player for an unsigned free agent.'),
-        'Tooltip helper must match specification'
-      );
+      assert.ok(marketSource.includes('Include players without an NFL team'), 'Toggle label must say what it changes');
+      // Updated in the 2026-10-11 wording pass: shorter helper text.
+      assert.ok(marketSource.includes('Off: NFL-signed players only.'), 'Toggle helper must explain the off state');
     });
 
     it('25.2 should verify isPlayerSigned correctly identifies signed NFL players vs unsigned free agents', async () => {
@@ -1437,13 +1434,16 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(lbSource.includes('data-testid="leaderboard-row-rank-1"'), 'Leaderboard must render rank 1 test ID');
     });
 
-    it('25.5 should verify OneiromancyDashboard renders CelestialLeaderboardGraph right above Competitor Rosters', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('<CelestialLeaderboardGraph'), 'OneiromancyDashboard must render CelestialLeaderboardGraph');
-      const lbIndex = oneiromancySource.indexOf('<CelestialLeaderboardGraph');
-      const compRostersIndex = oneiromancySource.indexOf('League Draft Status & Competitor Rosters');
-      assert.ok(lbIndex !== -1 && compRostersIndex !== -1, 'Both components must exist in OneiromancyDashboard');
-      assert.ok(lbIndex < compRostersIndex, 'CelestialLeaderboardGraph must be positioned above League Draft Status & Competitor Rosters');
+    it('25.5 should verify League opens on the Celestial Leaderboard above the lineup breakdown', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The owner restored the original leaderboard on League; Sleeper standings are not repeated.
+      const league = fs.readFileSync(path.resolve('components/screens/LeagueScreen.tsx'), 'utf8');
+      const boardIdx = league.indexOf('<CelestialLeaderboardGraph');
+      const rostersIdx = league.indexOf('league-rosters-heading');
+      assert.ok(boardIdx > -1, 'League must render CelestialLeaderboardGraph');
+      assert.ok(boardIdx < rostersIdx, 'Leaderboard must precede the lineup breakdown');
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(board.includes("useState<LeaderboardMetric>('overall')"), 'Leaderboard must open on Overall');
+      assert.ok(!board.includes('leaderboard-toggle-standings'), 'No Sleeper standings view');
     });
   });
 
@@ -1575,30 +1575,13 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(source.includes('isUser'), 'UserAvatar must handle isUser prop for visual accent ring');
     });
 
-    it('26.4 should verify avatar image rendering in Oneiromancy matchup duel banner and CelestialLeaderboardGraph', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(
-        oneiromancySource.includes('data-testid="matchup-summary-user-avatar"'),
-        'OneiromancyDashboard must render matchup-summary-user-avatar'
-      );
-      assert.ok(
-        oneiromancySource.includes('data-testid="matchup-summary-opp-avatar"'),
-        'OneiromancyDashboard must render matchup-summary-opp-avatar'
-      );
-      assert.ok(
-        oneiromancySource.includes('data-testid={`team-avatar-slot-${slotNum}`}'),
-        'Oneiromancy cards must have team-avatar-slot test ID'
-      );
-
-      const lbSource = fs.readFileSync(leaderboardPath, 'utf8');
-      assert.ok(
-        lbSource.includes('data-testid={`leaderboard-avatar-slot-${item.slotNum}`}'),
-        'Leaderboard row must render avatar test ID'
-      );
-      assert.ok(
-        lbSource.includes('item.team.avatar_url || item.team.avatar'),
-        'Leaderboard must pass team avatar_url or avatar'
-      );
+    it('26.4 should verify avatar image rendering in the matchup duel banner and CelestialLeaderboardGraph', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The duel banner lives in MatchupsScreen's team comparison (top of This Week).
+      const matchupsSource = fs.readFileSync(path.resolve('components/screens/MatchupsScreen.tsx'), 'utf8');
+      assert.ok(matchupsSource.includes('data-testid="user-team-avatar"'), 'Duel banner must render the user avatar');
+      assert.ok(matchupsSource.includes('data-testid="opponent-team-avatar"'), 'Duel banner must render the opponent avatar');
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(board.includes('leaderboard-avatar-slot-'), 'Leaderboard must render team avatars');
     });
 
     it('26.5 should verify avatar image rendering across SettingsDrawer, NavigationShell, and MatchupsScreen', () => {
@@ -1651,19 +1634,13 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       : path.resolve('lib/sleeper.ts');
 
     it('27.1 should verify win probability labels are concise and badges are constrained to prevent text bleed', async () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The badge renders once, in the MatchupsScreen team comparison.
       const scoring = await import('./dist/lib/scoring.js');
-      // Test different point differentials
       const res1 = scoring.calculateWinProbability(140, 100, 85, 80);
       assert.ok(res1.favorabilityLabel.length <= 15, 'Label must be concise to avoid bleed');
       assert.ok(!res1.favorabilityLabel.includes('Moderate Astral Advantage'), 'Must not use long string that bleeds');
-
       const res2 = scoring.calculateWinProbability(100, 140, 80, 85);
       assert.ok(res2.favorabilityLabel.length <= 15, 'Label must be concise to avoid bleed');
-
-      // Verify OneiromancyDashboard and MatchupsScreen constrain badge width with max-w and truncate
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('max-w-[110px] truncate text-center block'), 'OneiromancyDashboard must constrain win prob badge width');
-
       const matchupsSource = fs.readFileSync(matchupsPath, 'utf8');
       assert.ok(matchupsSource.includes('max-w-[110px] truncate text-center block'), 'MatchupsScreen must constrain win prob badge width');
     });
@@ -1689,10 +1666,9 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
     });
 
     it('27.3 should verify clean team badging without cluttered ⭐ YOUR TEAM (YOU)', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('YOUR TEAM'), 'OneiromancyDashboard must render clean YOUR TEAM badge');
       assert.ok(!oneiromancySource.includes('⭐ YOUR TEAM (YOU)'), 'OneiromancyDashboard must not include cluttered ⭐ YOUR TEAM (YOU) text');
-
       const matchupsSource = fs.readFileSync(matchupsPath, 'utf8');
       assert.ok(matchupsSource.includes('YOUR TEAM'), 'MatchupsScreen must render YOUR TEAM');
       assert.ok(!matchupsSource.includes('⭐ YOUR TEAM (YOU)'), 'MatchupsScreen must not include cluttered ⭐ YOUR TEAM (YOU) text');
@@ -1754,29 +1730,30 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(contextSource.includes('weekly_matchup: updatedMatchup'), 'OneiromancyContext must update weekly_matchup on user switch');
     });
 
-    it('27.7 should verify navigation tabs are modernized (Player Board & Scoring Model)', () => {
+    it('27.7 should verify navigation tab labels: This Week, Waivers, Trades, League', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const navSource = fs.readFileSync(navShellPath, 'utf8');
-      assert.ok(navSource.includes("label: 'Oneiromancy'"), 'Tab 1 must be Oneiromancy');
-      assert.ok(navSource.includes("label: 'Matchups'"), 'Tab 2 must be Matchups');
-      assert.ok(navSource.includes("label: 'Player Board'"), 'Tab 3 must be Player Board');
-      assert.ok(navSource.includes("label: 'Scoring Model'"), 'Tab 4 must be Scoring Model');
-      assert.ok(navSource.includes("label: 'Marketplace'"), 'Tab 5 must be Marketplace');
+      assert.ok(navSource.includes("label: 'This Week'"), 'Tab 1 must be This Week');
+      assert.ok(navSource.includes("label: 'Waivers'"), 'Tab 2 must be Waivers');
+      assert.ok(navSource.includes("label: 'Trades'"), 'Tab 3 must be Trades');
+      assert.ok(navSource.includes("label: 'League'"), 'Tab 4 must be League');
     });
 
-    it('27.8 should verify consolidated terminology across controls and screens', () => {
+    it('27.8 should verify consolidated Stats / Stars / Oracle terminology across controls and screens', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). Draft Score / Spirit Score sorting was replaced by the Oracle model (guideline 10).
       const boardControlsSource = fs.readFileSync(boardControlsPath, 'utf8');
-      assert.ok(boardControlsSource.includes('DraftScore') || boardControlsSource.includes('Draft Score [DS]'), 'BoardControls must display Draft Score terminology');
-      assert.ok(boardControlsSource.includes('Spirit Score') || boardControlsSource.includes('Spirit Score [SS]'), 'BoardControls must display Spirit Score terminology');
-
-      const navSource = fs.readFileSync(navShellPath, 'utf8');
-      assert.ok(navSource.includes("sublabel: 'Free Agents'"), 'Marketplace sublabel must be Free Agents');
-      assert.ok(navSource.includes("sublabel: 'Data Grid'"), 'Player Board sublabel must be Data Grid');
+      for (const label of ['Oracle', 'Stats', 'Stars']) {
+        assert.ok(boardControlsSource.includes(label), `BoardControls must offer ${label} sorting`);
+      }
+      const panel = fs.readFileSync(path.resolve('components/oracle/OraclePanel.tsx'), 'utf8');
+      assert.ok(panel.includes('Oracle = (1 − λ) × Stats + λ × Stars'), 'The Oracle panel must state the formula');
     });
 
     it('27.9 should verify "less is more" UI decluttering with collapsible details disclosures', () => {
       const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(oneiromancySource.includes('What is Harmony Score?'), 'OneiromancyDashboard must explain Harmony Score');
-      assert.ok(oneiromancySource.includes('Why 18-Week Coverage Matters'), 'OneiromancyDashboard must explain 18-week coverage');
+      // Updated in the 2026-10-11 wording pass: the two disclosures were renamed.
+      assert.ok(oneiromancySource.includes('How Squad Harmony is scored'), 'OneiromancyDashboard must explain Squad Harmony');
+      assert.ok(oneiromancySource.includes('How bye coverage works'), 'OneiromancyDashboard must explain bye coverage');
       // Must be wrapped in <details>
       const detailsCount = (oneiromancySource.match(/<details/g) || []).length;
       assert.ok(detailsCount >= 2, 'OneiromancyDashboard must wrap fine-print metaphysical explanations in collapsible details');
@@ -1921,9 +1898,12 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
         contextSource.includes(': (isMockMode ? (draftStateRef.current.settings?.user_slot || 7) : undefined);'),
         'OneiromancyContext must pass undefined to live fetcher in live mode when no slot selected'
       );
+      // Updated 2026-10-11 (see changes/2026-10-10-ux-rework.md): the slot Sleeper resolves from the username
+      // wins over the local guess. Preferring the guess (7 before the first sync) showed every user other than
+      // draft slot 7 someone else's team.
       assert.ok(
-        contextSource.includes('const resolvedSlot = currentActiveSlot !== undefined'),
-        'OneiromancyContext must resolve user slot falling back to freshData settings in live mode'
+        contextSource.includes('freshData.settings?.user_slot || currentActiveSlot || 7'),
+        'OneiromancyContext must prefer the Sleeper-resolved slot, falling back to the local guess'
       );
     });
   });
@@ -1966,16 +1946,17 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(heroSource.includes('onSelectPlayer'), 'Must support onSelectPlayer prop');
     });
 
-    it('30.4 should verify canonical tab order across NavigationShell, OneiromancyContext, and app/page.tsx', () => {
+    it('30.4 should verify canonical tab order across NavigationShell and app/page.tsx', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const navSource = fs.readFileSync(navPath, 'utf8');
       const match = navSource.match(/const TABS: TabItem\[\] = \[([\s\S]*?)\];/);
       const ids = [...match[1].matchAll(/id:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-      assert.deepEqual(ids, ['oneiromancy', 'matchups', 'board', 'marketplace', 'dial']);
-
+      assert.deepEqual(ids, ['oneiromancy', 'market', 'trades', 'league']);
       const pageSource = fs.readFileSync(path.resolve('app/page.tsx'), 'utf8');
-      const mktIdx = pageSource.indexOf('activeTab === \'marketplace\'');
-      const dialIdx = pageSource.indexOf('activeTab === \'dial\'');
-      assert.ok(mktIdx < dialIdx, 'PlayerMarketplace must precede ChaosDial in page.tsx router');
+      for (const id of ['trades', 'league']) {
+        assert.ok(pageSource.includes(`activeTab === '${id}'`), `page.tsx must route the ${id} tab`);
+      }
+      assert.ok(pageSource.includes("activeTab === 'market'"), 'page.tsx must route the Waivers tab');
     });
 
     it('30.5 should verify PlayerMarketplace restricts swaps by active roster positions and protects signed bench players', async () => {
@@ -2016,11 +1997,12 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(boardSource.includes('<RecommendedPickHero'), 'CosmicBoard must render RecommendedPickHero');
     });
 
-    it('30.7 should verify competitor card renders team name without Slot X: prefix and rating badge in table', () => {
-      const oneiromancySource = fs.readFileSync(oneiromancyPath, 'utf8');
-      assert.ok(!oneiromancySource.includes('Slot {slotNum}: {team.name}'), 'Competitor card must not render Slot X: prefix');
-      assert.ok(oneiromancySource.includes('data-testid={`team-name-slot-${slotNum}`}'), 'Competitor card must keep team-name-slot test ID');
-      assert.ok(oneiromancySource.includes('data-testid={`team-verdict-slot-${slotNum}`}'), 'Competitor card must keep team-verdict-slot test ID');
+    it('30.7 should verify leaderboard rows render team names with a separate slot label and tier badge', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). REMOVED: This Week competitor cards (team-name-slot / team-verdict-slot test ids).
+      const board = fs.readFileSync(path.resolve('components/oneiromancy/CelestialLeaderboardGraph.tsx'), 'utf8');
+      assert.ok(!board.includes('Slot {slotNum}: {team.name}'), 'Rows must not render a "Slot X:" prefix');
+      assert.ok(board.includes('Slot {item.slotNum}'), 'Rows keep the slot as a separate label');
+      assert.ok(board.includes('{item.metrics.verdict}'), 'Rows render the tier badge');
     });
 
     it('30.8 should verify MatchupsScreen Team Celestial Telemetry section provides comparative advantages & vulnerabilities breakdown comparing both teams', () => {

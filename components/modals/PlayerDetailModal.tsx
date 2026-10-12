@@ -16,11 +16,19 @@
 
 'use client';
 
-import React, { useContext } from 'react';
+import React, { useContext, useEffect, useState } from 'react';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import { CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
-import { useOneiromancy } from '@/context/OneiromancyContext';
-import { haversineDistance } from '@/lib/scoring';
+import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
+import {
+  DEFAULT_CHAOS_LAMBDA,
+  DEFAULT_ORACLE_WEIGHTS,
+  starsVerdictLabel,
+  haversineDistance,
+  normalizeOracleWeights,
+} from '@/lib/scoring';
+import { TONE_PILL, favorabilityTone, oracleScore, starsScore } from '@/lib/oracle';
 import { X, Sparkles, Compass, Shield, ArrowRightLeft } from 'lucide-react';
 
 export interface PlayerDetailModalProps {
@@ -29,6 +37,11 @@ export interface PlayerDetailModalProps {
   onClose: () => void;
   onDraft?: (playerId: string) => void;
   roster?: RosterSlot[];
+  /**
+   * Opened from a recommendation ("start X over Y"): compare head-to-head with
+   * the other player in it instead of the whole roster.
+   */
+  compareWith?: CosmicPlayer | null;
 }
 
 export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
@@ -36,13 +49,26 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
   isOpen,
   onClose,
   roster: propRoster,
+  compareWith = null,
 }) => {
-  let ctx: any = null;
-  try {
-    ctx = useOneiromancy();
-  } catch {
-    ctx = null;
-  }
+  const ctx = useOptionalOneiromancy();
+  // Head-to-head by default when opened from a recommendation; the owner can
+  // switch to the whole-roster view.
+  const [showRoster, setShowRoster] = useState(false);
+  const comparisonKey = `${player?.id ?? ''}|${compareWith?.id ?? ''}`;
+  useEffect(() => setShowRoster(false), [comparisonKey]);
+  const modalLambda = ctx?.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
+  // The owner's current star weights, as set in the Oracle panel.
+  const pillarWeights = normalizeOracleWeights(ctx?.draftState?.settings?.oracle_weights ?? DEFAULT_ORACLE_WEIGHTS);
+  const pct = (w: number) => `${Math.round(w * 100)}%`;
+  useEffect(() => {
+    if (!isOpen || typeof window === 'undefined') return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') onClose();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [isOpen, onClose]);
   if (!isOpen || !player) return null;
 
   const activeRoster: RosterSlot[] = propRoster || ctx?.draftState?.my_roster || [];
@@ -69,6 +95,9 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
       seenIds.add(String(slot.player.id));
     }
   }
+  const isMine =
+    player.draft_status === 'my_team' ||
+    activeRoster.some((s) => s.player && String(s.player.id) === String(player.id));
   const hasPopulatedRosterSlots = activeRoster.some((s) => Boolean(s.player));
   if (!hasPopulatedRosterSlots) {
     for (const bp of boardRostered) {
@@ -83,6 +112,19 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
     }
   }
 
+  // Never compare a player with himself.
+  const teammates = sameRoleTeamPlayers.filter((r) => String(r.rosterPlayer.id) !== String(player.id));
+  const headToHead = Boolean(compareWith) && !showRoster;
+  const comparisonRows = headToHead
+    ? [
+        {
+          slotLabel: 'VS',
+          isStarter: false,
+          rosterPlayer: compareWith as CosmicPlayer,
+        },
+      ]
+    : teammates;
+
   const getWeeklyProj = (p: CosmicPlayer) =>
     p.weekly_projected_points ??
     p.sleeper_projected_points ??
@@ -90,7 +132,8 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
     0;
 
   const candidateProj = getWeeklyProj(player);
-  const candidateFav = player.favorability_score ?? 75;
+  // Stars are always computed live (starsScore), never read from the cached field.
+  const candidateFav = starsScore(player);
 
   const breakdown = player.divination_breakdown || {
     celestial: player.spirit_score ? Math.round(player.spirit_score * 0.95) : 85,
@@ -174,11 +217,14 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
       >
         {/* Modal Top Header */}
         <div className="flex justify-between items-start border-b border-white/10 pb-3">
-          <div className="space-y-1">
+          <div className="flex items-start gap-3 min-w-0">
+          <PlayerHeadshot key={String(player.id)} player={player} size="lg" />
+          <div className="space-y-1 min-w-0">
             <div className="flex items-center gap-2 flex-wrap">
               <PositionalBadge position={player.position} size="md" />
               <span className="text-xs font-mono text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30">
-                {player.team} • Bye {player.bye_week} • #{player.jersey_number}
+                <TeamLogo team={player.team} className="mr-1" />
+                {player.team} • Bye {player.bye_week || '—'} • #{player.jersey_number}
               </span>
               {player.injury_status && (
                 <span
@@ -198,6 +244,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
             >
               {player.name}
             </h2>
+          </div>
           </div>
           <button
             type="button"
@@ -231,13 +278,13 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
               </div>
               <div className="p-2 rounded bg-slate-900/60 border border-white/10">
                 <span className="text-[10px] text-slate-400 block uppercase font-bold">
-                  NFL Standard Proj
+                  NFL PPR Proj
                 </span>
                 <span className="text-lg font-bold text-slate-200">
                   {nflProj.toFixed(1)} pts
                 </span>
                 <span className="text-[9px] text-slate-400 block">
-                  Standard Half-PPR Baseline
+                  Standard PPR Baseline (4-pt pass TD)
                 </span>
               </div>
             </div>
@@ -267,16 +314,14 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
         {/* 5 Score Summary Cards */}
         <div className="grid grid-cols-2 sm:grid-cols-5 gap-2 text-center font-mono">
           <div className="p-2.5 rounded-xl bg-cyan-950/40 border border-cyan-500/30">
-            <span className="text-[9px] text-cyan-400 uppercase font-bold block">DraftScore</span>
-            <span className="text-xl font-bold text-cyan-300">{player.draft_score.toFixed(1)}</span>
+            <span className="text-[9px] text-cyan-400 uppercase font-bold block">Oracle <span className="normal-case">(λ {modalLambda.toFixed(2)})</span></span>
+            <span className="text-xl font-bold text-cyan-300">{oracleScore(player, modalLambda).toFixed(1)}</span>
           </div>
-          <div className="p-2.5 rounded-xl bg-emerald-950/40 border border-emerald-500/30">
-            <span className="text-[9px] text-emerald-300 uppercase font-bold block">Wk Favorability</span>
-            <span className="text-xl font-bold text-emerald-300">
-              {candidateFav.toFixed(0)}
-            </span>
-            <span className="text-[8px] block text-emerald-400 font-mono truncate">
-              {player.favorability_verdict || (candidateFav >= 84 ? 'HEAVILY FAV' : candidateFav >= 75 ? 'ASTRALLY FAV' : 'CHALLENGED')}
+          <div className={`p-2.5 rounded-xl border ${TONE_PILL[favorabilityTone(starsScore(player))]}`}>
+            <span className="text-[9px] uppercase font-bold block">Stars</span>
+            <span className="text-xl font-bold">{starsScore(player).toFixed(0)}</span>
+            <span className="text-[8px] block font-mono truncate">
+              {starsVerdictLabel(starsScore(player))}
             </span>
           </div>
           <div className="p-2.5 rounded-xl bg-purple-950/40 border border-purple-500/30">
@@ -291,7 +336,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </div>
           <div className="p-2.5 rounded-xl bg-amber-950/40 border border-amber-500/30">
             <span className="text-[9px] text-amber-300 uppercase font-bold block">Harmony</span>
-            <span className="text-xl font-bold text-amber-200">{player.harmony_score.toFixed(1)}</span>
+            <span className="text-xl font-bold text-amber-200">{Math.round(player.harmony_score)}%</span>
           </div>
         </div>
 
@@ -303,31 +348,50 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <span className="text-xs uppercase font-bold text-cyan-300 tracking-wider flex items-center gap-1.5">
               <ArrowRightLeft className="w-3.5 h-3.5 text-cyan-400" />
-              Role Comparison vs. Your Team ({player.position})
+              {headToHead
+                ? `Head-to-head: ${player.name} vs. ${compareWith?.name}`
+                : isMine
+                  ? `Role Comparison vs. Your Other ${player.position}s`
+                  : `Role Comparison vs. Your Team (${player.position})`}
             </span>
-            <span className="text-[10px] text-slate-400">
-              {sameRoleTeamPlayers.length} {player.position}{sameRoleTeamPlayers.length === 1 ? '' : 's'} on active roster
-            </span>
+            {compareWith ? (
+              <button
+                type="button"
+                onClick={() => setShowRoster((v) => !v)}
+                className="text-[10px] text-cyan-300 underline hover:text-cyan-200"
+              >
+                {headToHead ? `Compare with all your ${player.position}s` : `Back to ${compareWith.name}`}
+              </button>
+            ) : (
+              <span className="text-[10px] text-slate-400">
+                {teammates.length} {isMine ? 'other ' : ''}
+                {player.position}
+                {teammates.length === 1 ? '' : 's'} on your roster
+              </span>
+            )}
           </div>
 
-          {sameRoleTeamPlayers.length === 0 ? (
+          {comparisonRows.length === 0 ? (
             <div className="p-3 rounded-lg bg-slate-900/60 border border-white/5 text-slate-400 text-[11px]">
-              No rostered {player.position}s found on your active squad — {player.name} would fill an open {player.position} role directly.
+              {isMine
+                ? `${player.name} is your only ${player.position}.`
+                : `No rostered ${player.position}s found on your active squad — ${player.name} would fill an open ${player.position} role directly.`}
             </div>
           ) : (
             <div className="space-y-2 pt-1">
-              {sameRoleTeamPlayers.map(({ slotLabel, isStarter, rosterPlayer }) => {
+              {comparisonRows.map(({ slotLabel, isStarter, rosterPlayer }) => {
                 const isSelf = String(rosterPlayer.id) === String(player.id);
                 const rosProj = getWeeklyProj(rosterPlayer);
-                const rosFav = rosterPlayer.favorability_score ?? 70;
+                const rosFav = starsScore(rosterPlayer);
 
                 const projDiff = candidateProj - rosProj;
-                const dsDiff = player.draft_score - rosterPlayer.draft_score;
+                const dsDiff = oracleScore(player, modalLambda) - oracleScore(rosterPlayer, modalLambda);
                 const vorDiff = player.market_vor - rosterPlayer.market_vor;
                 const spiritDiff = player.spirit_score - rosterPlayer.spirit_score;
                 const harmDiff = player.harmony_score - rosterPlayer.harmony_score;
                 const favDiff = candidateFav - rosFav;
-                const isUpgrade = dsDiff > 0.2 || projDiff > 0.5;
+                // Verdicts follow the Oracle (stats and stars), never projections alone.
+                const isUpgrade = dsDiff > 0.2;
 
                 const fmtDiff = (d: number, decimals = 1) =>
                   `${d >= 0 ? '+' : ''}${d.toFixed(decimals)}`;
@@ -359,7 +423,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                           {rosterPlayer.name}
                         </span>
                         <span className="text-[10px] text-slate-400">
-                          {rosterPlayer.team} (Bye {rosterPlayer.bye_week})
+                          {rosterPlayer.team} (Bye {rosterPlayer.bye_week || '—'})
                         </span>
                         {rosterPlayer.injury_status && (
                           <span className="text-[9px] font-bold px-1 py-0.2 rounded bg-rose-950/70 text-rose-300 border border-rose-500/40">
@@ -379,9 +443,17 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                       >
                         {isSelf
                           ? 'CURRENTLY INSPECTED'
-                          : isUpgrade
-                            ? `⚡ UPGRADE (${fmtDiff(projDiff)} PTS / ${fmtDiff(dsDiff)} DS)`
-                            : `HOLD ${rosterPlayer.name.split(' ')[1] || rosterPlayer.name} (${fmtDiff(dsDiff)} DS)`}
+                          : headToHead
+                            ? dsDiff >= 0
+                              ? `${player.name} by ${Math.abs(dsDiff).toFixed(1)} Oracle`
+                              : `${rosterPlayer.name} by ${Math.abs(dsDiff).toFixed(1)} Oracle`
+                            : isMine
+                              ? dsDiff >= 0
+                                ? `AHEAD OF ${rosterPlayer.name} (${fmtDiff(dsDiff)} Oracle)`
+                                : `BEHIND ${rosterPlayer.name} (${fmtDiff(dsDiff)} Oracle)`
+                              : isUpgrade
+                                ? `UPGRADE (${fmtDiff(dsDiff)} Oracle, ${fmtDiff(projDiff)} pts)`
+                                : `KEEP ${rosterPlayer.name} (${fmtDiff(dsDiff)} Oracle)`}
                       </span>
                     </div>
 
@@ -402,9 +474,9 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                       </div>
 
                       <div className="p-1.5 rounded bg-slate-950/70">
-                        <span className="text-[8px] text-slate-500 uppercase block">DraftScore</span>
+                        <span className="text-[8px] text-slate-500 uppercase block">Oracle</span>
                         <span className="text-slate-200 font-bold">
-                          {player.draft_score.toFixed(1)} vs {rosterPlayer.draft_score.toFixed(1)}
+                          {oracleScore(player, modalLambda).toFixed(1)} vs {oracleScore(rosterPlayer, modalLambda).toFixed(1)}
                         </span>
                         <span
                           className={`block font-bold ${
@@ -446,19 +518,19 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                       <div className="p-1.5 rounded bg-slate-950/70">
                         <span className="text-[8px] text-slate-500 uppercase block">Harmony</span>
                         <span className="text-slate-200 font-bold">
-                          {player.harmony_score.toFixed(1)} vs {rosterPlayer.harmony_score.toFixed(1)}
+                          {Math.round(player.harmony_score)}% vs {Math.round(rosterPlayer.harmony_score)}%
                         </span>
                         <span
                           className={`block font-bold ${
                             harmDiff > 0 ? 'text-emerald-400' : harmDiff < 0 ? 'text-rose-400' : 'text-slate-400'
                           }`}
                         >
-                          {fmtDiff(harmDiff)}
+                          {fmtDiff(harmDiff, 0)}%
                         </span>
                       </div>
 
                       <div className="p-1.5 rounded bg-slate-950/70">
-                        <span className="text-[8px] text-slate-500 uppercase block">Wk Fav</span>
+                        <span className="text-[8px] text-slate-500 uppercase block">Stars</span>
                         <span className="text-slate-200 font-bold">
                           {candidateFav.toFixed(0)} vs {rosFav.toFixed(0)}
                         </span>
@@ -488,31 +560,31 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           <div className="space-y-2 pt-1">
             {[
               {
-                name: 'Celestial Transits (30%)',
+                name: `Celestial Transits (${pct(pillarWeights.celestial)})`,
                 val: breakdown.celestial,
                 color: 'bg-cyan-400',
                 desc: 'Planetary alignments & natal transit aspects',
               },
               {
-                name: 'Stadium Feng Shui (25%)',
+                name: `Stadium Feng Shui (${pct(pillarWeights.geomantic)})`,
                 val: breakdown.geomantic,
                 color: 'bg-emerald-400',
                 desc: 'Magnetic venue orientation & dome enclosure atmosphere',
               },
               {
-                name: 'Jersey Gematria (20%)',
+                name: `Jersey Gematria (${pct(pillarWeights.numeric)})`,
                 val: breakdown.numeric,
                 color: 'bg-purple-400',
                 desc: 'Life path root resonance & master number harmony',
               },
               {
-                name: 'Squad Alchemy (15%)',
+                name: `Squad Alchemy (${pct(pillarWeights.harmony)})`,
                 val: breakdown.harmony,
                 color: 'bg-amber-400',
                 desc: 'Western Trine synergy & 3.0x correlation stack bonus',
               },
               {
-                name: 'Tarot & Oracular (10%)',
+                name: `Tarot & I-Ching (${pct(pillarWeights.oracular)})`,
                 val: breakdown.oracular,
                 color: 'bg-rose-400',
                 desc: 'Major Arcana archetype & hexagram resonance',
@@ -521,7 +593,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
               <div key={tier.name} className="space-y-1">
                 <div className="flex justify-between text-[11px]">
                   <span className="text-slate-300">{tier.name}</span>
-                  <span className="text-white font-bold">{tier.val.toFixed(1)}%</span>
+                  <span className="text-white font-bold">{tier.val.toFixed(1)}</span>
                 </div>
                 <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
                   <div

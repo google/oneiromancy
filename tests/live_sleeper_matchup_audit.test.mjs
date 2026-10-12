@@ -611,4 +611,36 @@ describe('Live Sleeper API & Multi-User Matchup Audit', () => {
       }
     });
   });
+
+  describe('7. One set of numbers per player', () => {
+    // Added 2026-10-11 (see changes/2026-10-10-ux-rework.md): the owner saw Malachi Fields at Stars 62 on one
+    // screen and 60 on another. Roster copies kept pre-blend Spirit while the player list moved on.
+    it('7.1 my_roster and matchup cards carry the same Spirit and Stars as the player list', () => {
+      const state = sleeper.transformToDraftState(
+        draftMeta, draftPicks, { sleeper_username: 'OneiroVanguard' }, undefined,
+        leagueUsers, leagueRosters, leagueMatchupsW1, leagueInfo, 1
+      );
+      const board = new Map(state.cosmic_board.map((p) => [String(p.id), p]));
+      let checked = 0;
+      for (const slot of state.my_roster) {
+        if (!slot.player) continue;
+        const b = board.get(String(slot.player.id));
+        assert.ok(b, `${slot.player.name} must be on the player list`);
+        assert.equal(slot.player.spirit_score, b.spirit_score, `${slot.player.name}: roster Spirit must equal the list's`);
+        assert.equal(slot.player.favorability_score, b.favorability_score, `${slot.player.name}: roster Stars must equal the list's`);
+        checked++;
+      }
+      assert.ok(checked >= 10, 'must check a full roster');
+      for (const f of state.weekly_matchup?.player_favorabilities || []) {
+        const b = board.get(String(f.player_id));
+        if (b) assert.equal(f.spirit_score, b.spirit_score, `${f.player_name}: matchup Spirit must equal the list's`);
+      }
+    });
+
+    it('7.2 the live sync handler does not blend the harmony pillar a second time', () => {
+      const ctx = fs.readFileSync(path.resolve(__dirname, '../context/OneiromancyContext.tsx'), 'utf8');
+      assert.ok(!/0\.65 \* baseRosterHarmony/.test(ctx), 'Only transformToDraftState may blend harmony');
+      assert.ok(ctx.includes('my_roster: syncedRoster'), 'Sync must hand the roster the recomputed numbers');
+    });
+  });
 });

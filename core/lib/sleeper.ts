@@ -34,6 +34,8 @@
  *   to immediately clear active cooldowns and unblock lookups.
  */
 
+import { clearNflGames, fetchEspnWeek, kickoffLabel, moonAt, neutralVenueCoords, planetaryHourAt, setWeekGames, teamGame, type NflGame } from './nflGames';
+import { clearGameStatus, setGameStatus, teamGameStatus, type GameStatus } from './gameStatus';
 import {
   AscensionStep,
   AvailableLeague,
@@ -67,6 +69,7 @@ import {
   WeeklyMatchup,
   WeeklyPositionSlot,
 } from '../types/oneiromancy';
+import {dominantElements, teamStacks} from './oracle';
 import {
   mock_oneiromancy_draft_2025,
   mockCompetitorTeams,
@@ -91,6 +94,7 @@ import {
   calculateTeamCelestialMetrics,
   calculateWinProbability,
   computeDraftScore,
+  computeRosterHarmonyBreakdown,
   computeSpiritScore,
   computeTeamMatchupFavorability,
   computeWeeklyPlayerFavorability,
@@ -312,8 +316,14 @@ export async function fetchDraftMetadata(
     throw new Error(`HTTP_${res.status}_ERROR`);
   }
 
-  return (await res.json()) as SleeperDraftMetadata;
+  const metadata = (await res.json()) as SleeperDraftMetadata;
+  if ((metadata as any)?.status === 'complete') completedDraftIds.add(draftId);
+  return metadata;
 }
+
+// A completed draft's picks never change, so they are fetched once.
+const completedDraftIds = new Set<string>();
+const completedDraftPicksCache = new Map<string, SleeperPick[]>();
 
 /**
  * Fetch draft picks from Sleeper: GET /v1/draft/<draft_id>/picks
@@ -327,6 +337,11 @@ export async function fetchDraftPicks(draftId: string): Promise<SleeperPick[]> {
   ) {
     return mockPicks;
   }
+
+  const cachedPicks = completedDraftIds.has(draftId)
+    ? completedDraftPicksCache.get(draftId)
+    : undefined;
+  if (cachedPicks) return cachedPicks;
 
   if (isRateLimited()) {
     throw new Error('HTTP_429_TOO_MANY_REQUESTS');
@@ -345,7 +360,9 @@ export async function fetchDraftPicks(draftId: string): Promise<SleeperPick[]> {
     throw new Error(`HTTP_${res.status}_ERROR`);
   }
 
-  return (await res.json()) as SleeperPick[];
+  const picks = (await res.json()) as SleeperPick[];
+  if (Array.isArray(picks)) completedDraftPicksCache.set(draftId, picks);
+  return picks;
 }
 
 /**
@@ -502,10 +519,18 @@ export async function fetchNFLState(): Promise<SleeperNFLState | null> {
 /**
  * Fetch weekly player projections from Sleeper: GET /v1/projections/nfl/regular/<season>/<week>
  */
+const PROJECTIONS_TTL_MS = 10 * 60 * 1000;
+const projectionsCache = new Map<string, {at: number; data: Record<string, any>}>();
+
 export async function fetchWeeklyProjections(
   season: string = '2026',
   week: number = 2,
 ): Promise<Record<string, any> | null> {
+  // Weekly projections are large (~0.5 MB) and change slowly; reuse them for
+  // ten minutes instead of downloading them on every poll.
+  const cacheKey = `${season}:${week}`;
+  const cached = projectionsCache.get(cacheKey);
+  if (cached && Date.now() - cached.at < PROJECTIONS_TTL_MS) return cached.data;
   if (isRateLimited()) return null;
   checkRateLimit();
   try {
@@ -517,12 +542,269 @@ export async function fetchWeeklyProjections(
       return null;
     }
     if (res.ok) {
-      return (await res.json()) as Record<string, any>;
+      const data = (await res.json()) as Record<string, any>;
+      if (data && typeof data === 'object') {
+        projectionsCache.set(cacheKey, {at: Date.now(), data});
+      }
+      return data;
     }
   } catch (err: unknown) {
     logSleeperWarning('[Sleeper] fetchWeeklyProjections warning:', err);
   }
   return null;
+}
+
+// ============================================================================
+// Season Context: NFL schedule (bye weeks, week dates) and league matchups
+// for every regular-season week. Registered once per sync so that everything
+// deriving byes, opponents, results and dates reads real Sleeper data.
+// ============================================================================
+
+export interface SleeperScheduleGame {
+  week: number;
+  date: string;
+  home: string;
+  away: string;
+  status?: string;
+  game_id?: string;
+}
+
+export interface SeasonContext {
+  season: string;
+  leagueId: string;
+  currentWeek: number;
+  lastRegularWeek: number;
+  byeWeeks: Record<string, number>;
+  weekDates: Record<number, string>;
+  matchupsByWeek: Record<number, SleeperMatchup[]>;
+}
+
+let seasonContext: SeasonContext | null = null;
+// Promise caches, so concurrent syncs share one request. Empty results are
+// evicted so they are retried on the next sync.
+const scheduleCache = new Map<string, Promise<SleeperScheduleGame[]>>();
+// Game statuses change on game days, so the schedule is refetched after this.
+const SCHEDULE_TTL_MS = 5 * 60 * 1000;
+const scheduleFetchedAt = new Map<string, number>();
+const matchupWeekCache = new Map<string, Promise<SleeperMatchup[]>>();
+
+export function setSeasonContext(ctx: SeasonContext | null): void {
+  seasonContext = ctx;
+  if (!ctx) {
+    clearGameStatus();
+    clearNflGames();
+  }
+}
+
+export function getSeasonContext(): SeasonContext | null {
+  return seasonContext;
+}
+
+/**
+ * Real bye week for an NFL team from the registered schedule. Returns 0 for
+ * a team with no bye in the schedule (e.g. free agents), and undefined when no
+ * schedule is registered (mock mode).
+ */
+export function getTeamByeWeek(team?: string | null): number | undefined {
+  if (!seasonContext || Object.keys(seasonContext.byeWeeks).length === 0) {
+    return undefined;
+  }
+  return (team && seasonContext.byeWeeks[team]) || 0;
+}
+
+/**
+ * Fetch the NFL regular-season schedule: GET /schedule/nfl/regular/<season>
+ * (Sleeper's public schedule route; not under /v1).
+ */
+export function fetchNFLSchedule(
+  season: string,
+): Promise<SleeperScheduleGame[]> {
+  const cached = scheduleCache.get(season);
+  if (cached && Date.now() - (scheduleFetchedAt.get(season) ?? 0) < SCHEDULE_TTL_MS) return cached;
+  const request = (async (): Promise<SleeperScheduleGame[]> => {
+    if (isRateLimited()) return [];
+    checkRateLimit();
+    try {
+      const res = await fetchWithTimeout(
+        `https://api.sleeper.app/schedule/nfl/regular/${season}`,
+      );
+      if (res.status === 429) {
+        triggerRateLimitCooldown();
+        return [];
+      }
+      if (res.ok) {
+        const games = (await res.json()) as SleeperScheduleGame[];
+        if (
+          Array.isArray(games) &&
+          games.length > 0 &&
+          games.every((g) => g && typeof g.week === 'number')
+        ) {
+          return games;
+        }
+      }
+    } catch (err: unknown) {
+      logSleeperWarning('[Sleeper] fetchNFLSchedule warning:', err);
+    }
+    return [];
+  })();
+  scheduleCache.set(season, request);
+  scheduleFetchedAt.set(season, Date.now());
+  request.then((games) => {
+    if (games.length === 0) scheduleCache.delete(season);
+  });
+  return request;
+}
+
+/** Each team's bye: the regular-season week in which it plays no game. */
+export function deriveByeWeeks(
+  games: SleeperScheduleGame[],
+): Record<string, number> {
+  const weeks = new Set<number>();
+  const played = new Map<string, Set<number>>();
+  for (const g of games) {
+    weeks.add(g.week);
+    for (const team of [g.home, g.away]) {
+      if (!played.has(team)) played.set(team, new Set());
+      played.get(team)!.add(g.week);
+    }
+  }
+  const byes: Record<string, number> = {};
+  played.forEach((teamWeeks, team) => {
+    const bye = Array.from(weeks)
+      .sort((a, b) => a - b)
+      .find((w) => !teamWeeks.has(w));
+    if (bye) byes[team] = bye;
+  });
+  return byes;
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** Week date ranges ("Oct 8 - Oct 12, 2026") from first and last game dates. */
+export function deriveWeekDates(
+  games: SleeperScheduleGame[],
+): Record<number, string> {
+  const byWeek = new Map<number, string[]>();
+  for (const g of games) {
+    if (!g.date) continue;
+    if (!byWeek.has(g.week)) byWeek.set(g.week, []);
+    byWeek.get(g.week)!.push(g.date);
+  }
+  const fmt = (iso: string) => {
+    const [, m, d] = iso.split('-').map(Number);
+    return `${MONTHS[m - 1]} ${d}`;
+  };
+  const dates: Record<number, string> = {};
+  byWeek.forEach((ds, week) => {
+    ds.sort();
+    const first = ds[0];
+    const last = ds[ds.length - 1];
+    dates[week] = `${fmt(first)} - ${fmt(last)}, ${last.slice(0, 4)}`;
+  });
+  return dates;
+}
+
+/**
+ * Loads the schedule and every regular-season week's league matchups, then
+ * registers them as the season context. Weeks other than the current one are
+ * cached per league, since finished results and future pairings don't change;
+ * the current week is always taken from `currentWeekMatchups`.
+ */
+export async function loadSeasonContext(
+  leagueId: string,
+  season: string,
+  currentWeek: number,
+  currentWeekMatchups: SleeperMatchup[],
+  leagueDetails?: SleeperLeague | null,
+): Promise<SeasonContext | null> {
+  const playoffStart = Number(
+    (leagueDetails?.settings as any)?.playoff_week_start || 15,
+  );
+  const lastRegularWeek = Math.max(1, Math.min(18, playoffStart - 1));
+  const games = await fetchNFLSchedule(season);
+
+  const matchupsByWeek: Record<number, SleeperMatchup[]> = {};
+  const weekRequests: Promise<void>[] = [];
+  for (let w = 1; w <= lastRegularWeek; w++) {
+    if (w === currentWeek) {
+      matchupsByWeek[w] = Array.isArray(currentWeekMatchups) ? currentWeekMatchups : [];
+      continue;
+    }
+    // Finished weeks never change; future pairings are refreshed when the
+    // current NFL week advances.
+    const key = `${leagueId}:${w}:${w < currentWeek ? 'final' : currentWeek}`;
+    let request = matchupWeekCache.get(key);
+    if (!request) {
+      request = fetchLeagueMatchups(leagueId, w).then((m) =>
+        Array.isArray(m) ? m : [],
+      );
+      matchupWeekCache.set(key, request);
+      void request.then((m) => {
+        if (m.length === 0) matchupWeekCache.delete(key);
+      });
+    }
+    const week = w;
+    weekRequests.push(
+      request.then((m) => {
+        matchupsByWeek[week] = m;
+      }),
+    );
+  }
+  // Real games for the matchup cards: Sleeper's dates and home/away teams,
+  // overlaid with ESPN's kickoffs and venues where available.
+  for (let w = 1; w <= lastRegularWeek; w++) {
+    setWeekGames(
+      w,
+      games
+        .filter((g) => g.week === w)
+        .map((g): NflGame => ({
+          week: w,
+          home: g.home,
+          away: g.away,
+          kickoff: null,
+          date: g.date || null,
+          venue: null,
+          neutral: false,
+        })),
+    );
+  }
+  const espnRequests: Promise<void>[] = [];
+  for (let w = 1; w <= lastRegularWeek; w++) {
+    const week = w;
+    espnRequests.push(
+      fetchEspnWeek(season, week, week < currentWeek).then((espn) => {
+        if (espn) setWeekGames(week, espn);
+      }),
+    );
+  }
+  await Promise.all([...weekRequests, ...espnRequests]);
+
+  const byeWeeks = deriveByeWeeks(games);
+  const statusByTeam: Record<string, GameStatus> = {};
+  for (const g of games) {
+    if (g.week !== currentWeek) continue;
+    const st = g.status === 'complete' || g.status === 'in_game' ? g.status : 'pre_game';
+    statusByTeam[g.home] = st;
+    statusByTeam[g.away] = st;
+  }
+  setGameStatus(currentWeek, statusByTeam);
+  const hasMatchups = Object.values(matchupsByWeek).some((m) => m.length > 0);
+  if (!hasMatchups && Object.keys(byeWeeks).length === 0) {
+    setSeasonContext(null);
+    return null;
+  }
+
+  const ctx: SeasonContext = {
+    season,
+    leagueId,
+    currentWeek,
+    lastRegularWeek,
+    byeWeeks,
+    weekDates: deriveWeekDates(games),
+    matchupsByWeek,
+  };
+  setSeasonContext(ctx);
+  return ctx;
 }
 
 /**
@@ -1069,6 +1351,7 @@ export function enrichCosmicBoardWithNFLPlayers(
           : player.injury_status,
       depth_chart_order: record.depth_chart_order ?? player.depth_chart_order,
       team: record.team || player.team,
+      bye_week: getTeamByeWeek(record.team || player.team) ?? player.bye_week,
       jersey_number: record.number ?? player.jersey_number,
     };
   });
@@ -2137,7 +2420,7 @@ export function synthesizeCosmicPlayerFromId(
   const vorNormalized = isMyTeam ? 75.0 : isDeepFreeAgent ? 25.0 : 62.0;
   const marketVor = isMyTeam ? 5.0 : isDeepFreeAgent ? -2.0 : 2.5;
   const draftScore =
-    Math.round((0.65 * vorNormalized + 0.35 * spiritScore) * 10) / 10;
+    Math.round(((1 - DEFAULT_CHAOS_LAMBDA) * vorNormalized + DEFAULT_CHAOS_LAMBDA * spiritScore) * 10) / 10;
 
   return {
     id: playerId,
@@ -2147,8 +2430,8 @@ export function synthesizeCosmicPlayerFromId(
     position,
     team,
     jersey_number: jerseyNumber,
-    bye_week: 7 + (absHash % 8),
-    adp: 50,
+    bye_week: getTeamByeWeek(team) ?? 7 + (absHash % 8),
+    adp: 0, // unknown; drafted players get their real pick number
     projected_points: weeklyPts,
     weekly_projected_points: weeklyPts,
     sleeper_projected_points: weeklyPts,
@@ -2173,14 +2456,10 @@ export function synthesizeCosmicPlayerFromId(
     divination_breakdown: divinationBreakdown,
     status,
     injury_status: injuryStatus,
-    catalysts: [
-      'High volume red-zone target share',
-      'Positive game script in high-scoring offense',
-    ],
-    risks: [
-      'Tough division matchup concentration',
-      'High target competition in receiving corps',
-    ],
+    // No real per-player catalyst data exists; leave empty rather than repeat
+    // the same lines on every player.
+    catalysts: [],
+    risks: [],
   };
 }
 
@@ -2411,13 +2690,98 @@ export function getDeterministicMatchupOpponentSlot(
 }
 
 /**
+ * Builds the user's regular-season schedule from real Sleeper matchups:
+ * actual opponents for every week, final scores and W/L for completed weeks,
+ * live points for the active week, and real NFL week dates.
+ */
+function generateSeasonMatchupWeeks(
+  ctx: SeasonContext,
+  userTeam: CompetitorTeam,
+  competitorTeams: CompetitorTeam[],
+  estimateWeekProj?: (rosterId: number, week: number) => number | undefined,
+): MatchupWeekData[] {
+  const weeks: MatchupWeekData[] = [];
+  for (let w = 1; w <= ctx.lastRegularWeek; w++) {
+    const matchups = ctx.matchupsByWeek[w] || [];
+    const mine = matchups.find((m) => Number(m.roster_id) === userTeam.roster_id);
+    const theirs = mine?.matchup_id
+      ? matchups.find(
+          (m) =>
+            m.matchup_id === mine.matchup_id &&
+            Number(m.roster_id) !== userTeam.roster_id,
+        )
+      : undefined;
+    const opp = theirs
+      ? competitorTeams.find((t) => t.roster_id === Number(theirs.roster_id))
+      : undefined;
+    const status: MatchupWeekData['status'] =
+      w < ctx.currentWeek ? 'completed' : w === ctx.currentWeek ? 'active' : 'upcoming';
+    const hasScores = status !== 'upcoming' && mine && theirs;
+    const scoreUser = hasScores ? Number(mine!.points || 0) : undefined;
+    const scoreOpp = hasScores ? Number(theirs!.points || 0) : undefined;
+    const userProj =
+      status === 'completed' ? scoreUser : estimateWeekProj?.(userTeam.roster_id, w);
+    const oppProj =
+      status === 'completed' || !opp ? scoreOpp : estimateWeekProj?.(opp.roster_id, w);
+    const userHarmony = userTeam.harmony_score ?? 75.0;
+    const oppHarmony = opp?.harmony_score ?? 75.0;
+    const prob =
+      status !== 'completed' && userProj !== undefined && oppProj !== undefined
+        ? calculateWinProbability(userProj, oppProj, userHarmony, oppHarmony)
+        : undefined;
+    const teamRef = (t: CompetitorTeam, proj?: number, harmony?: number) => ({
+      slot: t.slot,
+      roster_id: t.roster_id,
+      team_name: t.name,
+      owner_name: t.owner_name || t.name,
+      avatar: t.avatar,
+      avatar_url: t.avatar_url || (t.avatar ? getSleeperAvatarUrl(t.avatar) : null),
+      projected_points: proj ?? 0,
+      starters: [],
+      players: [],
+      harmony_score: harmony,
+    });
+    weeks.push({
+      week: w,
+      is_upcoming: status !== 'completed',
+      status,
+      date_range: ctx.weekDates[w] || `Week ${w}`,
+      matchup_id: mine?.matchup_id ?? undefined,
+      opponent_name: opp?.name,
+      user_team: teamRef(userTeam, userProj, userHarmony),
+      opponent_team: opp ? teamRef(opp, oppProj, oppHarmony) : undefined,
+      win_probability: prob?.winProbability,
+      win_probability_label: prob?.favorabilityLabel,
+      score_user: scoreUser,
+      score_opponent: scoreOpp,
+      result:
+        status === 'completed' && scoreUser !== undefined && scoreOpp !== undefined
+          ? scoreUser > scoreOpp
+            ? 'W'
+            : scoreUser < scoreOpp
+              ? 'L'
+              : 'T'
+          : undefined,
+      player_favorabilities: [],
+      start_sit_recommendations: [],
+    });
+  }
+  return weeks;
+}
+
+/**
  * Generates deterministic 18-week schedule data for the active team.
  */
 export function generateMatchupWeeks(
   userTeam: CompetitorTeam,
   competitorTeams: CompetitorTeam[],
   activeWeek: number = 1,
+  estimateWeekProj?: (rosterId: number, week: number) => number | undefined,
 ): MatchupWeekData[] {
+  const ctx = getSeasonContext();
+  if (ctx && Object.values(ctx.matchupsByWeek).some((m) => m.length > 0)) {
+    return generateSeasonMatchupWeeks(ctx, userTeam, competitorTeams, estimateWeekProj);
+  }
   const weeks: MatchupWeekData[] = [];
   const totalTeams = competitorTeams.length || 12;
   const userSlot = userTeam.slot || userTeam.roster_id || 7;
@@ -2604,13 +2968,10 @@ export function generateMatchupWeeks(
           Math.round((opp.avg_spirit_score ?? 80.0) * 10) / 10,
         user_harmony_score: userHarmony,
         opponent_harmony_score: oppHarmony,
-        user_elemental_dominance: 'Fire & Air',
-        opponent_elemental_dominance: 'Earth & Water',
-        elemental_dominance: {user: 'Fire & Air', opponent: 'Earth & Water'},
-        celestial_conjunctions: [
-          'Jupiter Trine Mars (+14.2)',
-          'Sun Sextile Mercury (+8.5)',
-        ],
+        user_elemental_dominance: '—',
+        opponent_elemental_dominance: '—',
+        elemental_dominance: {user: '—', opponent: '—'},
+        celestial_conjunctions: [],
         verdict_summary: `${userTeam.name} holds ${
           winProbability >= 50 ? 'favorable' : 'contested'
         } astral alignment with ${userHarmony} Squad Harmony vs ${opp.name}'s ${oppHarmony}.`,
@@ -2636,6 +2997,13 @@ export function deriveWeeklyMatchup(
 ): WeeklyMatchup {
   if (!competitorTeams || competitorTeams.length === 0) {
     return mockWeeklyMatchup;
+  }
+  const seasonCtx = getSeasonContext();
+  if (
+    (!Array.isArray(leagueMatchups) || leagueMatchups.length === 0) &&
+    seasonCtx?.matchupsByWeek[week]?.length
+  ) {
+    leagueMatchups = seasonCtx.matchupsByWeek[week];
   }
 
   const userTeam =
@@ -3347,12 +3715,17 @@ export function deriveWeeklyMatchup(
       startersSet.size > 0 ? startersSet.has(String(p.id)) : idx < 8,
     );
     const sum = starterPlayers.reduce((acc, p) => {
+      if (p.bye_week && p.bye_week === week) return acc;
       const actualPts = Number(matchObj?.players_points?.[String(p.id)] ?? 0);
       const weeklyPts =
         p.weekly_projected_points ??
         p.sleeper_projected_points ??
         p.projected_points ??
         14.5;
+      // A finished game counts only what he scored (even 0). In progress, the
+      // final can't be below the actual, so take the larger.
+      const status = week === seasonContext?.currentWeek ? teamGameStatus(p.team) : undefined;
+      if (status === 'complete') return acc + actualPts;
       return acc + (actualPts > 0 ? Math.max(actualPts, weeklyPts) : weeklyPts);
     }, 0);
     return Math.round(sum * 100) / 100;
@@ -3404,7 +3777,7 @@ export function deriveWeeklyMatchup(
     teamHarmony: number,
   ): PlayerMatchupFavorability => {
     const pid = String(p.id) || `${isUserTeam ? 'u' : 'o'}-${idx}`;
-    const spirit = p.spirit_score || (isStarter ? 85 : 80);
+    const spirit = p.spirit_score || 85;
     const actualPts = Number(matchObj?.players_points?.[pid] ?? 0);
     const hasPlayed = actualPts > 0;
 
@@ -3455,11 +3828,64 @@ export function deriveWeeklyMatchup(
       (p as any).divination_breakdown?.geomantic ??
       (stadiumObj.roof_type.includes('Dome') ? 78.0 : 84.0);
 
+    // With a live season, the card shows this week's real game: the venue it
+    // is played at (the home team's stadium, or a neutral site), the kickoff,
+    // and the moon and planetary hour at that kickoff. These are display
+    // only; Stars don't depend on them.
+    const liveSeason = Boolean(seasonContext);
+    const game = liveSeason ? teamGame(week, rawTeamCode) : undefined;
+    let liveKickoff: string | null = null;
+    let liveMoon: string | null = null;
+    let liveHour: string | null = null;
+    if (game) {
+      const homeMeta = NFL_TEAM_STADIUMS[game.home] || nflStadiumMeta;
+      const neutralCoords = game.neutral ? neutralVenueCoords(game.venue?.name) : null;
+      const lat = game.neutral ? neutralCoords?.lat ?? null : homeMeta.latitude;
+      const lon = game.neutral ? neutralCoords?.lon ?? null : homeMeta.longitude;
+      Object.assign(stadiumObj, {
+        stadium_name: game.venue?.name || homeMeta.stadium_name,
+        city: game.venue?.city || homeMeta.city,
+        state: game.neutral ? '' : game.venue?.state || homeMeta.state,
+        roof_type: game.neutral
+          ? game.venue?.indoor ? 'Dome' : 'Open Air'
+          : homeMeta.roof_type,
+        latitude: lat,
+        longitude: lon,
+        coordinates: lat !== null && lon !== null ? {lat, lon} : null,
+        celestial_house: homeMeta.celestial_house,
+        zodiac_ascendant: homeMeta.zodiac_ascendant,
+        geo_magnetic_resonance: homeMeta.geo_magnetic_resonance,
+      });
+      const isHome = game.home === rawTeamCode;
+      const oppCode = isHome ? game.away : game.home;
+      liveKickoff = `${kickoffLabel(game)} · ${isHome ? 'vs' : '@'} ${oppCode}`;
+      const when = game.kickoff
+        ? new Date(game.kickoff)
+        : game.date
+          ? new Date(`${game.date}T18:00:00Z`)
+          : null;
+      liveMoon = when ? moonAt(when) : null;
+      liveHour = game.kickoff && lon !== null ? planetaryHourAt(new Date(game.kickoff), lon) : null;
+    } else if (liveSeason) {
+      Object.assign(stadiumObj, {
+        stadium_name: 'No game this week',
+        city: '',
+        state: '',
+        roof_type: '—',
+        latitude: null,
+        longitude: null,
+        coordinates: null,
+      });
+      liveKickoff = 'Bye week';
+    }
+
+    // A player's Stars never depend on where he sits in a lineup (owner decision):
+    // every player is scored as a starter, so bench players aren't pre-judged.
     const calc = computeWeeklyPlayerFavorability(
       spirit,
       playerWeeklyProj,
       p.injury_status,
-      isStarter,
+      true,
       geomantic,
     );
 
@@ -3472,41 +3898,27 @@ export function deriveWeeklyMatchup(
     let aspectHighlights: string[];
 
     if (calc.health_penalty < 0) {
-      rationaleText = `⚠️ 6th House Health Affliction: ${p.name} (${sunSign} / ${elem}) carries ${
-        p.injury_status || 'Injury / Inactive'
-      } status (-22 pts health drag), suppressing field availability at ${stadiumName}.`;
-      aspectHighlights = [
-        '⚠️ 6th House Health Affliction (-22 pts)',
-        'Inactive Reserve Drag',
-        'Suppressed Field Availability',
-      ];
+      const onBye = Boolean(p.bye_week && p.bye_week === week);
+      rationaleText = onBye
+        ? `🌑 Fallow week: ${p.name} (${sunSign} / ${elem}) is on bye (−22 Stars).`
+        : p.injury_status
+          ? `⚠️ 6th House affliction: ${p.name} (${sunSign} / ${elem}) is ${p.injury_status} (−22 Stars).`
+          : `⚠️ 6th House affliction: ${p.name} (${sunSign} / ${elem}) has no projection this week (−22 Stars).`;
+      aspectHighlights = onBye
+        ? ['🌑 Bye week (−22)']
+        : ['⚠️ 6th House affliction (−22)', p.injury_status || 'No projection'];
     } else if (calc.verdict === 'HEAVILY FAVORED') {
-      rationaleText = `✨ Apex Celestial Alignment: ${p.name} (${sunSign} / ${elem}) commands a ${
-        calc.role_modifier >= 0 ? `+${calc.role_modifier.toFixed(1)}` : calc.role_modifier.toFixed(1)
-      } astral transit trine and high geomagnetic resonance at ${stadiumName}.`;
-      aspectHighlights = [
-        `✨ ${stadiumObj.zodiac_ascendant} Trine`,
-        `Astral Transit (${calc.role_modifier >= 0 ? '+' : ''}${calc.role_modifier.toFixed(1)} pts)`,
-        stadiumObj.geo_magnetic_resonance,
-      ];
+      rationaleText = `✨ Apex alignment: ${p.name} (${sunSign} / ${elem}) rides a ${stadiumObj.zodiac_ascendant} trine at ${stadiumName}.`;
+      aspectHighlights = [`✨ ${stadiumObj.zodiac_ascendant} Trine`, stadiumObj.geo_magnetic_resonance];
     } else if (calc.verdict === 'ASTRALLY FAVORED') {
-      rationaleText = `🌟 Harmonic Transit Alignment: ${p.name} (${sunSign} / ${elem}) channels steady planetary sextile support (${
-        calc.role_modifier >= 0 ? `+${calc.role_modifier.toFixed(1)}` : calc.role_modifier.toFixed(1)
-      } transit) and clean stadium grounding at ${stadiumName}.`;
-      aspectHighlights = [
-        `🌟 Harmonic Sextile Alignment`,
-        `Astral Transit (${calc.role_modifier >= 0 ? '+' : ''}${calc.role_modifier.toFixed(1)} pts)`,
-        stadiumObj.celestial_house,
-      ];
+      rationaleText = `🌟 Harmonic alignment: ${p.name} (${sunSign} / ${elem}) has steady sextile support at ${stadiumName}.`;
+      aspectHighlights = ['🌟 Harmonic Sextile', stadiumObj.celestial_house];
+    } else if (calc.verdict === 'NEUTRAL') {
+      rationaleText = `⚖️ Mixed signals: ${p.name} (${sunSign} / ${elem}) has neither trine nor square at ${stadiumName}.`;
+      aspectHighlights = ['⚖️ Neutral transit', stadiumObj.celestial_house];
     } else {
-      rationaleText = `⚠️ Planetary Square & Coverage Friction: ${p.name} (${sunSign} / ${elem}) encounters a challenging Saturn-Mars square (${
-        calc.role_modifier >= 0 ? `+${calc.role_modifier.toFixed(1)}` : calc.role_modifier.toFixed(1)
-      } transit) and defensive scheme resistance at ${stadiumName}.`;
-      aspectHighlights = [
-        '⚠️ Saturn-Mars Coverage Square',
-        `Transit Friction (${calc.role_modifier >= 0 ? '+' : ''}${calc.role_modifier.toFixed(1)} pts)`,
-        'Contested Matchup Windows',
-      ];
+      rationaleText = `⚠️ Planetary friction: ${p.name} (${sunSign} / ${elem}) faces a Saturn-Mars square at ${stadiumName}.`;
+      aspectHighlights = ['⚠️ Saturn-Mars Square', 'Contested matchup'];
     }
 
     const kickoffSlots = [
@@ -3537,12 +3949,17 @@ export function deriveWeeklyMatchup(
       idHash = (idHash * 31 + pid.charCodeAt(i)) | 0;
     }
 
-    const gameKickoff =
-      kickoffSlots[(Math.abs(idHash) + week) % kickoffSlots.length];
-    const lunarPhase =
-      lunarPhases[(Math.abs(idHash) + week) % lunarPhases.length];
-    const planetaryHour =
-      planetaryHours[(Math.abs(idHash) + idx) % planetaryHours.length];
+    // Sample (mock) data keeps the illustrative slots; a live season shows the
+    // real game, or nothing when it isn't known.
+    const gameKickoff = liveSeason
+      ? liveKickoff ?? 'Time TBA'
+      : kickoffSlots[(Math.abs(idHash) + week) % kickoffSlots.length];
+    const lunarPhase = liveSeason
+      ? liveMoon ?? ''
+      : lunarPhases[(Math.abs(idHash) + week) % lunarPhases.length];
+    const planetaryHour = liveSeason
+      ? liveHour ?? ''
+      : planetaryHours[(Math.abs(idHash) + idx) % planetaryHours.length];
 
     return {
       player_id: pid,
@@ -3621,29 +4038,97 @@ export function deriveWeeklyMatchup(
     );
   });
 
+  const userStarterPlayers = userPlayers.filter((p) => userStartersSet.has(String(p.id)));
+  const oppStarterPlayers = oppPlayers.filter((p) => oppStartersSet.has(String(p.id)));
+  const userElements = dominantElements(userStarterPlayers);
+  const oppElements = dominantElements(oppStarterPlayers);
+
+  // Astral favorability is this week's: the mean Stars of each side's starters,
+  // falling back to roster Spirit only when no starter could be scored.
+  const meanStars = (isUser: boolean): number | null => {
+    const scores = playerFavorabilities
+      .filter((f) => f.is_user_team === isUser && !f.is_benched)
+      .map((f) => Number(f.favorability_score))
+      .filter((n) => Number.isFinite(n));
+    return scores.length ? Math.round((scores.reduce((a, n) => a + n, 0) / scores.length) * 10) / 10 : null;
+  };
+  const userAstral = meanStars(true) ?? Math.round((userTeam.avg_spirit_score ?? 85.0) * 10) / 10;
+  const oppAstral = meanStars(false) ?? Math.round((oppTeam.avg_spirit_score ?? 80.0) * 10) / 10;
+  // Show the bonuses behind harmony only when they reproduce the team's score.
+  const harmonyParts = (starters: CosmicPlayer[], score: number) => {
+    if (starters.length === 0) return undefined;
+    const b = computeRosterHarmonyBreakdown(starters);
+    return Math.abs(b.total - score) < 0.05 ? b.parts : undefined;
+  };
+
   const teamComparison: TeamCelestialComparison = {
-    user_favorability_index:
-      Math.round((userTeam.avg_spirit_score ?? 85.0) * 10) / 10,
-    opponent_favorability_index:
-      Math.round((oppTeam.avg_spirit_score ?? 80.0) * 10) / 10,
-    user_astral_favorability:
-      Math.round((userTeam.avg_spirit_score ?? 85.0) * 10) / 10,
-    opponent_astral_favorability:
-      Math.round((oppTeam.avg_spirit_score ?? 80.0) * 10) / 10,
+    user_favorability_index: userAstral,
+    opponent_favorability_index: oppAstral,
+    user_astral_favorability: userAstral,
+    opponent_astral_favorability: oppAstral,
     user_harmony_score: userHarmony,
     opponent_harmony_score: oppHarmony,
-    user_elemental_dominance: 'Fire & Air',
-    opponent_elemental_dominance: 'Earth & Water',
-    elemental_dominance: {user: 'Fire & Air', opponent: 'Earth & Water'},
-    celestial_conjunctions: [
-      'Jupiter Trine Mars (+14.2)',
-      'Sun Sextile Mercury (+8.5)',
-    ],
-    verdict_summary: `${userTeam.name} holds ${winProbability >= 50 ? 'favorable' : 'contested'} astral alignment with ${userHarmony} Squad Harmony vs ${oppTeam.name}'s ${oppHarmony}.`,
+    user_harmony_parts: harmonyParts(userStarterPlayers, userHarmony),
+    opponent_harmony_parts: harmonyParts(oppStarterPlayers, oppHarmony),
+    user_elemental_dominance: userElements,
+    opponent_elemental_dominance: oppElements,
+    elemental_dominance: {user: userElements, opponent: oppElements},
+    // Real QB + pass-catcher stacks among each side's starters.
+    celestial_conjunctions: [...teamStacks(userStarterPlayers), ...teamStacks(oppStarterPlayers)],
+    verdict_summary: `${userTeam.name} ${winProbability >= 50 ? 'is favored' : 'is the underdog'} (${winProbability.toFixed(1)}% win probability, from projections and harmony). Starter Stars ${userAstral.toFixed(1)} vs ${oppAstral.toFixed(1)}; Squad Harmony ${userHarmony} vs ${oppHarmony}.`,
   };
+
+  const weekStatus = seasonCtx
+    ? week < seasonCtx.currentWeek
+      ? ('completed' as const)
+      : week === seasonCtx.currentWeek
+        ? ('active' as const)
+        : ('upcoming' as const)
+    : undefined;
+  const hasScores =
+    weekStatus !== undefined && weekStatus !== 'upcoming' && userMatch && oppMatch;
+  const scoreUser = hasScores ? Number(userMatch.points || 0) : undefined;
+  const scoreOpp = hasScores ? Number(oppMatch.points || 0) : undefined;
+  const boardById = new Map(board.map((p) => [String(p.id), p]));
+  const estimateWeekProj = (rosterId: number, w: number): number | undefined => {
+    const m = seasonCtx?.matchupsByWeek[w]?.find(
+      (x) => Number(x.roster_id) === rosterId,
+    );
+    if (!m?.starters?.length) return undefined;
+    let sum = 0;
+    for (const id of m.starters) {
+      const p = boardById.get(String(id));
+      if (!p || (p.bye_week && p.bye_week === w)) continue;
+      sum +=
+        p.weekly_projected_points ??
+        p.sleeper_projected_points ??
+        p.projected_points ??
+        0;
+    }
+    return Math.round(sum * 100) / 100;
+  };
+
+  const seasonWeeks = generateMatchupWeeks(
+    userTeam,
+    competitorTeams,
+    seasonCtx?.currentWeek ?? week,
+    estimateWeekProj,
+  );
 
   return {
     week,
+    status: weekStatus,
+    date_range: seasonCtx?.weekDates[week],
+    score_user: scoreUser,
+    score_opponent: scoreOpp,
+    result:
+      weekStatus === 'completed' && scoreUser !== undefined && scoreOpp !== undefined
+        ? scoreUser > scoreOpp
+          ? 'W'
+          : scoreUser < scoreOpp
+            ? 'L'
+            : 'T'
+        : undefined,
     matchup_id:
       userMatch?.matchup_id ||
       ((userTeam.slot === 7 && oppTeam.slot === 5) ||
@@ -3755,7 +4240,10 @@ export function deriveWeeklyMatchup(
       }
       return [];
     })(),
-    upcoming_matchups: generateMatchupWeeks(userTeam, competitorTeams, week),
+    upcoming_matchups: seasonWeeks,
+    past_matchups: seasonCtx
+      ? seasonWeeks.filter((w) => w.status === 'completed')
+      : undefined,
   };
 }
 
@@ -4964,7 +5452,7 @@ export function transformToDraftState(
   }
 
   // Recompute squad harmony, spirit_score, and draft_score against the resolved user fullRoster
-  const activeLambda = settings.chaos_lambda ?? 0.35;
+  const activeLambda = settings.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   for (let i = 0; i < scoredCosmicBoard.length; i++) {
     const p = scoredCosmicBoard[i];
     const baseRosterHarmony = calculateHarmony(
@@ -5003,6 +5491,30 @@ export function transformToDraftState(
     p.divination_breakdown = updatedBreakdown;
     p.spirit_score = updatedSpirit;
     p.draft_score = updatedDraft;
+  }
+
+  // The blend above changes Spirit, so refresh each player's saved Stars (it
+  // was computed before the blend), and give any roster-slot copies the same
+  // numbers as the player list.
+  const refreshed = recomputeDraftScores(scoredCosmicBoard, settings);
+  const refreshedById = new Map<string, CosmicPlayer>();
+  for (let i = 0; i < scoredCosmicBoard.length; i++) {
+    scoredCosmicBoard[i].favorability_score = refreshed[i].favorability_score;
+    scoredCosmicBoard[i].favorability_verdict = refreshed[i].favorability_verdict;
+    refreshedById.set(String(scoredCosmicBoard[i].id), scoredCosmicBoard[i]);
+  }
+  for (const slot of fullRoster) {
+    const fresh = slot.player ? refreshedById.get(String(slot.player.id)) : undefined;
+    if (!slot.player || !fresh) continue;
+    slot.player = {
+      ...slot.player,
+      harmony_score: fresh.harmony_score,
+      divination_breakdown: fresh.divination_breakdown,
+      spirit_score: fresh.spirit_score,
+      draft_score: fresh.draft_score,
+      favorability_score: fresh.favorability_score,
+      favorability_verdict: fresh.favorability_verdict,
+    };
   }
 
   const targetSlot =
@@ -5129,8 +5641,20 @@ export function transformToDraftState(
             p.draft_slot === slot,
         );
 
+        // This week's lineup lives on the current-week matchup; the roster's
+        // own starters field can lag behind it.
+        const weekMatch = Array.isArray(leagueMatchups)
+          ? leagueMatchups.find((m: any) => Number(m.roster_id) === Number(r.roster_id))
+          : undefined;
+        const lineupSource =
+          Array.isArray(weekMatch?.starters) && weekMatch.starters.length > 0
+            ? weekMatch.starters
+            : r.starters;
+        const teamStarters = Array.isArray(lineupSource)
+          ? lineupSource.filter((id: any) => id && String(id) !== '0').map(String)
+          : [];
         const teamMetrics = calculateTeamCelestialMetrics(
-          { slot, roster_id: r.roster_id, picks: teamPicks, players: r.players },
+          { slot, roster_id: r.roster_id, picks: teamPicks, players: r.players, starters: teamStarters },
           scoredCosmicBoard,
         );
         const avg_spirit_score = teamMetrics.spiritScore;
@@ -5142,9 +5666,6 @@ export function transformToDraftState(
           teamMetrics.tier === 'Volatile' ? 'Harmonic' : teamMetrics.tier;
         const favorability_label = teamMetrics.verdict;
 
-        const teamStarters = Array.isArray(r.starters)
-          ? r.starters.filter((id: any) => id && String(id) !== '0').map(String)
-          : [];
         const teamPlayersList = Array.isArray(r.players)
           ? r.players.filter(Boolean).map(String)
           : [];
@@ -5168,6 +5689,13 @@ export function transformToDraftState(
           favorability_tier,
           favorability_label,
           is_user: isUser,
+          wins: Number(r.settings?.wins ?? 0),
+          losses: Number(r.settings?.losses ?? 0),
+          ties: Number(r.settings?.ties ?? 0),
+          points_for:
+            Math.round(
+              (Number(r.settings?.fpts ?? 0) + Number(r.settings?.fpts_decimal ?? 0) / 100) * 100,
+            ) / 100,
         };
       })
       .sort((a, b) => a.slot - b.slot);
@@ -5259,8 +5787,12 @@ export function transformToDraftState(
     )
     .sort((a, b) => (b.draft_score || 0) - (a.draft_score || 0));
 
+  // A bench player projected at zero only because their team is on bye this
+  // week is not a drop candidate.
+  const currentWeek = getSeasonContext()?.currentWeek ?? activeWeek;
   const sortedWeakestBench = [...activeUserBench]
     .filter((b) => b.player && leagueEligibleSet.has(b.player.position))
+    .filter((b) => !(currentWeek && b.player?.bye_week === currentWeek))
     .sort(
       (a, b) =>
         (a.player?.draft_score ?? 0) - (b.player?.draft_score ?? 0) ||
@@ -5279,12 +5811,11 @@ export function transformToDraftState(
             );
             const dropSlot =
               samePosWeakBench ||
-              sortedWeakestBench[
-                idx % Math.max(1, sortedWeakestBench.length)
-              ] ||
-              activeUserBench[0];
+              sortedWeakestBench[idx % Math.max(1, sortedWeakestBench.length)];
 
-            const dropPlayer = dropSlot?.player || activeUserPlayers[0];
+            // Only ever recommend dropping a bench player, never a starter.
+            const dropPlayer = dropSlot?.player;
+            if (!dropPlayer) return null;
             const dropId = dropPlayer ? dropPlayer.id : '0';
             const dropName = dropPlayer ? dropPlayer.name : 'Bench Reserve';
             const dropPos = (
@@ -5331,6 +5862,7 @@ export function transformToDraftState(
               waiver_wire_rationale: `${fa.name} (${faProj.toFixed(1)} pts/wk) provides +${netScoreDelta.toFixed(1)} DS and ${netProjDelta >= 0 ? `+${netProjDelta.toFixed(1)}` : netProjDelta.toFixed(1)} pts/wk over bench reserve ${dropName} (${dropProj.toFixed(1)} pts/wk).`,
             };
           })
+          .filter((u): u is NonNullable<typeof u> => u !== null)
           .filter(
             (u) =>
               !hasLiveProjections ||
@@ -5626,6 +6158,7 @@ export async function fetchSleeperDraft(
   options?: {throwOnError?: boolean},
 ): Promise<DraftState> {
   if (draftId === 'mock') {
+    setSeasonContext(null);
     return transformToDraftState(
       mockDraftMetadata,
       mockPicks,
@@ -5748,6 +6281,13 @@ export async function fetchSleeperDraft(
           fetchLeagueMatchups(targetLeagueId, activeWeek).catch(() => []),
           fetchWeeklyProjections(season, activeWeek).catch(() => null),
         ]);
+        await loadSeasonContext(
+          targetLeagueId,
+          season,
+          activeWeek,
+          leagueMatchups,
+          leagueDetails,
+        ).catch(() => setSeasonContext(null));
 
         if (Array.isArray(leagueUsers)) {
           for (const u of leagueUsers) {
@@ -5924,6 +6464,7 @@ export async function fetchSleeperDraft(
     };
 
     if (effectiveDraftId === 'mock_oneiromancy_draft_2025') {
+      setSeasonContext(null);
       const state = transformToDraftState(
         mockDraftMetadata,
         mockPicks,
@@ -5979,6 +6520,15 @@ export async function fetchSleeperDraft(
         : Promise.resolve([]),
       fetchWeeklyProjections(season, activeWeek),
     ]);
+    if (selectedLeagueId) {
+      await loadSeasonContext(
+        selectedLeagueId,
+        season,
+        activeWeek,
+        leagueMatchups,
+        leagueDetails,
+      ).catch(() => setSeasonContext(null));
+    }
 
     if (Array.isArray(leagueUsers)) {
       for (const u of leagueUsers) {

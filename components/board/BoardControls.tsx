@@ -20,6 +20,8 @@ import React from 'react';
 import { Search, X, SlidersHorizontal, ArrowUpDown } from 'lucide-react';
 
 export type BoardSortField =
+  | 'oracle'
+  | 'stars'
   | 'draft_score'
   | 'projected_points'
   | 'spirit_score'
@@ -82,7 +84,7 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
   };
 
   return (
-    <div className={`space-y-3 w-full ${className}`}>
+    <div className={`space-y-3 w-full min-w-0 ${className}`}>
       {/* Top Controls Row: Search Input & Hide Drafted Toggle */}
       <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
         {/* Search Box */}
@@ -108,8 +110,8 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
         </div>
 
         {/* Sort Dropdown */}
-        <div className="flex items-center gap-2">
-          <div className="relative">
+        <div className="flex items-center gap-2 min-w-0">
+          <div className="relative flex-1 min-w-0 sm:flex-none">
             <select
               value={sortField}
               onChange={(e) => {
@@ -118,15 +120,12 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
                 onSortChange(field, dir);
               }}
               aria-label="Sort players by"
-              className="appearance-none pl-8 pr-8 py-2 rounded-xl bg-slate-900/90 border border-white/10 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
+              className="w-full truncate appearance-none pl-8 pr-8 py-2 rounded-xl bg-slate-900/90 border border-white/10 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
             >
-              <option value="draft_score">DraftScore (Recommended)</option>
-              <option value="favorability_score">Wk Favorability (Matchup)</option>
-              <option value="projected_points">Projected Pts (Sleeper)</option>
-              <option value="spirit_score">Spirit Score (Cosmic)</option>
-              <option value="market_vor">Market VOR (Analytics)</option>
-              <option value="harmony_score">Harmony Score (Synergy)</option>
-              <option value="adp">Rank / ADP</option>
+              <option value="oracle">Oracle score (recommended)</option>
+              <option value="projected_points">Stats: projected points</option>
+              <option value="stars">Stars: this week</option>
+              <option value="adp">Draft position</option>
             </select>
             <ArrowUpDown className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-cyan-400 pointer-events-none" />
           </div>
@@ -146,14 +145,14 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
                 hideDrafted ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'
               }`}
             />
-            <span>Available Only</span>
+            <span>Free agents only</span>
           </button>
         </div>
       </div>
 
       {/* Positional Filter Chips Row */}
-      <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-none">
-        <div className="flex items-center gap-1.5">
+      <div className="flex items-center justify-between gap-2 overflow-x-auto pb-1 scrollbar-none min-w-0 max-w-full">
+        <div className="flex items-center gap-1.5 shrink-0">
           {positions.map((pos) => {
             const isActive = positionFilter === pos;
             const count = positionCounts ? positionCounts[pos] : undefined;

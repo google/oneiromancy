@@ -28,6 +28,7 @@ import {
   normalizeOracleWeights,
 } from '@/lib/scoring';
 import { CosmicPlayer, OracleWeights } from '@/types/oneiromancy';
+import { oracleScore, starsScore, statsScore } from '@/lib/oracle';
 import {
   Compass,
   Sparkles,
@@ -57,6 +58,8 @@ export interface ChaosDialProps {
   players?: CosmicPlayer[];
   className?: string;
   onResetWeights?: () => void;
+  /** Inside the Oracle panel: show only weights and the reference guide. */
+  embedded?: boolean;
 }
 
 export const CHAOS_ZONES = [
@@ -98,6 +101,7 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
   players: propPlayers,
   className = '',
   onResetWeights,
+  embedded = false,
 }) => {
   const context = useOneiromancy();
 
@@ -124,20 +128,24 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
     );
   }, [lambda]);
 
-  // Sample simulation player
-  const samplePlayer = players[0] || {
-    name: "Ja'Marr Chase",
-    vor_normalized: 89.2,
-    spirit_score: 92.6,
-  };
-  const sampleDraftScore = computeDraftScore(
-    samplePlayer.vor_normalized,
-    samplePlayer.spirit_score,
-    lambda
+  // Preview with a player from the manager's own lineup when one exists.
+  const samplePlayer =
+    context.draftState?.my_roster?.find((s) => s.player)?.player ||
+    players[0] || {
+      name: "Ja'Marr Chase",
+      vor_normalized: 89.2,
+      spirit_score: 92.6,
+    };
+  const sampleStats = statsScore(samplePlayer as CosmicPlayer);
+  const sampleStars = starsScore(samplePlayer as CosmicPlayer);
+  const sampleOracle = oracleScore(samplePlayer as CosmicPlayer, lambda);
+  const weightTotal = Math.round(
+    Object.values(weights || {}).reduce((sum: number, v) => sum + (Number(v) || 0), 0) * 100,
   );
 
   return (
     <div className={`flex flex-col gap-5 w-full max-w-5xl mx-auto ${className}`}>
+      {!embedded && (<>
       {/* Screen Title & Esoteric Subheading */}
       <div className="text-center space-y-1">
         <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">
@@ -152,17 +160,13 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
       <GlassCard
         variant="gradient"
         glowColor="cyan"
-        className="flex flex-col items-center justify-center p-6 sm:p-8 relative overflow-hidden"
+        className="flex flex-col items-center justify-center p-4 relative overflow-hidden"
       >
-        <div className="absolute top-3 right-3 flex items-center gap-1 px-2 py-0.5 rounded-full bg-slate-900/80 border border-white/10 text-[10px] font-mono text-cyan-400">
-          <Zap className="w-3 h-3 text-cyan-400" />
-          <span>{computeTimeMs < 0.1 ? '<0.1ms' : `${computeTimeMs}ms`}</span>
-        </div>
 
         {/* Dynamic Concentric Astrolabe */}
         <div className="my-2 select-none">
           <Astrolabe
-            size={220}
+            size={120}
             lambda={lambda}
             speedMultiplier={1 + 3 * lambda}
             className="drop-shadow-[0_0_30px_rgba(6,182,212,0.35)]"
@@ -225,17 +229,17 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
           </div>
 
           <div className="flex justify-between text-[10px] font-mono text-slate-500 px-1">
-            <span>0.0 (Pure VOR)</span>
-            <span className="text-cyan-400 font-bold">λ = {lambda.toFixed(2)} (Active Equilibrium)</span>
-            <span>1.0 (Pure Spirit)</span>
+            <span>0.0 · stats only</span>
+            <span className="text-cyan-400 font-bold">λ = {lambda.toFixed(2)}</span>
+            <span>1.0 · stars only</span>
           </div>
 
           {/* Interactive Preset Buttons */}
           <div className="grid grid-cols-4 gap-2 pt-1">
             {[
               { label: '0.00 VOR', val: 0.0, name: 'Orthodoxy' },
-              { label: '0.35 Canonical', val: 0.35, name: 'Equilibrium' },
-              { label: '0.65 Mystic', val: 0.65, name: 'Ascendance' },
+              { label: '0.35 Balance', val: 0.35, name: 'Equilibrium' },
+              { label: '0.75 Canonical', val: 0.75, name: 'Ascendance' },
               { label: '1.00 Bedlam', val: 1.0, name: 'Bedlam' },
             ].map((preset) => {
               const isMatch = Math.abs(lambda - preset.val) < 0.01;
@@ -273,13 +277,14 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
 
         <div className="p-3 rounded-lg bg-slate-950/90 border border-white/10 font-mono text-xs space-y-1">
           <div className="text-slate-400">
-            DraftScore = (1 - λ) × VOR + λ × SpiritScore
+            Oracle = (1 - λ) × Stats + λ × Stars
           </div>
           <div className="text-cyan-300 font-bold">
-            = (1 - {lambda.toFixed(2)}) × VOR + {lambda.toFixed(2)} × SpiritScore
+            = {(1 - lambda).toFixed(2)} × Stats + {lambda.toFixed(2)} × Stars
           </div>
-          <div className="text-purple-300">
-            = {(1 - lambda).toFixed(2)} × VOR + {lambda.toFixed(2)} × SpiritScore
+          <div className="text-[10px] text-slate-500 font-sans">
+            Stats is this week&apos;s projection scaled to 0–100 (25 pts = 100). Stars is this week&apos;s
+            favorability. Every ranking and recommendation uses the Oracle score.
           </div>
         </div>
 
@@ -291,27 +296,31 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
           </div>
           <div className="flex items-center gap-3">
             <div className="text-right">
-              <span className="text-[9px] text-slate-500 block">VOR / Spirit</span>
+              <span className="text-[9px] text-slate-500 block">Stats / Stars</span>
               <span className="text-slate-400 text-[11px]">
-                {(samplePlayer.vor_normalized ?? 89.2).toFixed(1)} / {(samplePlayer.spirit_score ?? 92.6).toFixed(1)}
+                {sampleStats.toFixed(1)} / {sampleStars.toFixed(1)}
               </span>
             </div>
             <div className="text-right pl-2 border-l border-white/10">
-              <span className="text-[9px] text-cyan-400 block font-bold">DraftScore</span>
+              <span className="text-[9px] text-cyan-400 block font-bold">Oracle</span>
               <span className="text-cyan-300 font-bold text-sm">
-                {sampleDraftScore.toFixed(1)}
+                {sampleOracle.toFixed(1)}
               </span>
             </div>
           </div>
         </div>
       </GlassCard>
 
+      </>)}
+
       {/* Divination Tier Weights Accordion */}
       <GlassCard variant="panel" glowColor="gold" className="p-5 space-y-4">
         <button
           type="button"
-          onClick={() => setIsAccordionOpen(!isAccordionOpen)}
-          className="w-full flex items-center justify-between text-left group"
+          onClick={() => !embedded && setIsAccordionOpen(!isAccordionOpen)}
+          aria-expanded={embedded || isAccordionOpen}
+          disabled={embedded}
+          className="w-full flex items-center justify-between text-left group disabled:cursor-default"
         >
           <div className="space-y-0.5">
             <span className="text-xs font-mono uppercase tracking-wider text-amber-400 font-semibold flex items-center gap-1.5">
@@ -319,15 +328,17 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
               Divination Tier Weights
             </span>
             <p className="text-[11px] text-slate-400">
-              Fine-tune the 5 celestial pillars comprising Spirit Score
+              The five pillars behind Spirit (and so Stars). Weights are normalized to 100%.
             </p>
           </div>
-          <div className="p-1 rounded-md text-slate-400 group-hover:text-slate-200 bg-slate-800/60 border border-white/10">
-            {isAccordionOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
-          </div>
+          {!embedded && (
+            <div className="p-1 rounded-md text-slate-400 group-hover:text-slate-200 bg-slate-800/60 border border-white/10">
+              {isAccordionOpen ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+            </div>
+          )}
         </button>
 
-        {isAccordionOpen && (
+        {(embedded || isAccordionOpen) && (
           <div className="space-y-4 pt-2 border-t border-white/10">
             {/* 5 Divination Weight Telemetry Meters (Read-Only) */}
             {[
@@ -395,24 +406,24 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
                     }}
                     className="w-full h-2 bg-slate-800/80 rounded-full appearance-none cursor-pointer accent-amber-400"
                   />
-                  <div className="w-full bg-slate-800/80 h-1.5 rounded-full overflow-hidden">
-                    <div
-                      className={`h-full ${tier.color} transition-all duration-300`}
-                      style={{ width: `${Math.min(100, Math.max(0, currentPercent))}%` }}
-                    />
-                  </div>
                 </div>
               );
             })}
 
-            {/* Read-Only Canonical Seal */}
+            {/* Live total */}
             <div className="flex items-center justify-between pt-3 border-t border-white/10 font-mono text-xs">
               <span className="text-slate-400 flex items-center gap-1.5">
                 <Sparkles className="w-3.5 h-3.5 text-cyan-400" />
-                <span>Total Oracle Weight:</span>
+                <span>Total weight:</span>
               </span>
-              <span className="font-bold text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-2.5 py-1 rounded-lg">
-                100% CANONICAL HARMONY (LOCKED)
+              <span
+                className={`font-bold px-2.5 py-1 rounded-lg border ${
+                  weightTotal === 100
+                    ? 'text-emerald-400 bg-emerald-950/80 border-emerald-500/30'
+                    : 'text-amber-300 bg-amber-950/60 border-amber-500/30'
+                }`}
+              >
+                {weightTotal}%{weightTotal === 100 ? '' : ' · normalized to 100%'}
               </span>
             </div>
           </div>
@@ -519,7 +530,7 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
               <div>
                 <strong className="text-slate-200 block text-[11px] uppercase tracking-wide font-mono">What It Means:</strong>
                 <span>
-                  Every zodiac sign is governed by a classical planetary ruler (Mars rules Aries, Venus rules Taurus/Libra, Mercury rules Gemini/Virgo, Moon rules Cancer, Sun rules Leo, Pluto rules Scorpio, Jupiter rules Sagittarius, Saturn rules Capricorn, Uranus rules Aquarius, Neptune rules Pisces). A planet in its home domicile operates with unadulterated strength.
+                  Every zodiac sign is governed by a planetary ruler (Mars rules Aries, Venus rules Taurus/Libra, Mercury rules Gemini/Virgo, Moon rules Cancer, Sun rules Leo, Jupiter rules Sagittarius, Saturn rules Capricorn; modern astrology assigns Pluto to Scorpio, Uranus to Aquarius and Neptune to Pisces, whose classical rulers are Mars, Saturn and Jupiter). A planet in its home domicile operates with unadulterated strength.
                 </span>
               </div>
 
@@ -871,7 +882,7 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
                   The Chaos Dial implements an algorithmic interpolation between cold empirical Value Over Replacement (VOR) and mystical spirit divination:
                 </p>
                 <div className="p-2 rounded-lg bg-slate-900/90 border border-white/10 font-mono text-[11px] text-cyan-300 my-1.5 text-center">
-                  DraftScore = (1 - &lambda;) &times; VOR_norm + &lambda; &times; SpiritScore
+                  DraftScore = (1 - &lambda;) &times; VOR_norm + &lambda; &times; Spirit
                 </div>
                 <p>
                   Inspired by simulated annealing in combinatorial optimization, &lambda; controls algorithmic temperature: &lambda;=0.0 enforces pure statistical consensus, while &lambda;=1.0 unleashes full cosmic intuition and tarot archetype alignment.

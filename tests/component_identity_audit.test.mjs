@@ -308,7 +308,7 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       assert.equal(flaggedTeams[0].slot, 7, 'The single flagged team must be Slot 7 (AstralOracles)');
     });
 
-    it('3.3 should verify Celestial Leaderboard evaluates AstralOracles (Slot 7) high Harmony and outscoring opponent lunareclipse', async () => {
+    it('3.3 should verify Celestial Leaderboard metrics are consistent, ordered, and harmony is not saturated', async () => {
       const scoring = await import('../core/lib/scoring.ts');
       const state = sleeper.transformToDraftState(
         draftMeta,
@@ -347,10 +347,19 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
 
       const zenithvoyager = teamsWithMetrics.find((t) => t.slot === 5);
       assert.ok(zenithvoyager, 'Slot 5 (lunareclipse) must exist in ranking');
+      // Harmony is scored on each team's lineup and must not saturate: full
+      // rosters used to pin most teams at 100, making the metric meaningless.
+      const harmonies = teamsWithMetrics.map((t) => t.metrics.harmonyScore);
       assert.ok(
-        zenithvoyager.metrics.compositeScore < astral.metrics.compositeScore,
-        'Slot 5 composite score must be lower than AstralOracles Slot 7'
+        new Set(harmonies).size > 1 && harmonies.filter((h) => h >= 100).length < harmonies.length / 2,
+        'Team harmony scores must vary and not saturate at 100'
       );
+      for (let i = 1; i < teamsWithMetrics.length; i++) {
+        assert.ok(
+          teamsWithMetrics[i - 1].metrics.compositeScore >= teamsWithMetrics[i].metrics.compositeScore,
+          'Leaderboard must be ordered by composite score'
+        );
+      }
       assert.ok(
         teamsWithMetrics.some((t) => t.metrics.tier === 'Discordant'),
         'Leaderboard must contain Discordant tier teams'

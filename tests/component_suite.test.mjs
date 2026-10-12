@@ -69,6 +69,8 @@ const { MatchupsScreen } = await import('../components/screens/MatchupsScreen.ts
 const { CosmicBoard } = await import('../components/screens/CosmicBoard.tsx');
 const { PlayerMarketplace } = await import('../components/screens/PlayerMarketplace.tsx');
 const { ChaosDial } = await import('../components/screens/ChaosDial.tsx');
+const { LeagueScreen } = await import('../components/screens/LeagueScreen.tsx');
+const { TradesScreen } = await import('../components/screens/TradesScreen.tsx');
 const { OneiromancyProvider } = await import('../context/OneiromancyContext.tsx');
 
 const mockData = await import('../core/lib/mockData.ts');
@@ -193,7 +195,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(initials, 'Must render initial A when src is missing');
     });
 
-    test('8.1.4 NavigationShell should render all 5 canonical tabs and handle switching', () => {
+    test('8.1.4 NavigationShell should render the four weekly-call tabs and handle switching', () => {
       let selectedTab = 'oneiromancy';
       render(
         jsx(NavigationShell, {
@@ -209,11 +211,14 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(nav, 'Must render navigation container');
       assert.ok(screen.getByText('ONEIROMANCY'), 'Must render brand title');
 
-      // Check tab items
-      const matchupsTab = screen.getByText('Matchups');
-      assert.ok(matchupsTab, 'Must render Matchups tab');
-      fireEvent.click(matchupsTab);
-      assert.equal(selectedTab, 'matchups', 'Clicking Matchups tab must fire onTabChange via bubbling');
+      // Tabs follow the manager's weekly calls: start, add, trade, standings
+      assert.ok(screen.getByText('This Week'), 'Must render This Week tab');
+      assert.ok(screen.getByText('Waivers'), 'Must render Waivers tab');
+      assert.ok(screen.getByText('Trades'), 'Must render Trades tab');
+      const leagueTab = screen.getByText('League');
+      assert.ok(leagueTab, 'Must render League tab');
+      fireEvent.click(leagueTab);
+      assert.equal(selectedTab, 'league', 'Clicking League tab must fire onTabChange via bubbling');
     });
 
     test('8.1.5 UserAvatar should render initial baseSrc deterministically to prevent hydration mismatch', () => {
@@ -435,7 +440,8 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
 
       assert.ok(screen.getByRole('dialog'), 'Must render dialog container');
-      assert.ok(screen.getByText('Draft Telemetry Settings'), 'Must render settings title');
+      // Updated in the 2026-10-11 wording pass: the drawer title is now plain "Settings".
+      assert.ok(screen.getByText('Settings'), 'Must render settings title');
       assert.ok(screen.getByText('Sleeper Username'), 'Must render username label');
 
       const closeBtn = screen.getByRole('button', { name: 'Close Settings' });
@@ -513,10 +519,32 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
 
       assert.ok(screen.getByText('Ideal Team & League Telemetry'), 'Must render screen title');
-      assert.ok(screen.getByText('Weekly Matchup & Start/Sit Oracle'), 'Must render matchup section');
-      assert.ok(screen.getByText('Week 2'), 'Must default to Week 2 matchup badge');
+      assert.ok(
+        screen.getByText('Team Celestial Telemetry & Astral Favorability Index'),
+        'Must lead with the team celestial telemetry'
+      );
+      assert.equal(screen.queryByText('Weekly Matchup & Start/Sit Oracle'), null, 'The redundant matchup card is gone');
       assert.ok(screen.getByText(/SolarFlare/i), 'Must show Week 2 opponent SolarFlare');
-      assert.ok(screen.getByText('League Draft Status & Competitor Rosters'), 'Must render competitor rosters section');
+      assert.ok(screen.getByText('Your moves'), 'Must lead with the ranked weekly moves');
+    });
+
+    test('8.4.6 LeagueScreen should lead with the Celestial Leaderboard, not Sleeper standings', () => {
+      render(
+        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(LeagueScreen, {}))
+      );
+
+      assert.ok(screen.getByText('Celestial Leaderboard & Standings'), 'Must render the Celestial Leaderboard');
+      assert.ok(screen.getByTestId('leaderboard-toggle-overall'), 'Must offer the Overall ranking');
+      assert.equal(screen.queryByTestId('leaderboard-toggle-standings'), null, 'Must not offer a Sleeper standings view');
+      assert.ok(screen.getByText('Competitor Rosters · by Oracle'), 'Must render competitor rosters section');
+    });
+
+    test('8.4.7 TradesScreen should render the trades heading', () => {
+      render(
+        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(TradesScreen, {}))
+      );
+
+      assert.ok(screen.getByText('Trades'), 'Must render Trades heading');
     });
 
     test('8.4.2 MatchupsScreen should render starting lineup and bench partition', () => {

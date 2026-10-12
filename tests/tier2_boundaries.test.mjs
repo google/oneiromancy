@@ -18,7 +18,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import * as oracle from './helpers/oneiromancy_oracle.mjs';
+import { register } from 'node:module';
+register(new URL('./loader.mjs', import.meta.url));
+// Register the TypeScript loader before loading app code: static imports are
+// evaluated before this module's body, so the oracle helper is imported
+// dynamically after registration.
+const oracle = await import('./helpers/oneiromancy_oracle.mjs');
 
 describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 Tests)', () => {
   // ============================================================================
@@ -120,22 +125,18 @@ describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 T
       assert.ok(badgeSource.includes("bg: 'bg-slate-900/60'"), 'Fallback style must use slate background');
     });
 
-    it('2.4 should verify NavigationShell tab labels extract single-word mobile identifiers without throwing', () => {
+    it('2.4 should verify NavigationShell provides short phone labels for every tab', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). Each tab declares its own short label instead of splitting on spaces.
       const navSource = fs.readFileSync(navPath, 'utf8');
-      assert.ok(navSource.includes("tab.label.split(' ')[0]"), 'NavigationShell must truncate tab labels to first word for mobile display');
-      const tabs = [
-        { label: 'Oneiromancy' },
-        { label: 'Cosmic Board' },
-        { label: 'Chaos Dial' },
-        { label: 'Marketplace' },
-      ];
-      const shortened = tabs.map((t) => t.label.split(' ')[0]);
-      assert.deepEqual(shortened, ['Oneiromancy', 'Cosmic', 'Chaos', 'Marketplace']);
+      assert.ok(navSource.includes('{tab.short}'), 'Phone tab bar must render tab.short');
+      const shorts = [...navSource.matchAll(/short:\s*'([^']+)'/g)].map((m) => m[1]);
+      assert.deepEqual(shorts, ['Week', 'Waivers', 'Trades', 'League']);
     });
 
-    it('2.5 should verify NavigationShell provides default status text LIVE • RD 3 PK 4', () => {
+    it('2.5 should verify NavigationShell default status text and type', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md). The draft-time "LIVE • RD 3 PK 4" default became "LIVE".
       const navSource = fs.readFileSync(navPath, 'utf8');
-      assert.ok(navSource.includes("statusText = 'LIVE • RD 3 PK 4'"), 'NavigationShell must specify default statusText prop');
+      assert.ok(navSource.includes("statusText = 'LIVE'"), 'NavigationShell must specify default statusText prop');
       assert.ok(navSource.includes("statusType = 'live'"), 'NavigationShell must specify default statusType prop');
     });
   });
@@ -307,14 +308,15 @@ describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 T
   describe('Boundary 6: Navigation Shell Boundaries', () => {
     const navPath = path.resolve('components/common/NavigationShell.tsx');
 
-    it('6.1 should verify TABS configuration contains exactly 5 entries with unique IDs in correct order', () => {
+    it('6.1 should verify TABS configuration contains exactly 4 entries with unique IDs in correct order', () => {
+      // Updated in the 2026-10-10 UX rework (see changes/2026-10-10-ux-rework.md).
       const navSource = fs.readFileSync(navPath, 'utf8');
       const match = navSource.match(/const TABS: TabItem\[\] = \[([\s\S]*?)\];/);
       assert.ok(match, 'NavigationShell must define TABS array');
       const ids = [...match[1].matchAll(/id:\s*'([a-z_]+)'/g)].map((m) => m[1]);
-      assert.equal(ids.length, 5);
-      assert.equal(new Set(ids).size, 5, 'Tab IDs must all be distinct');
-      assert.deepEqual(ids, ['oneiromancy', 'matchups', 'board', 'marketplace', 'dial']);
+      assert.equal(ids.length, 4);
+      assert.equal(new Set(ids).size, 4, 'Tab IDs must all be distinct');
+      assert.deepEqual(ids, ['oneiromancy', 'market', 'trades', 'league']);
     });
 
     it('6.2 should verify active tab indicator and text styling in NavigationShell.tsx', () => {

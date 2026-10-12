@@ -17,6 +17,7 @@
 'use client';
 
 import React from 'react';
+import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
 
 export interface AstrolabeProps {
   size?: number;
@@ -29,21 +30,21 @@ export interface AstrolabeProps {
 export const Astrolabe: React.FC<AstrolabeProps> = ({
   size = 240,
   speedMultiplier,
-  lambda = 0.35,
+  lambda = DEFAULT_CHAOS_LAMBDA,
   className = '',
   showCenterReadout = true,
 }) => {
   // Compute effective multiplier from speedMultiplier (if explicitly given) or lambda (0.0 to 1.0)
   const mult = speedMultiplier !== undefined 
     ? Math.max(0.1, speedMultiplier) 
-    : Math.max(0.2, 1 + (lambda ?? 0.35) * 3);
+    : Math.max(0.2, 1 + (lambda ?? DEFAULT_CHAOS_LAMBDA) * 3);
 
   // Dynamic animation durations based on rotation speed multiplier
   const outerDuration = Math.max(3, 60 / mult);
   const middleDuration = Math.max(2.5, 40 / mult);
   const innerDuration = Math.max(1.5, 20 / mult);
 
-  const currentLambda = lambda ?? 0.35;
+  const currentLambda = lambda ?? DEFAULT_CHAOS_LAMBDA;
 
   return (
     <div

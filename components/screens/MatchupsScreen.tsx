@@ -27,8 +27,13 @@ import {
   mockTeamComparison,
   mockWeeklyMatchup,
 } from '@/lib/mockData';
-import {calculateWinProbability} from '@/lib/scoring';
-import {deriveEligiblePositions, deriveWeeklyMatchup} from '@/lib/sleeper';
+import {calculateWinProbability, starsVerdictLabel} from '@/lib/scoring';
+import {TONE_DOT, TONE_PILL, favorabilityTone} from '@/lib/oracle';
+import {
+  deriveEligiblePositions,
+  deriveWeeklyMatchup,
+  getSeasonContext,
+} from '@/lib/sleeper';
 import {
   MatchupWeekData,
   NFLPosition,
@@ -61,13 +66,24 @@ import React, {useCallback, useEffect, useMemo, useState} from 'react';
 export interface MatchupsScreenProps {
   weeklyMatchup?: WeeklyMatchup | null;
   className?: string;
+  /** Rendered under This Week: no page title, explainer collapsed. */
+  embedded?: boolean;
+  /**
+   * 'comparison': only the team comparison card (head-to-head banner and
+   * celestial telemetry). 'details': everything except that card.
+   */
+  part?: 'all' | 'comparison' | 'details';
 }
 
 export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   weeklyMatchup: propWeeklyMatchup,
   className = '',
+  embedded = false,
+  part = 'all',
 }) => {
   const context = useOneiromancy();
+  const showComparison = part !== 'details';
+  const showDetails = part !== 'comparison';
   const resolveActiveMatchupWeek = useCallback(() => {
     if (propWeeklyMatchup?.week) return propWeeklyMatchup.week;
     if (context.draftState?.weekly_matchup?.week) {
@@ -131,6 +147,23 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
     if (
       existingMatchup &&
+      selectedWeek &&
+      selectedWeek !== existingMatchup.week &&
+      getSeasonContext() &&
+      context.draftState?.competitor_teams?.length
+    ) {
+      return deriveWeeklyMatchup(
+        activeRosterId,
+        context.draftState.competitor_teams,
+        null,
+        context.draftState.cosmic_board,
+        context.draftState.my_roster,
+        selectedWeek,
+      );
+    }
+
+    if (
+      existingMatchup &&
       existingMatchup.upcoming_matchups &&
       existingMatchup.upcoming_matchups.length > 0 &&
       selectedWeek &&
@@ -146,7 +179,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         const derivedForWeek = hasLiveTeams
           ? deriveWeeklyMatchup(
               activeRosterId,
-              context.draftState!.competitor_teams,
+              context.draftState!.competitor_teams!,
               null,
               context.draftState?.cosmic_board,
               context.draftState?.my_roster,
@@ -262,7 +295,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
           : selectedWeek < (context.draftState?.weekly_matchup?.week || 2)
             ? ('completed' as const)
             : ('upcoming' as const),
-      date_range: 'Sep 4 - Sep 8, 2025',
+      date_range: matchupData.date_range || `Week ${selectedWeek}`,
     };
   }, [
     matchupWeeks,
@@ -332,26 +365,20 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     isMutedBench: boolean = false,
     cardIdx: number = 0,
   ) => {
-    const isFavored =
-      player.favorability_verdict === 'HEAVILY FAVORED' ||
-      player.favorability_verdict === 'ASTRALLY FAVORED' ||
-      (player.favorability_verdict as string) === 'FAVORED';
-    const isUnfavored =
-      player.favorability_verdict === 'CELESTIALLY CHALLENGED' ||
-      (player.favorability_verdict as string) === 'UNFAVORED';
+    const tone = favorabilityTone(player.favorability_score);
+    const isFavored = tone === 'apex' || tone === 'good';
+    const isUnfavored = tone === 'bad';
 
-    const venueBonus = player.stadium?.roof_type?.includes('Dome') ? 5.0 : 10.0;
-    const baseSpirit =
-      player.base_spirit ??
-      Math.round((player.spirit_score ?? 85.0) * 0.8 * 10) / 10;
-    const healthPen = player.health_penalty ?? 0.0;
-    const transitMod =
-      player.role_modifier !== undefined
-        ? player.role_modifier
-        : Math.round(
-            (player.favorability_score - baseSpirit - healthPen - venueBonus) *
-              10,
-          ) / 10;
+    // The Stars formula's own terms, so the rows add up to the score
+    // (computeWeeklyPlayerFavorability; capped at 0–100).
+    const r1 = (n: number) => Math.round(n * 10) / 10;
+    const starsRows: [string, number, string][] = [
+      ['Spirit ×0.45', player.base_spirit ?? r1((player.spirit_score ?? 0) * 0.45), 'text-purple-300'],
+      ['Stadium ×0.25', r1((player.stadium_score ?? 78) * 0.25), 'text-cyan-300'],
+      ['Proj ×0.8', r1((player.projected_points ?? 0) * 0.8), 'text-cyan-300'],
+      ['Starter', player.role_modifier ?? 8, 'text-emerald-400'],
+      ['Health', player.health_penalty ?? 0, (player.health_penalty ?? 0) < 0 ? 'text-rose-400' : 'text-slate-400'],
+    ];
 
     return (
       <GlassCard
@@ -391,7 +418,6 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 )}
               </div>
               <div className="text-[10px] font-mono text-slate-400 truncate">
-                Opp: vs {player.opponent_team || player.opponent} •{' '}
                 {(
                   player.projected_points ??
                   (player.favorability_score
@@ -406,19 +432,15 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
           {/* Favorability Score & Verdict */}
           <div className="text-right flex flex-col items-end shrink-0">
             <span
-              className={`text-[9px] font-mono uppercase font-bold px-2 py-0.5 rounded-full flex items-center gap-1 ${
-                isFavored
-                  ? 'bg-emerald-950/80 border border-emerald-500/40 text-emerald-300'
-                  : isUnfavored
-                    ? 'bg-rose-950/80 border border-rose-500/40 text-rose-300'
-                    : 'bg-amber-950/80 border border-amber-500/40 text-amber-300'
+              className={`text-[9px] font-mono uppercase font-bold px-2 py-0.5 rounded-full border flex items-center gap-1 ${
+                TONE_PILL[favorabilityTone(player.favorability_score)]
               }`}>
               {isFavored ? (
-                <CheckCircle2 className="w-2.5 h-2.5 text-emerald-400" />
-              ) : (
-                <AlertTriangle className="w-2.5 h-2.5 text-rose-400" />
-              )}
-              <span>{player.favorability_verdict}</span>
+                <CheckCircle2 className="w-2.5 h-2.5" />
+              ) : isUnfavored ? (
+                <AlertTriangle className="w-2.5 h-2.5" />
+              ) : null}
+              <span>{starsVerdictLabel(player.favorability_score)}</span>
             </span>
             <span className="text-xs font-mono font-bold text-cyan-300 mt-0.5">
               {player.favorability_score.toFixed(1)} / 100
@@ -446,24 +468,22 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                     {player.stadium.stadium_name}
                   </span>
                 </div>
-                <div className="text-slate-500 text-[10px]">
-                  {player.stadium.city}, {player.stadium.state}
-                </div>
-                <div className="text-slate-400 text-[10px]">
-                  Coords:{' '}
-                  {(
-                    player.stadium.latitude ??
-                    player.stadium.coordinates?.lat ??
-                    0
-                  ).toFixed(4)}
-                  ° N,{' '}
-                  {Math.abs(
-                    player.stadium.longitude ??
-                      player.stadium.coordinates?.lon ??
-                      0,
-                  ).toFixed(4)}
-                  ° W
-                </div>
+                {player.stadium.city && (
+                  <div className="text-slate-500 text-[10px]">
+                    {[player.stadium.city, player.stadium.state].filter(Boolean).join(', ')}
+                  </div>
+                )}
+                {(() => {
+                  const lat = player.stadium.latitude ?? player.stadium.coordinates?.lat;
+                  const lon = player.stadium.longitude ?? player.stadium.coordinates?.lon;
+                  if (typeof lat !== 'number' || typeof lon !== 'number') return null;
+                  return (
+                    <div className="text-slate-400 text-[10px]">
+                      Coords: {Math.abs(lat).toFixed(4)}° {lat >= 0 ? 'N' : 'S'},{' '}
+                      {Math.abs(lon).toFixed(4)}° {lon >= 0 ? 'E' : 'W'}
+                    </div>
+                  );
+                })()}
               </div>
 
               <div className="space-y-1 border-l border-white/5 pl-2">
@@ -477,10 +497,12 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 <div className="text-slate-500 text-[10px]">
                   Roof: {player.stadium.roof_type}
                 </div>
-                <div className="text-purple-300 text-[10px] flex items-center gap-1">
-                  <Moon className="w-2.5 h-2.5 text-purple-400 shrink-0" />
-                  <span className="truncate">{player.lunar_phase}</span>
-                </div>
+                {player.lunar_phase && (
+                  <div className="text-purple-300 text-[10px] flex items-center gap-1">
+                    <Moon className="w-2.5 h-2.5 text-purple-400 shrink-0" />
+                    <span className="truncate">{player.lunar_phase}</span>
+                  </div>
+                )}
               </div>
             </div>
 
@@ -488,7 +510,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             <div className="flex items-center justify-between text-[10px] font-mono px-2 py-1 rounded bg-slate-900/50 border border-white/5">
               <span className="text-amber-300 flex items-center gap-1">
                 <Sun className="w-3 h-3 text-amber-400 shrink-0" />
-                <span>Planetary Hour: {player.planetary_hour}</span>
+                <span>Planetary Hour: {player.planetary_hour || '—'}</span>
               </span>
               <span className="text-cyan-300 truncate ml-2">
                 Transit:{' '}
@@ -498,53 +520,27 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
               </span>
             </div>
 
-            {/* Favorability Score Contribution Breakdown Ledger */}
+            {/* How this player's Stars add up */}
             <div className="p-2.5 rounded-lg bg-slate-950/80 border border-white/10 font-mono text-[11px] space-y-1.5">
               <div className="flex items-center justify-between text-slate-400 border-b border-white/5 pb-1">
                 <span className="font-bold text-cyan-300 flex items-center gap-1">
                   <Activity className="w-3 h-3 text-cyan-400" />
-                  <span>Favorability Impact Breakdown</span>
+                  <span>How Stars add up</span>
                 </span>
                 <span className="text-[10px] text-slate-500">
-                  Target: {player.favorability_score.toFixed(1)} / 100
+                  = {player.favorability_score.toFixed(1)} Stars
                 </span>
               </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-1.5 text-[10px]">
-                <div className="p-1.5 rounded bg-slate-900/60 border border-white/5">
-                  <span className="text-slate-500 block">Base Spirit</span>
-                  <span className="text-purple-300 font-bold">
-                    +{baseSpirit.toFixed(1)}
-                  </span>
-                </div>
-                <div className="p-1.5 rounded bg-slate-900/60 border border-white/5">
-                  <span className="text-slate-500 block">Astral Transit</span>
-                  <span
-                    className={`font-bold ${
-                      transitMod >= 0 ? 'text-emerald-400' : 'text-rose-400'
-                    }`}>
-                    {transitMod >= 0 ? '+' : ''}
-                    {transitMod.toFixed(1)} Transit
-                  </span>
-                </div>
-                <div className="p-1.5 rounded bg-slate-900/60 border border-white/5">
-                  <span className="text-slate-500 block">Health & Proj</span>
-                  <span
-                    className={`font-bold ${
-                      healthPen < 0 ? 'text-rose-400' : 'text-emerald-400'
-                    }`}>
-                    {healthPen < 0
-                      ? `${healthPen.toFixed(1)} Injury / Out`
-                      : '+0.0 Active Health'}
-                  </span>
-                </div>
-                <div className="p-1.5 rounded bg-slate-900/60 border border-white/5">
-                  <span className="text-slate-500 block">Venue Feng Shui</span>
-                  <span className="text-cyan-300 font-bold truncate block">
-                    {player.stadium.roof_type?.includes('Dome')
-                      ? '+5.0 Dome'
-                      : '+10.0 Open'}
-                  </span>
-                </div>
+              <div className="grid grid-cols-3 sm:grid-cols-5 gap-1.5 text-[10px]">
+                {starsRows.map(([label, value, color]) => (
+                  <div key={label} className="p-1.5 rounded bg-slate-900/60 border border-white/5">
+                    <span className="text-slate-500 block">{label}</span>
+                    <span className={`font-bold ${color}`}>
+                      {value >= 0 ? '+' : ''}
+                      {value.toFixed(1)}
+                    </span>
+                  </div>
+                ))}
               </div>
             </div>
 
@@ -580,105 +576,67 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   return (
     <div
       className={`flex flex-col gap-6 w-full max-w-5xl mx-auto ${className}`}>
-      {/* Title & Introduction */}
-      <div className="text-center space-y-1">
-        <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide flex items-center justify-center gap-2">
-          <Swords className="w-6 h-6 text-cyan-400" />
-          <span>Celestial Matchup Divination</span>
-        </h2>
-        <p className="text-xs text-slate-400 max-w-xl mx-auto font-sans">
-          Astrological favorability comparison by team, plus stadium
-          geographical coordinates, kickoff transits, and lunar alignment for
-          every starting warrior.
-        </p>
-      </div>
+      {/* Title (standalone only) */}
+      {!embedded && showDetails && (
+        <div className="space-y-1">
+          <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/80">
+            Celestial Matchup Divination
+          </span>
+          <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide flex items-center gap-2">
+            <Swords className="w-6 h-6 text-cyan-400" />
+            <span>Matchup</span>
+          </h2>
+        </div>
+      )}
 
-      {/* Weekly Favorability Score Definition & Guide */}
-      <GlassCard
-        variant="panel"
-        className="p-3.5 sm:p-4 rounded-xl border-cyan-500/20 bg-slate-950/70">
-        <div className="flex items-start gap-3">
-          <div className="p-2 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-400 shrink-0 mt-0.5">
-            <Sparkles className="w-4 h-4" />
-          </div>
-          <div className="space-y-1.5 flex-1 min-w-0">
-            <div className="flex items-center justify-between flex-wrap gap-1">
-              <h3 className="font-serif font-bold text-sm text-slate-100 flex items-center gap-1.5">
-                <span>
-                  Understanding Weekly Favorability & Stadium Telemetry
-                </span>
-              </h3>
-              <span className="text-[10px] font-mono text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30">
-                Micro-Tactical Metric (0–100)
+      {showDetails && (
+      <>
+      {/* How favorability works: one disclosure, matching the actual formula */}
+      <details className="group rounded-xl border border-white/10 bg-slate-950/70 text-xs">
+        <summary className="cursor-pointer list-none p-3 flex items-center justify-between gap-2 font-mono text-cyan-300">
+          <span className="flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5" /> How Stars are scored
+          </span>
+          <span className="flex items-center gap-2 text-[10px] text-slate-400">
+            {(
+              [
+                ['≥84', 'Heavily favored', 'apex'],
+                ['75–83', 'Favored', 'good'],
+                ['65–74', 'Neutral', 'neutral'],
+                ['<65', 'Challenged', 'bad'],
+              ] as const
+            ).map(([range, label, tone]) => (
+              <span key={label} className="hidden sm:flex items-center gap-1">
+                <span className={`w-2 h-2 rounded-full ${TONE_DOT[tone]}`} />
+                {range} {label}
               </span>
-            </div>
-            <p className="text-xs font-sans text-slate-300 leading-relaxed">
-              Unlike the macro season-long <strong>DraftScore</strong> (which
-              measures overall draft asset value), the{' '}
-              <strong>Weekly Favorability Score</strong> calculates tactical
-              matchup viability for the current week based on four dynamic
-              factors:
-            </p>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2 pt-1 font-mono text-[11px]">
-              <div className="p-2 rounded-lg bg-slate-900/80 border border-white/5">
-                <span className="text-purple-300 font-bold block">
-                  1. Spirit Baseline (80%)
-                </span>
-                <span className="text-slate-400 text-[10px]">
-                  Natal birth chart, elemental traits & decan rulers
-                </span>
-              </div>
-              <div className="p-2 rounded-lg bg-slate-900/80 border border-white/5">
-                <span className="text-cyan-300 font-bold block">
-                  2. Stadium Feng Shui
-                </span>
-                <span className="text-slate-400 text-[10px]">
-                  Leyline geodesic distance, roof exposure & field axis
-                </span>
-              </div>
-              <div className="p-2 rounded-lg bg-slate-900/80 border border-white/5">
-                <span className="text-emerald-400 font-bold block">
-                  3. Astral Transit
-                </span>
-                <span className="text-slate-400 text-[10px]">
-                  Kickoff planetary trines (+boost) vs squares (-friction)
-                </span>
-              </div>
-              <div className="p-2 rounded-lg bg-slate-900/80 border border-white/5">
-                <span className="text-rose-400 font-bold block">
-                  4. Health / Inactivity Drag
-                </span>
-                <span className="text-slate-400 text-[10px]">
-                  -22.0 Penalty for Out / IR / inactive status
-                </span>
-              </div>
-            </div>
-            <div className="flex items-center gap-3 pt-1 font-mono text-[10px] text-slate-400 flex-wrap">
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-emerald-400" />
-                <strong className="text-emerald-300">
-                  ≥84 HEAVILY FAVORED
-                </strong>{' '}
-                (Apex Matchup Alignment)
+            ))}
+            <ChevronDown className="w-3.5 h-3.5 group-open:rotate-180 transition-transform" />
+          </span>
+        </summary>
+        <div className="px-3 pb-3 space-y-2 text-slate-300 font-sans">
+          <p>
+            Stars = 0.45 × Spirit + 0.25 × Stadium Feng Shui + 0.8 × projected points + 8, minus 22 if the
+            player is out or has no projection. Everyone is scored as a starter. Spirit comes from the five
+            pillars set in the Oracle panel.
+          </p>
+          <div className="flex flex-wrap gap-3 font-mono text-[10px] text-slate-400 sm:hidden">
+            {(
+              [
+                ['≥84', 'Heavily favored', 'apex'],
+                ['75–83', 'Favored', 'good'],
+                ['65–74', 'Neutral', 'neutral'],
+                ['<65', 'Challenged', 'bad'],
+              ] as const
+            ).map(([range, label, tone]) => (
+              <span key={label} className="flex items-center gap-1">
+                <span className={`w-2 h-2 rounded-full ${TONE_DOT[tone]}`} />
+                {range} {label}
               </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-amber-400" />
-                <strong className="text-amber-300">
-                  75–83 ASTRALLY FAVORED
-                </strong>{' '}
-                (Solid Harmonic Alignment)
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="w-2 h-2 rounded-full bg-rose-400" />
-                <strong className="text-rose-300">
-                  &lt;75 CELESTIALLY CHALLENGED
-                </strong>{' '}
-                (Planetary Friction / Injury Risk)
-              </span>
-            </div>
+            ))}
           </div>
         </div>
-      </GlassCard>
+      </details>
 
       {/* Week Selector Bar */}
       <div className="flex flex-wrap items-center justify-between gap-2 p-2 rounded-xl bg-slate-900/90 border border-white/10">
@@ -710,7 +668,11 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         </div>
       </div>
 
+      </>
+      )}
+
       {/* Team Celestial Comparison Card */}
+      {showComparison && (
       <GlassCard
         variant="panel"
         className="p-5 sm:p-6 space-y-6 border-cyan-500/30 shadow-[0_0_25px_rgba(6,182,212,0.12)]">
@@ -742,11 +704,19 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 Mgr: {matchupData.user_team.owner_name}
               </div>
               <div className="text-base font-mono font-bold text-cyan-400 mt-0.5">
-                {matchupData.user_team.projected_points.toFixed(2)}{' '}
+                {(matchupData.status === 'completed' && matchupData.score_user !== undefined
+                  ? matchupData.score_user
+                  : matchupData.user_team.projected_points
+                ).toFixed(2)}{' '}
                 <span className="text-[10px] text-slate-400 font-normal">
-                  Proj Pts
+                  {matchupData.status === 'completed' ? 'Final' : 'Proj Pts'}
                 </span>
               </div>
+              {matchupData.status === 'active' && matchupData.score_user !== undefined && (
+                <div className="text-[11px] font-mono text-emerald-300">
+                  Live: {matchupData.score_user.toFixed(2)}
+                </div>
+              )}
             </div>
           </div>
 
@@ -755,6 +725,23 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             <span className="text-xs font-serif font-bold text-slate-400 px-2.5 py-1 rounded-full bg-slate-900 border border-white/10">
               VS
             </span>
+            {matchupData.status === 'completed' && matchupData.result ? (
+              <div className="mt-2 flex flex-col items-center gap-1">
+                <span
+                  className={`text-lg font-mono font-bold ${
+                    matchupData.result === 'W'
+                      ? 'text-emerald-400'
+                      : matchupData.result === 'L'
+                        ? 'text-rose-400'
+                        : 'text-slate-300'
+                  }`}>
+                  {matchupData.result === 'W' ? 'WIN' : matchupData.result === 'L' ? 'LOSS' : 'TIE'}
+                </span>
+                <span className="text-[8px] font-mono uppercase tracking-wider text-slate-400">
+                  Final
+                </span>
+              </div>
+            ) : (
             <div className="mt-2 flex flex-col items-center gap-1">
               <span
                 className={`text-xs font-mono font-bold ${
@@ -780,6 +767,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 />
               </div>
             </div>
+            )}
           </div>
 
           {/* Opponent Team */}
@@ -804,11 +792,19 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 Mgr: {matchupData.opponent_team.owner_name}
               </div>
               <div className="text-base font-mono font-bold text-purple-300 mt-0.5">
-                {matchupData.opponent_team.projected_points.toFixed(2)}{' '}
+                {(matchupData.status === 'completed' && matchupData.score_opponent !== undefined
+                  ? matchupData.score_opponent
+                  : matchupData.opponent_team.projected_points
+                ).toFixed(2)}{' '}
                 <span className="text-[10px] text-slate-400 font-normal">
-                  Proj Pts
+                  {matchupData.status === 'completed' ? 'Final' : 'Proj Pts'}
                 </span>
               </div>
+              {matchupData.status === 'active' && matchupData.score_opponent !== undefined && (
+                <div className="text-[11px] font-mono text-emerald-300">
+                  Live: {matchupData.score_opponent.toFixed(2)}
+                </div>
+              )}
             </div>
           </div>
         </div>
@@ -901,34 +897,34 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             // Astral Favorability comparison
             if (isUserAstralLead && astralDelta >= 1.0) {
               userAdvantages.push(
-                `+${astralDelta.toFixed(1)}% Astral Favorability alignment advantage`,
+                `+${astralDelta.toFixed(1)} Astral Favorability advantage (starter Stars)`,
               );
               oppDisadvantages.push(
-                `-${astralDelta.toFixed(1)}% Astral alignment deficit in celestial transits`,
+                `-${astralDelta.toFixed(1)} Astral Favorability deficit (starter Stars)`,
               );
             } else if (isOppAstralLead && astralDelta >= 1.0) {
               oppAdvantages.push(
-                `+${astralDelta.toFixed(1)}% Astral Favorability alignment advantage`,
+                `+${astralDelta.toFixed(1)} Astral Favorability advantage (starter Stars)`,
               );
               userDisadvantages.push(
-                `-${astralDelta.toFixed(1)}% Astral alignment deficit in celestial transits`,
+                `-${astralDelta.toFixed(1)} Astral Favorability deficit (starter Stars)`,
               );
             }
 
             // Squad Harmony comparison
             if (isUserHarmonyLead && harmonyDelta >= 1.0) {
               userAdvantages.push(
-                `+${harmonyDelta.toFixed(1)} Squad Harmony rating (${getTierLabel(userHarmony)})`,
+                `+${Math.round(harmonyDelta)}% Squad Harmony (${getTierLabel(userHarmony)})`,
               );
               oppDisadvantages.push(
-                `-${harmonyDelta.toFixed(1)} Squad Harmony differential vs ${userTeamName}`,
+                `-${Math.round(harmonyDelta)}% Squad Harmony vs ${userTeamName}`,
               );
             } else if (isOppHarmonyLead && harmonyDelta >= 1.0) {
               oppAdvantages.push(
-                `+${harmonyDelta.toFixed(1)} Squad Harmony rating (${getTierLabel(oppHarmony)})`,
+                `+${Math.round(harmonyDelta)}% Squad Harmony (${getTierLabel(oppHarmony)})`,
               );
               userDisadvantages.push(
-                `-${harmonyDelta.toFixed(1)} Squad Harmony differential vs ${oppTeamName}`,
+                `-${Math.round(harmonyDelta)}% Squad Harmony vs ${oppTeamName}`,
               );
             }
 
@@ -942,12 +938,12 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
             if (userHarmony < 75) {
               userDisadvantages.push(
-                `Roster cohesion risk (${userHarmony.toFixed(1)}/100 · Discordant)`,
+                `Roster cohesion risk (${Math.round(userHarmony)}% · Discordant)`,
               );
             }
             if (oppHarmony < 75) {
               oppDisadvantages.push(
-                `Roster cohesion risk (${oppHarmony.toFixed(1)}/100 · Discordant)`,
+                `Roster cohesion risk (${Math.round(oppHarmony)}% · Discordant)`,
               );
             }
 
@@ -973,14 +969,14 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                         Astral Favorability Index
                       </span>
                       <span className="text-[10px] font-mono text-slate-400">
-                        Transit Alignment
+                        Avg starter Stars · this week
                       </span>
                     </div>
                     <div className="grid grid-cols-5 items-center text-center">
                       <div className="col-span-2 text-left">
                         <div
                           className={`text-lg font-mono font-bold ${astralUserClass}`}>
-                          {userAstral.toFixed(1)}%
+                          {userAstral.toFixed(1)}
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
                           {userTeamName}
@@ -988,13 +984,13 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                       </div>
                       <div className="col-span-1 flex justify-center">
                         <span className="text-xs font-mono text-slate-500 uppercase px-1.5 py-0.5 rounded bg-white/5 border border-white/5">
-                          vs
+                          {userAstral === oppAstral ? 'even' : 'vs'}
                         </span>
                       </div>
                       <div className="col-span-2 text-right">
                         <div
                           className={`text-lg font-mono font-bold ${astralOppClass}`}>
-                          {oppAstral.toFixed(1)}%
+                          {oppAstral.toFixed(1)}
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
                           {oppTeamName}
@@ -1031,11 +1027,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                       <div className="col-span-2 text-left">
                         <div
                           className={`text-lg font-mono font-bold ${harmonyUserClass}`}>
-                          {userHarmony.toFixed(1)}
-                          <span className="text-xs font-normal text-slate-500">
-                            {' '}
-                            /100
-                          </span>
+                          {Math.round(userHarmony)}%
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
                           {getTierLabel(userHarmony)}
@@ -1043,17 +1035,13 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                       </div>
                       <div className="col-span-1 flex justify-center">
                         <span className="text-xs font-mono text-slate-500 uppercase px-1.5 py-0.5 rounded bg-white/5 border border-white/5">
-                          vs
+                          {userHarmony === oppHarmony ? 'even' : 'vs'}
                         </span>
                       </div>
                       <div className="col-span-2 text-right">
                         <div
                           className={`text-lg font-mono font-bold ${harmonyOppClass}`}>
-                          {oppHarmony.toFixed(1)}
-                          <span className="text-xs font-normal text-slate-500">
-                            {' '}
-                            /100
-                          </span>
+                          {Math.round(oppHarmony)}%
                         </div>
                         <div className="text-[10px] text-slate-400 truncate">
                           {getTierLabel(oppHarmony)}
@@ -1074,6 +1062,20 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                         }}
                       />
                     </div>
+                    {(teamComparison.user_harmony_parts || teamComparison.opponent_harmony_parts) && (
+                      <div className="grid grid-cols-2 gap-2 text-[10px] font-mono text-slate-500">
+                        {[teamComparison.user_harmony_parts, teamComparison.opponent_harmony_parts].map((parts, k) => (
+                          <ul key={k} className={k === 1 ? 'text-right' : ''}>
+                            {(parts ?? []).filter((x) => x.label !== 'Base').map((x) => (
+                              <li key={x.label}>
+                                +{x.points}% {x.label}
+                              </li>
+                            ))}
+                            {parts && parts.length === 1 && <li>No bonuses</li>}
+                          </ul>
+                        ))}
+                      </div>
+                    )}
                   </div>
 
                   {/* Elemental Dominance Card */}
@@ -1227,7 +1229,13 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                   <div className="text-xs font-mono text-cyan-300 font-semibold flex items-center gap-1.5">
                     <Compass className="w-3.5 h-3.5 text-cyan-400" />
                     <span>Active Transits & Conjunctions</span>
+                    <span className="text-[10px] text-slate-400 font-normal">· QB stacks this week</span>
                   </div>
+                  {(teamComparison.celestial_conjunctions?.length ?? 0) === 0 && (
+                    <p className="text-[11px] font-mono text-slate-400">
+                      Neither lineup starts a quarterback with one of his own receivers.
+                    </p>
+                  )}
                   <div className="flex flex-wrap gap-2">
                     {(
                       teamComparison.celestial_conjunctions ||
@@ -1239,21 +1247,20 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                       <span
                         key={idx}
                         className="px-2.5 py-1 rounded bg-slate-900/80 border border-white/10 text-[11px] font-mono text-slate-300">
-                        ✨ {conj}
+                        ☌ {conj}
                       </span>
                     ))}
                   </div>
-                  <p className="text-xs text-slate-300 font-sans mt-2 pt-1 border-t border-white/5 leading-relaxed">
-                    {teamComparison.verdict_summary ||
-                      teamComparison.astral_edge_summary}
-                  </p>
                 </div>
               </div>
             );
           })()}
         </div>
       </GlassCard>
+      )}
 
+      {showDetails && (
+      <>
       {/* Player-Level Stadium & Date Favorability Breakdown */}
       <div className="space-y-4">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-2">
@@ -1263,8 +1270,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
               <span>Player Astrological & Stadium Favorability Breakdown</span>
             </h3>
             <p className="text-xs text-slate-400 font-sans">
-              Stadium geographical coordinates, roof containment, kickoff
-              transits, and lunar alignment for each starter.
+              Each player&apos;s Stars, how they add up, and his stadium and transits.
             </p>
           </div>
 
@@ -1444,10 +1450,9 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 past.opponent_name ||
                 past.opponent_team?.team_name ||
                 'Opponent';
+              // Only show an alignment the data actually carries; never a constant placeholder.
               const alignment =
-                past.astral_alignment ||
-                past.team_comparison?.astral_edge_summary ||
-                'Aligned';
+                past.astral_alignment || past.team_comparison?.astral_edge_summary || null;
               const outcome =
                 past.result ||
                 (past.user_team &&
@@ -1471,9 +1476,11 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                     <div className="font-bold text-slate-200">
                       Week {past.week}: vs {opponentName}
                     </div>
-                    <div className="text-[10px] text-slate-400">
-                      Astral Alignment: {alignment}
-                    </div>
+                    {alignment && (
+                      <div className="text-[10px] text-slate-400">
+                        Astral Alignment: {alignment}
+                      </div>
+                    )}
                   </div>
                   <div className="text-right">
                     <div
@@ -1491,6 +1498,8 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             })}
           </div>
         </GlassCard>
+      )}
+      </>
       )}
     </div>
   );

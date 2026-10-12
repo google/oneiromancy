@@ -53,12 +53,15 @@ import {
   resetRateLimit,
   deriveWeeklyMatchup,
   isRateLimitError,
+  DEFAULT_LIVE_SETTINGS,
+  setSeasonContext,
 } from '@/lib/sleeper';
 import {
   calculateHarmony,
   calculateSnakePick,
   clamp,
   computeDraftScore,
+  computeRosterHarmony,
   computeSpiritScore,
   DEFAULT_CHAOS_LAMBDA,
   DEFAULT_ORACLE_WEIGHTS,
@@ -73,9 +76,52 @@ import {
 // Polling Constants
 // ============================================================================
 
+
+
+// v2: λ and weights are stored only when the owner changes them, so a saved
+// value never pins an old default (v1 saved λ 0.35 as a side effect).
+const ORACLE_STORAGE_KEY = 'oneiromancy_oracle_v2';
+
+function saveOracleSettings(v: { chaos_lambda?: number; oracle_weights?: OracleWeights }): void {
+  try {
+    const prev = JSON.parse(localStorage.getItem(ORACLE_STORAGE_KEY) || '{}');
+    localStorage.setItem(ORACLE_STORAGE_KEY, JSON.stringify({ ...prev, ...v }));
+  } catch {
+    // Storage may be unavailable (private mode); the session still works.
+  }
+}
+
+function loadOracleSettings(): { chaos_lambda?: number; oracle_weights?: OracleWeights } | null {
+  try {
+    const raw = localStorage.getItem(ORACLE_STORAGE_KEY);
+    if (!raw) return null;
+    const v = JSON.parse(raw);
+    const out: { chaos_lambda?: number; oracle_weights?: OracleWeights } = {};
+    if (typeof v?.chaos_lambda === 'number') out.chaos_lambda = clamp(v.chaos_lambda, 0, 1);
+    if (v?.oracle_weights && typeof v.oracle_weights === 'object') {
+      out.oracle_weights = normalizeOracleWeights(v.oracle_weights);
+    }
+    return Object.keys(out).length ? out : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep a harmony breakdown only while it still adds up to the shown score. */
+function harmonyPartsIfMatching(
+  parts: { label: string; points: number }[] | undefined,
+  score: number,
+): { label: string; points: number }[] | undefined {
+  if (!parts) return undefined;
+  const total = Math.min(100, parts.reduce((a, x) => a + x.points, 0));
+  return Math.abs(total - score) < 0.05 ? parts : undefined;
+}
+
 export const ACTIVE_INTERVAL_MS = 5000;
 export const IDLE_INTERVAL_MS = 10000;
 export const BACKGROUND_INTERVAL_MS = 30000;
+// Once the draft is complete only in-season data (scores, rosters) changes.
+export const COMPLETE_INTERVAL_MS = 60000;
 
 export const POLLING_CONFIG = {
   ACTIVE_INTERVAL_MS,
@@ -95,10 +141,15 @@ export type OneiromancyTab =
   | 'dial'
   | 'chaos'
   | 'market'
-  | 'matchup';
+  | 'matchup'
+  | 'trades'
+  | 'league';
 export type SyncStatusType = 'live' | 'syncing' | 'offline';
 
-export function normalizeTab(tab: string): 'oneiromancy' | 'matchups' | 'board' | 'market' | 'chaos' {
+export function normalizeTab(
+  tab: string,
+): 'oneiromancy' | 'matchups' | 'board' | 'market' | 'chaos' | 'trades' | 'league' {
+  if (tab === 'trades' || tab === 'league') return tab;
   if (tab === 'marketplace' || tab === 'market') return 'market';
   if (tab === 'matchups' || tab === 'matchup') return 'matchups';
   if (tab === 'dial' || tab === 'chaos') return 'chaos';
@@ -251,8 +302,13 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
 
   // Persistent active user slot and username refs to anchor identity across background poll cycles and syncs
   const activeSlotRef = useRef<number | undefined>(undefined);
+  // In the browser, start from the saved username (or none) rather than the
+  // demo persona: child components' mount effects run before the provider's
+  // hydration effect, and must not trigger a sync for a placeholder user.
   const activeUsernameRef = useRef<string>(
-    initialDraftState.settings?.sleeper_username ?? 'OneiroVanguard'
+    typeof window === 'undefined' || hasUrlLaunchParams()
+      ? initialDraftState.settings?.sleeper_username ?? 'OneiroVanguard'
+      : getSavedSleeperUsername() ?? ''
   );
 
   // Runtime background enrichment for NFL players on initialization
@@ -291,6 +347,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   const updateChaosLambda = useCallback((rawLambda: number) => {
     const lambda = clamp(rawLambda, 0.0, 1.0);
     setDraftState((prev) => {
+      saveOracleSettings({ chaos_lambda: lambda });
       return recomputeDraftState(prev, { chaos_lambda: lambda });
     });
   }, []);
@@ -303,6 +360,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       const currentWeights = prev.settings.oracle_weights ?? DEFAULT_ORACLE_WEIGHTS;
       const mergedWeights = { ...currentWeights, ...weights };
       const normWeights = normalizeOracleWeights(mergedWeights);
+      saveOracleSettings({ oracle_weights: normWeights });
       return recomputeDraftState(prev, { oracle_weights: normWeights });
     });
   }, []);
@@ -508,11 +566,23 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     });
   }, []);
 
+  // Restore the owner's Oracle (λ and star weights) on mount. They are the
+  // scoring model every screen ranks by, so they must survive a reload.
+  useEffect(() => {
+    const saved = loadOracleSettings();
+    if (!saved) return;
+    setDraftState((prev) => recomputeDraftState(prev, saved));
+  }, []);
+
   // Hydrate active persona from localStorage on mount (SSR-safe)
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
       const savedSlot = localStorage.getItem('oneiromancy_active_slot');
+      // Older builds saved the mock persona as the user's own account.
+      if (localStorage.getItem('oneiromancy_active_username') === 'OneiroVanguard') {
+        localStorage.removeItem('oneiromancy_active_username');
+      }
       const savedUsername = localStorage.getItem('oneiromancy_active_username');
       if (savedSlot) {
         const parsed = parseInt(savedSlot, 10);
@@ -662,17 +732,10 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   // --------------------------------------------------------------------------
   const loadMockData = useCallback(() => {
     setModeState('mock');
-    const mockUsername = activeUsernameRef.current || 'OneiroVanguard';
-    activeUsernameRef.current = mockUsername;
-    if (typeof window !== 'undefined') {
-      try {
-        if (!localStorage.getItem('oneiromancy_active_username')) {
-          localStorage.setItem('oneiromancy_active_username', mockUsername);
-        }
-      } catch {
-        // Ignore localStorage errors
-      }
-    }
+    setSeasonContext(null);
+    // Sample data never adopts, saves or syncs a username: the owner's real
+    // account (if any) stays as it was, and nothing looks connected.
+    const realUsername = activeUsernameRef.current || '';
     const targetSlot = activeSlotRef.current || 7;
     const teamsList = mock_oneiromancy_draft_2025.competitor_teams || [];
     const updatedTeams = teamsList.map((t) => {
@@ -696,7 +759,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     );
     prevConfigRef.current = {
       draft_id: mock_oneiromancy_draft_2025.draft_id,
-      sleeper_username: mockUsername,
+      sleeper_username: realUsername,
       league_id: mockSettings.league_id ?? '',
     };
     setDraftState({
@@ -706,7 +769,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       settings: {
         ...mockSettings,
         user_slot: targetSlot,
-        sleeper_username: mockUsername,
+        sleeper_username: realUsername,
+        available_leagues: [],
         mode: 'mock',
         offline_mode_active: false,
       },
@@ -765,6 +829,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   );
 
   const inFlightSyncRef = useRef<Promise<void> | null>(null);
+  const inFlightSyncKeyRef = useRef<string>('');
 
   // --------------------------------------------------------------------------
   // Action: performLiveSync (Dynamic Sleeper League Resolution & Ingestion)
@@ -791,7 +856,13 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
         return;
       }
 
-      if (inFlightSyncRef.current && !isForcedOverride) {
+      // Concurrent callers share the in-flight sync: unforced ones always, and
+      // forced ones when they request the same user/league/draft.
+      const syncKey = `${forcedDraftId ?? ''}|${forcedLeagueId ?? ''}|${forcedUsername ?? ''}`;
+      if (
+        inFlightSyncRef.current &&
+        (!isForcedOverride || inFlightSyncKeyRef.current === syncKey)
+      ) {
         return inFlightSyncRef.current;
       }
 
@@ -904,39 +975,31 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           };
 
           const activeRoster = freshData.my_roster || prev.my_roster || [];
-          const activeRound = freshData.current_pick?.round || 1;
-          const boardWithSpirit = freshData.cosmic_board.map((player) => {
-            const baseRosterHarmony = calculateHarmony(activeRoster, player, activeRound);
-            const natalHarmony =
-              player.divination_breakdown?.harmony ?? player.harmony_score ?? 75.0;
-            const blendedHarmony = Number(
-              Math.min(
-                99.0,
-                Math.max(35.0, 0.65 * baseRosterHarmony + 0.35 * natalHarmony)
-              ).toFixed(1)
-            );
-            const breakdown = player.divination_breakdown
-              ? { ...player.divination_breakdown, harmony: blendedHarmony }
-              : {
-                  celestial: 78.0,
-                  numeric: 74.0,
-                  geomantic: 76.0,
-                  oracular: 72.0,
-                  harmony: blendedHarmony,
-                };
-            const spiritScore = computeSpiritScore(
-              breakdown,
-              mergedSettings.oracle_weights
-            );
-            return {
-              ...player,
-              harmony_score: blendedHarmony,
-              divination_breakdown: breakdown,
-              spirit_score: spiritScore,
-            };
-          });
-
+          // transformToDraftState already blends each player's harmony pillar with
+          // the user's roster once. Blending again here moved the player list's
+          // Spirit / Stars / Oracle away from the roster's for the same player.
+          const boardWithSpirit = freshData.cosmic_board;
           const recomputedBoard = recomputeDraftScores(boardWithSpirit, mergedSettings);
+          // Roster slots hold copies; give them the recomputed numbers so every
+          // screen shows one Spirit / Stars / Oracle per player.
+          const boardById = new Map(recomputedBoard.map((p) => [String(p.id), p]));
+          const syncedRoster = activeRoster.map((slot) => {
+            const fresh = slot.player ? boardById.get(String(slot.player.id)) : undefined;
+            return fresh && slot.player
+              ? {
+                  ...slot,
+                  player: {
+                    ...slot.player,
+                    harmony_score: fresh.harmony_score,
+                    divination_breakdown: fresh.divination_breakdown,
+                    spirit_score: fresh.spirit_score,
+                    draft_score: fresh.draft_score,
+                    favorability_score: fresh.favorability_score,
+                    favorability_verdict: fresh.favorability_verdict,
+                  },
+                }
+              : slot;
+          });
 
           const updatedIdealPath = (freshData.ideal_draft_path || []).map((step) => ({
             ...step,
@@ -956,10 +1019,18 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                       ? prev.settings.available_leagues
                       : []));
 
-          const resolvedSlot = currentActiveSlot !== undefined
-            ? currentActiveSlot
-            : (freshData.settings?.user_slot || 7);
+          // The slot Sleeper resolved from the username wins. The local guess
+          // (a saved slot, or 7 before the first sync) only fills in when Sleeper
+          // couldn't resolve one; preferring the guess showed every user other
+          // than draft slot 7 someone else's team.
+          const resolvedSlot =
+            freshData.settings?.user_slot || currentActiveSlot || 7;
           activeSlotRef.current = resolvedSlot;
+          try {
+            localStorage.setItem('oneiromancy_active_slot', String(resolvedSlot));
+          } catch {
+            // Ignore localStorage errors
+          }
 
           const getWeeklyPts = (p?: CosmicPlayer | null): number => {
             if (!p) return 0;
@@ -990,7 +1061,13 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
               .sort((a, b) => getWeeklyPts(b) - getWeeklyPts(a))
               .slice(0, 8);
 
-            const pList = pickPlayers.length > 0 ? pickPlayers : (t.players || []);
+            const rosterPlayers = (t.players || [])
+              .map((pid) => recomputedBoard.find((cb) => String(cb.id) === String(pid)))
+              .filter((p): p is CosmicPlayer => Boolean(p));
+
+            const pList = rosterPlayers.length > 0 ? rosterPlayers : pickPlayers;
+            const starterIds = new Set(((t as any).starters || []).map(String));
+            const lineup = pList.filter((p) => starterIds.has(String(p.id)));
             const meanSp =
               pList.length > 0
                 ? pList.reduce((sum, p) => sum + (p.spirit_score || 78.0), 0) / pList.length
@@ -1001,7 +1078,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                 : (t.avg_draft_score ?? 76.0);
             const harmScore =
               pList.length > 0
-                ? calculateHarmony(pList)
+                ? computeRosterHarmony(lineup.length > 0 ? lineup : pList)
                 : (t.harmony_score ?? 77.0);
 
             const avgSpirit = Math.round(meanSp * 10) / 10;
@@ -1046,9 +1123,13 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                   team_comparison: freshData.weekly_matchup.team_comparison
                     ? {
                         ...freshData.weekly_matchup.team_comparison,
-                        user_favorability_index: userTeam?.avg_spirit_score ?? 78.0,
-                        user_astral_favorability: userTeam?.avg_spirit_score ?? 78.0,
+                        // Astral favorability stays this week's starter Stars for both
+                        // sides; only harmony is re-synced with the reconciled team.
                         user_harmony_score: userTeam?.harmony_score ?? 74.5,
+                        user_harmony_parts: harmonyPartsIfMatching(
+                          freshData.weekly_matchup.team_comparison.user_harmony_parts,
+                          userTeam?.harmony_score ?? 74.5,
+                        ),
                       }
                     : freshData.weekly_matchup.team_comparison,
                 }
@@ -1057,13 +1138,14 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                   reconciledTeams,
                   null,
                   recomputedBoard,
-                  freshData.my_roster || prev.my_roster,
+                  syncedRoster,
                   freshData.weekly_matchup?.week || prev.weekly_matchup?.week || 1
                 );
 
           return {
             ...freshData,
             cosmic_board: recomputedBoard,
+            my_roster: syncedRoster,
             ideal_draft_path: updatedIdealPath,
             competitor_teams: reconciledTeams,
             weekly_matchup: reconciledMatchup,
@@ -1149,7 +1231,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                   prev.my_roster || [],
                   activeMatchupWeek
                 )
-              : null;
+              : undefined;
 
             if (!prev.isLive) {
               return {
@@ -1159,7 +1241,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                 my_roster: [],
                 competitor_teams: [],
                 ideal_draft_path: [],
-                weekly_matchup: null,
+                weekly_matchup: undefined,
                 waiver_upgrades: [],
                 trade_proposals: [],
                 available_leagues: retainedLeagues,
@@ -1205,6 +1287,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       })();
 
       inFlightSyncRef.current = syncTask;
+      inFlightSyncKeyRef.current = syncKey;
       return syncTask;
     },
     [computeSleeperDataFingerprint]
@@ -1324,6 +1407,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     (newMode: 'live' | 'mock') => {
       setModeState(newMode);
       if (newMode === 'mock') {
+        setSeasonContext(null);
         setSyncError(null);
         setSyncWarning(null);
         setStatusType('offline');
@@ -1454,6 +1538,17 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
 
   // Trigger immediate refreshDraft() when draft_id, username, or league_id changes (user_slot is managed locally)
   useEffect(() => {
+    // No Sleeper account configured yet (first visit): nothing to sync. The
+    // initial render still carries the demo persona's username, which must
+    // not be mistaken for a user-initiated change.
+    if (
+      typeof window !== 'undefined' &&
+      !activeUsernameRef.current &&
+      !getSavedSleeperUsername() &&
+      !hasUrlLaunchParams()
+    ) {
+      return;
+    }
     const currentDraftId = draftState.draft_id || draftState.settings?.draft_id;
     const currentUsername = draftState.settings?.sleeper_username;
     const currentLeagueId = draftState.settings?.league_id;
@@ -1484,19 +1579,28 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     if (!isAutoUpdate) return;
 
     let timerId: NodeJS.Timeout | null = null;
+    // Set on cleanup so a refresh still in flight doesn't schedule an orphaned
+    // poll loop after this effect has been torn down.
+    let cancelled = false;
 
     const schedulePoll = () => {
+      if (cancelled) return;
       const isHidden = typeof document !== 'undefined' && document.visibilityState === 'hidden';
       const currentDraft = draftStateRef.current;
       const isDrafting = currentDraft.status === 'drafting';
+      const isComplete = currentDraft.status === 'complete';
 
       // When visible: if actively drafting, use configured interval (default 5,000ms);
       // if idle (pre_draft, paused, complete), downshift to 10,000ms.
       const configuredInterval = currentDraft.settings?.poll_interval_ms ?? ACTIVE_INTERVAL_MS;
-      const baseInterval = isDrafting ? configuredInterval : IDLE_INTERVAL_MS;
+      const baseInterval = isDrafting
+        ? configuredInterval
+        : isComplete
+          ? COMPLETE_INTERVAL_MS
+          : IDLE_INTERVAL_MS;
 
-      // When hidden in background tab: throttle to 30,000ms.
-      const interval = isHidden ? 30000 : baseInterval;
+      // When hidden in background tab: throttle to at least 30,000ms.
+      const interval = isHidden ? Math.max(30000, baseInterval) : baseInterval;
 
       timerId = setTimeout(async () => {
         await refreshDraft();
@@ -1516,6 +1620,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     }
 
     return () => {
+      cancelled = true;
       if (timerId) clearTimeout(timerId);
       if (typeof document !== 'undefined') {
         document.removeEventListener('visibilitychange', handleVisibilityChange);
@@ -1546,10 +1651,15 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       if (!isAutoUpdate) return 'PAUSED / OFFLINE';
       return 'OFFLINE / CACHED';
     }
+    if (draftState.status === 'complete' || !draftState.current_pick) {
+      const t = new Date(lastSyncTimestamp);
+      const hh = String(t.getHours()).padStart(2, '0');
+      const mm = String(t.getMinutes()).padStart(2, '0');
+      return `Synced ${hh}:${mm}`;
+    }
     const currentPick = draftState.current_pick;
-    if (!currentPick) return 'LIVE';
     return `LIVE • RD ${currentPick.round} PK ${currentPick.pick_no}`;
-  }, [effectiveStatusType, mode, isAutoUpdate, draftState.current_pick]);
+  }, [effectiveStatusType, mode, isAutoUpdate, draftState.current_pick, draftState.status, lastSyncTimestamp]);
 
   // --------------------------------------------------------------------------
   // Centralized Active User Team Resolution
@@ -1689,6 +1799,14 @@ export function useOneiromancy(): OneiromancyContextValue {
     throw new Error('useOneiromancy must be used within a <OneiromancyProvider>');
   }
   return context as OneiromancyContextValue;
+}
+
+/**
+ * Like useOneiromancy(), but returns null instead of throwing when rendered
+ * outside a <OneiromancyProvider>.
+ */
+export function useOptionalOneiromancy(): OneiromancyContextValue | null {
+  return useContext(OneiromancyContext);
 }
 
 export default OneiromancyContext;

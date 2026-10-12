@@ -7299,8 +7299,8 @@ export const mockSettings: OneiromancySettings = {
   user_slot: 7,
   auto_update: true,
   poll_interval_ms: 5000,
-  chaos_lambda: 0.35,
-  lambda_chaos: 0.35,
+  chaos_lambda: 0.75,
+  lambda_chaos: 0.75,
   oracle_weights: {
     celestial: 0.3,
     numeric: 0.2,

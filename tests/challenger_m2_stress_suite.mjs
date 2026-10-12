@@ -139,12 +139,12 @@ describe('Suite 1: Stress Testing recomputeDraftScores in lib/scoring.ts', () =>
     const players = [
       { ...basePlayer, id: 'p1', vor_normalized: 50.0, spirit_score: 80.0 },
     ];
-    // Default lambda is 0.35: (1 - 0.35)*50 + 0.35*80 = 32.5 + 28 = 60.5
+    // Default lambda is 0.75: (1 - 0.75)*50 + 0.75*80 = 12.5 + 60 = 72.5
     const resNull = scoring.recomputeDraftScores(players, { ...mockData.mockSettings, chaos_lambda: null });
-    assert.equal(resNull[0].draft_score, 60.5);
+    assert.equal(resNull[0].draft_score, 72.5);
 
     const resUndef = scoring.recomputeDraftScores(players, { ...mockData.mockSettings, chaos_lambda: undefined });
-    assert.equal(resUndef[0].draft_score, 60.5);
+    assert.equal(resUndef[0].draft_score, 72.5);
 
     const resNoSettings = scoring.recomputeDraftScores(players, undefined);
     assert.equal(resNoSettings[0].draft_score, 60.5);

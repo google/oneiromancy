@@ -546,7 +546,8 @@ describe('Suite 5: SettingsDrawer Component Integration', () => {
 
     assert.ok(htmlOpen.includes('role="dialog"'), 'Must contain role="dialog"');
     assert.ok(htmlOpen.includes('aria-modal="true"'), 'Must contain aria-modal="true"');
-    assert.ok(htmlOpen.includes('Draft Telemetry Settings'), 'Must render dialog title');
+    // Updated in the 2026-10-11 wording pass: the drawer title is now plain "Settings".
+    assert.ok(/id="settings-drawer-title"[^>]*>\s*Settings\s*</.test(htmlOpen), 'Must render dialog title');
   });
 
   test('5.3 SettingsDrawer contains real-time auto-update switch button with role="switch"', () => {

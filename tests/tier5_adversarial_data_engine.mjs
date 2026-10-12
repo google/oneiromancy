@@ -319,8 +319,8 @@ describe('Suite 3: Chaos Lambda Boundary Clamping & Board Recalculation (lib/sco
     assert.equal(scoreNull, vor, 'null lambda must clamp to 0.0');
 
     const scoreUndefined = scoring.computeDraftScore(vor, spirit, undefined);
-    // default lambda = 0.35: 0.65 * 70 + 0.35 * 80 = 45.5 + 28 = 73.5
-    assert.equal(scoreUndefined, 73.5, 'undefined lambda must use default 0.35');
+    // default lambda = 0.75: 0.25 * 70 + 0.75 * 80 = 17.5 + 60 = 77.5
+    assert.equal(scoreUndefined, 77.5, 'undefined lambda must use default 0.75');
   });
 
   test('3.5 recomputeDraftScores with boundary lambda (-1.0 and +2.0) produces strictly clamped scores [0, 100]', () => {

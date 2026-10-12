@@ -103,6 +103,13 @@ const TIERS = [
     expectedMinTests: 15,
     description: 'Authentic Sleeper API matchup derivation, multi-user switching, starter projected points and 4-factor favorability',
   },
+  {
+    tier: 'Tier 10',
+    name: 'Oracle Model & Recommendations',
+    file: path.join(__dirname, 'oracle_model.test.mjs'),
+    expectedMinTests: 20,
+    description: 'Stats/Stars/Oracle model, owner defaults, lineup/waiver/trade rules, harmony breakdown, star weights, mock honesty',
+  },
 ];
 
 console.log(`

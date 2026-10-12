@@ -18,7 +18,12 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
-import * as oracle from './helpers/oneiromancy_oracle.mjs';
+import { register } from 'node:module';
+register(new URL('./loader.mjs', import.meta.url));
+// Register the TypeScript loader before loading app code: static imports are
+// evaluated before this module's body, so the oracle helper is imported
+// dynamically after registration.
+const oracle = await import('./helpers/oneiromancy_oracle.mjs');
 
 describe('Tier 3: Cross-Feature Interactions (>=19 Pairwise Tests)', () => {
   // --------------------------------------------------------------------------

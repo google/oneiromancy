@@ -22,13 +22,16 @@ import BoardControls, {
   PositionFilterValue,
 } from '@/components/board/BoardControls';
 import PlayerCardRow from '@/components/board/PlayerCardRow';
+import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import RecommendedPickHero from '@/components/oneiromancy/RecommendedPickHero';
 import {useOneiromancy} from '@/context/OneiromancyContext';
+import {DEFAULT_CHAOS_LAMBDA} from '@/lib/scoring';
+import {TONE_LABEL, TONE_PILL, favorabilityTone, oracleScore, starsScore, statsPoints} from '@/lib/oracle';
 import {CosmicPlayer} from '@/types/oneiromancy';
-import {Eye, LayoutGrid, RefreshCw, Sparkles} from 'lucide-react';
+import {LayoutGrid, RefreshCw, Sparkles} from 'lucide-react';
 import React, {useCallback, useMemo, useState} from 'react';
 
 export interface CosmicBoardProps {
@@ -47,11 +50,18 @@ export function comparePlayersForBoard(
   b: CosmicPlayer,
   sortField: BoardSortField,
   direction: BoardSortDirection = 'desc',
+  lambda: number = DEFAULT_CHAOS_LAMBDA,
 ): number {
   const multiplier = direction === 'desc' ? -1 : 1;
   let primaryDiff = 0;
 
   switch (sortField) {
+    case 'oracle':
+      primaryDiff = oracleScore(a, lambda) - oracleScore(b, lambda);
+      break;
+    case 'stars':
+      primaryDiff = starsScore(a) - starsScore(b);
+      break;
     case 'draft_score':
       primaryDiff = a.draft_score - b.draft_score;
       break;
@@ -74,7 +84,7 @@ export function comparePlayersForBoard(
       primaryDiff = a.harmony_score - b.harmony_score;
       break;
     case 'favorability_score':
-      primaryDiff = (a.favorability_score ?? 70) - (b.favorability_score ?? 70);
+      primaryDiff = starsScore(a) - starsScore(b);
       break;
     case 'adp':
       primaryDiff = (b.adp || 999) - (a.adp || 999);
@@ -96,7 +106,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
   onInspectPlayer: propOnInspectPlayer,
   initialSearchQuery = '',
   initialPositionFilter = 'ALL',
-  initialSortField = 'draft_score',
+  initialSortField = 'oracle',
   initialHideDrafted = true,
   className = '',
 }) => {
@@ -161,6 +171,10 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
   const [sortDirection, setSortDirection] =
     useState<BoardSortDirection>('desc');
   const [hideDrafted, setHideDrafted] = useState(initialHideDrafted);
+  const PAGE_SIZE = 25;
+  const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
+  const lambda = context.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
+  const isDraftComplete = context.draftState?.status === 'complete';
 
   // Detail Modal inspection
   const [inspectedPlayer, setInspectedPlayer] = useState<CosmicPlayer | null>(
@@ -253,7 +267,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
 
     // 4. Multi-tier sort
     return [...list].sort((a, b) =>
-      comparePlayersForBoard(a, b, sortField, sortDirection),
+      comparePlayersForBoard(a, b, sortField, sortDirection, lambda),
     );
   }, [
     allPlayers,
@@ -262,39 +276,45 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
     searchQuery,
     sortField,
     sortDirection,
+    lambda,
   ]);
+  const pagePlayers = processedPlayers.slice(0, visibleCount);
 
   return (
     <div
       className={`flex flex-col gap-4 w-full max-w-5xl mx-auto ${className}`}>
-      {/* Screen Title & Subheading */}
-      <div className="text-center space-y-1">
-        <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">
+      {/* Screen title: plain name first, the Oneiromancy name as the eyebrow */}
+      <div className="space-y-1">
+        <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/80">
           Celestial Player Directory
+        </span>
+        <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">
+          Players
         </h2>
-        <p className="text-xs text-slate-400 max-w-xl mx-auto font-sans">
-          High-density mobile data grid with instant search, positional
-          filtering, and multi-tier sorting.
+        <p className="text-xs text-slate-400 font-sans">
+          Every player ranked by Oracle score: this week&apos;s projection and stars, blended by your λ.
         </p>
       </div>
 
-      {/* Divination Spotlight Pick (Read-Only) */}
-      <div className="space-y-2">
-        <div className="flex justify-between items-center px-1">
-          <span className="text-xs font-mono uppercase text-cyan-400 font-semibold tracking-wider flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5" />
-            <span>Divination Spotlight Pick (Read-Only)</span>
-          </span>
-          <span className="text-[10px] font-mono text-slate-400">
-            Round {context.draftState?.current_pick?.round || 5} Target
-          </span>
+      {/* Spotlight pick: a draft-day tool */}
+      {!isDraftComplete && (
+        <div className="space-y-2">
+          <div className="flex justify-between items-center px-1">
+            <span className="text-xs font-mono uppercase text-cyan-400 font-semibold tracking-wider flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5" />
+              <span>Divination Spotlight Pick (Read-Only)</span>
+            </span>
+            <span className="text-[10px] font-mono text-slate-400">
+              Round {context.draftState?.current_pick?.round || 5} target
+            </span>
+          </div>
+          <RecommendedPickHero
+            player={topPick}
+            onSelectPlayer={handleInspect}
+            onInspect={handleInspect}
+          />
         </div>
-        <RecommendedPickHero
-          player={topPick}
-          onSelectPlayer={handleInspect}
-          onInspect={handleInspect}
-        />
-      </div>
+      )}
 
       {/* Board Interactive Controls */}
       <BoardControls
@@ -347,85 +367,59 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
         <>
           {/* Mobile Dual-Line Card-Row List (<768px) */}
           <div className="flex flex-col gap-2 md:hidden">
-            {processedPlayers.map((player, idx) => (
+            {pagePlayers.map((player, idx) => (
               <PlayerCardRow
                 key={`${player.id}-${player.draft_status}-${idx}`}
                 player={player}
                 rank={idx + 1}
+                lambda={lambda}
                 onInspect={handleInspect}
                 onDraft={handleDraft}
               />
             ))}
           </div>
 
-          {/* Desktop Tabular Grid (>=768px) */}
-          <div className="hidden md:block overflow-x-auto rounded-2xl border border-white/10 bg-slate-950/60 shadow-[0_0_20px_rgba(0,0,0,0.5)]">
-            <table className="w-full text-left font-mono text-xs border-collapse">
-              <thead>
-                <tr className="border-b border-white/10 bg-[#1a1a24]/90 text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th className="py-3 px-3 w-12 text-center">Rank</th>
+          {/* Desktop table (>=768px) */}
+          <div className="hidden md:block rounded-2xl border border-white/10 bg-slate-950/60">
+            <table className="w-full table-fixed text-left font-mono text-xs border-collapse">
+              <thead className="sticky top-[49px] z-10">
+                <tr className="border-b border-white/10 bg-[#1a1a24] text-slate-400 text-[11px] uppercase tracking-wider">
+                  <th className="py-3 px-3 w-12 text-center">#</th>
                   <th className="py-3 px-4">Player</th>
                   <th className="py-3 px-3 w-16">Pos</th>
-                  <th className="py-3 px-3 w-20">Team</th>
-                  <th className="py-3 px-3 text-right">Proj (Slp / NFL)</th>
-                  <th className="py-3 px-3 text-right">VOR</th>
-                  <th className="py-3 px-3 text-right">Spirit</th>
-                  <th className="py-3 px-3 text-right">Harmony</th>
-                  <th className="py-3 px-3 text-right">Wk Fav</th>
-                  <th className="py-3 px-4 text-right">DraftScore</th>
-                  <th className="py-3 px-4 text-center w-28">Status</th>
+                  <th className="py-3 px-3 w-32">Team · Bye</th>
+                  <th className="py-3 px-3 w-20 text-right" title="This week's projection, league scoring">Stats</th>
+                  <th className="py-3 px-3 w-24 text-center" title="This week's favorability">Stars</th>
+                  <th className="py-3 px-3 w-20 text-right" title="Stats and Stars blended by λ">Oracle</th>
+                  <th className="py-3 px-4 w-28 text-center">Status</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/5">
-                {processedPlayers.map((player, idx) => {
+                {pagePlayers.map((player, idx) => {
                   const isAvailable = player.draft_status === 'available';
                   const isMyTeam = player.draft_status === 'my_team';
-                  const sleeperProj =
-                    player.sleeper_projected_points ??
-                    (player as any).weekly_projected_points ??
-                    player.projected_points;
-                  const nflProj =
-                    player.nfl_projected_points ??
-                    sleeperProj;
-
+                  const stars = starsScore(player);
+                  const tone = favorabilityTone(stars);
                   return (
                     <tr
                       key={`${player.id}-${player.draft_status}-${idx}`}
                       onClick={() => handleInspect(player)}
                       className={`hover:bg-slate-900/80 transition-colors cursor-pointer ${
-                        isMyTeam
-                          ? 'bg-emerald-950/20'
-                          : !isAvailable
-                            ? 'opacity-40 bg-slate-950/30'
-                            : ''
+                        isMyTeam ? 'bg-emerald-950/20' : !isAvailable ? 'opacity-50' : ''
                       }`}>
-                      <td className="py-2.5 px-3 text-center text-slate-500 font-bold">
-                        #{idx + 1}
-                      </td>
-                      <td className="py-2.5 px-4 font-serif font-bold text-slate-100">
-                        <div className="flex items-center gap-1.5 flex-wrap">
-                          <span
-                            className={
-                              isAvailable
-                                ? 'text-slate-100'
-                                : 'text-slate-400 line-through'
-                            }>
-                              {player.name}
-                          </span>
+                      <td className="py-2.5 px-3 text-center text-slate-500 font-bold">{idx + 1}</td>
+                      <td className="py-2.5 px-4 font-sans font-semibold text-slate-100">
+                        <div className="flex items-center gap-2 min-w-0">
+                          <PlayerHeadshot player={player} size="sm" />
+                          <span className="truncate">{player.name}</span>
                           {player.injury_status && (
                             <span
-                              className={`text-[9px] font-mono font-bold px-1 py-0.2 rounded border ${
-                                player.injury_status === 'Out' ||
-                                player.injury_status === 'IR'
-                                  ? 'text-rose-400 bg-rose-950/60 border-rose-500/40'
-                                  : 'text-amber-400 bg-amber-950/60 border-amber-500/40'
+                              className={`text-[9px] font-mono font-bold px-1 rounded border shrink-0 ${
+                                ['Out', 'IR', 'NA', 'Doubtful'].includes(player.injury_status)
+                                  ? 'text-rose-300 bg-rose-950/60 border-rose-500/40'
+                                  : 'text-amber-300 bg-amber-950/60 border-amber-500/40'
                               }`}>
                               {player.injury_status.toUpperCase()}
-                            </span>
-                          )}
-                          {isMyTeam && (
-                            <span className="text-[9px] font-mono text-emerald-400 bg-emerald-950/60 px-1 py-0.2 rounded border border-emerald-500/30">
-                              MINE
                             </span>
                           )}
                         </div>
@@ -433,80 +427,35 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                       <td className="py-2.5 px-3">
                         <PositionalBadge position={player.position} size="sm" />
                       </td>
-                      <td className="py-2.5 px-3 text-slate-400">
-                        {player.team} ({player.bye_week})
+                      <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
+                        <TeamLogo team={player.team} className="mr-1.5" />
+                        {player.team} · Bye {player.bye_week || '—'}
                       </td>
-                      <td className="py-2.5 px-3 text-right">
-                        <span className="text-slate-200 font-bold">
-                          {sleeperProj.toFixed(1)}
-                        </span>
-                        <span className="text-slate-500 text-[10px] ml-1">
-                          / {nflProj.toFixed(1)}
-                        </span>
+                      <td className="py-2.5 px-3 text-right text-slate-100 font-bold tabular-nums">
+                        {statsPoints(player).toFixed(1)}
                       </td>
-                      <td className="py-2.5 px-3 text-right text-emerald-400">
-                        {player.market_vor >= 0
-                          ? `+${player.market_vor.toFixed(1)}`
-                          : player.market_vor.toFixed(1)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-purple-300">
-                        {player.spirit_score.toFixed(1)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right text-amber-300">
-                        {player.harmony_score.toFixed(1)}
-                      </td>
-                      <td className="py-2.5 px-3 text-right">
+                      <td className="py-2.5 px-3 text-center">
                         <span
-                          className={`inline-flex items-center gap-1 font-bold px-1.5 py-0.5 rounded border text-[10px] ${
-                            (player.favorability_score ?? 70) >= 84
-                              ? 'text-emerald-300 bg-emerald-950/80 border-emerald-500/40'
-                              : (player.favorability_score ?? 70) >= 75
-                                ? 'text-amber-300 bg-amber-950/80 border-amber-500/40'
-                                : 'text-rose-300 bg-rose-950/80 border-rose-500/40'
-                          }`}
-                          title={
-                            player.favorability_verdict ||
-                            'Weekly Matchup Favorability'
-                          }>
-                          <span>{(player.favorability_score ?? 70).toFixed(0)}</span>
-                          <span className="text-[8px] opacity-80 uppercase">
-                            {(player.favorability_score ?? 70) >= 84
-                              ? 'APEX'
-                              : (player.favorability_score ?? 70) >= 75
-                                ? 'FAV'
-                                : 'CHG'}
-                          </span>
+                          title={TONE_LABEL[tone]}
+                          className={`inline-block min-w-[2.5rem] px-1.5 py-0.5 rounded border text-[11px] font-bold ${TONE_PILL[tone]}`}>
+                          {stars.toFixed(0)}
                         </span>
                       </td>
-                      <td className="py-2.5 px-4 text-right font-bold text-cyan-400">
-                        <span className="bg-cyan-950/60 border border-cyan-500/30 px-2 py-0.5 rounded shadow-[0_0_6px_rgba(6,182,212,0.3)]">
-                          {player.draft_score.toFixed(1)}
-                        </span>
+                      <td className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums">
+                        {oracleScore(player, lambda).toFixed(1)}
                       </td>
-                      <td
-                        className="py-2.5 px-4 text-center"
-                        onClick={(e) => e.stopPropagation()}>
+                      <td className="py-2.5 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                         <div className="flex items-center justify-center gap-1.5">
-                          <button
-                            type="button"
-                            onClick={() => handleInspect(player)}
-                            aria-label={`Inspect ${player.name}`}
-                            className="p-1 rounded text-slate-400 hover:text-cyan-300 hover:bg-slate-800 transition-colors">
-                            <Eye className="w-3.5 h-3.5" />
-                          </button>
-                          {isAvailable ? (
-                            <span className="px-2 py-0.5 text-[10px] font-mono text-cyan-400 bg-cyan-950/60 rounded border border-cyan-500/30">
-                              OPEN
-                            </span>
-                          ) : isMyTeam ? (
-                            <span className="px-2 py-0.5 text-[10px] font-mono text-emerald-400 bg-emerald-950/60 rounded border border-emerald-500/30">
-                              ROSTER
-                            </span>
-                          ) : (
-                            <span className="px-2 py-0.5 text-[10px] font-mono text-slate-500 bg-slate-900 rounded border border-white/5">
-                              TAKEN
-                            </span>
-                          )}
+                          <span
+                            className={`px-2 py-0.5 text-[10px] rounded border ${
+                              isAvailable
+                                ? 'text-cyan-300 bg-cyan-950/60 border-cyan-500/30'
+                                : isMyTeam
+                                  ? 'text-emerald-300 bg-emerald-950/60 border-emerald-500/30'
+                                  : 'text-slate-500 bg-slate-900 border-white/5'
+                            }`}>
+                            {isAvailable ? 'Free agent' : isMyTeam ? 'Yours' : 'Rostered'}
+                          </span>
                         </div>
                       </td>
                     </tr>
@@ -515,6 +464,16 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
               </tbody>
             </table>
           </div>
+
+          {processedPlayers.length > visibleCount && (
+            <button
+              type="button"
+              onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
+              className="self-center px-4 py-2 rounded-lg border border-white/15 text-xs font-mono text-slate-200 hover:border-cyan-400/60">
+              Show {Math.min(PAGE_SIZE, processedPlayers.length - visibleCount)} more of{' '}
+              {processedPlayers.length - visibleCount}
+            </button>
+          )}
         </>
       )}
 
