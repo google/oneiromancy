@@ -148,7 +148,7 @@ describe('Tier 3: Cross-Feature Interactions (>=19 Pairwise Tests)', () => {
       vor_normalized: 60.0,
     };
 
-    // Standard weights: celestial = 0.30
+    // Default weights: celestial = 0.10
     const spiritDefault = oracle.computeSpiritScore(freeAgent.divination_breakdown, oracle.DEFAULT_ORACLE_WEIGHTS);
     const draftScoreDefault = oracle.computeDraftScore(freeAgent.vor_normalized, spiritDefault, 0.35);
 
@@ -384,12 +384,11 @@ describe('Tier 3: Cross-Feature Interactions (>=19 Pairwise Tests)', () => {
   // --------------------------------------------------------------------------
   // Interaction 17: Static export Next.js build configuration enforces client-side architecture
   // --------------------------------------------------------------------------
-  it('3.17 should verify Next.js static export build configuration enforces client-side architecture', () => {
-    const configPath = path.resolve('next.config.mjs');
-    assert.ok(fs.existsSync(configPath), 'next.config.mjs must exist');
-    const content = fs.readFileSync(configPath, 'utf8');
-    assert.ok(content.includes("output: 'export'") || content.includes('output: "export"'), 'next.config.mjs must specify output: export');
-    assert.ok(content.includes('reactStrictMode: true'), 'next.config.mjs must specify reactStrictMode: true');
+  it('3.17 should verify Next.js static export build configuration enforces client-side architecture', async () => {
+    const nextConfigMod = await import('../next.config.mjs');
+    const cfg = nextConfigMod.default || nextConfigMod;
+    assert.equal(cfg.output, 'export', 'next.config.mjs must specify output: export');
+    assert.equal(cfg.reactStrictMode, true, 'next.config.mjs must specify reactStrictMode: true');
   });
 
   // --------------------------------------------------------------------------

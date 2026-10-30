@@ -6,25 +6,24 @@
     "moduleResolution": "bundler",
     "skipLibCheck": true,
     "rootDir": "..",
-    "ignoreDeprecations": "6.0",
-    "noImplicitAny": false,
-    "strict": false,
+    "strict": true,
     "jsx": "react",
     "jsxFactory": "React.createElement",
     "jsxFragmentFactory": "React.Fragment",
-    "baseUrl": "..",
     "paths": {
-      "@core/*": ["core/*"],
-      "@/lib/*": ["core/lib/*", "lib/*"],
-      "@/types/*": ["core/types/*", "types/*"],
-      "@/*": ["*"],
-      "*": ["../node_modules/*"]
+      "@core/*": ["../core/*"],
+      "@/lib/*": ["../core/lib/*", "../lib/*"],
+      "@/types/*": ["../core/types/*", "../types/*"],
+      "@/*": ["../*"],
+      "*": ["../../node_modules/*"]
     },
     "typeRoots": [
       "../node_modules/@types"
     ]
   },
   "include": [
+    "../tailwind.config.ts",
+    "../app/page.tsx",
     "../core/lib/**/*.ts",
     "../core/types/**/*.ts",
     "../lib/**/*.ts",

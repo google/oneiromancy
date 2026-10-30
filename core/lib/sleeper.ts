@@ -102,8 +102,20 @@ import {
   DEFAULT_ORACLE_WEIGHTS,
   deriveDraftStatus,
   generateAscensionPath,
+  isNFLByeWeek,
+  isPlayerOnByeWeek,
+  NFL_BYE_WEEK_MAX,
+  NFL_BYE_WEEK_MIN,
   recomputeDraftScores,
 } from './scoring';
+import {
+  type SeasonContext,
+  getSeasonContext,
+  setSeasonContextState,
+} from './seasonContext';
+
+export type { SeasonContext };
+export { getSeasonContext, isNFLByeWeek, isPlayerOnByeWeek, NFL_BYE_WEEK_MAX, NFL_BYE_WEEK_MIN };
 
 // ============================================================================
 // Constants & Rate Limiter Configuration
@@ -151,6 +163,8 @@ let playerDictionaryPromise: Promise<
 > | null = null;
 let playerCacheTimestamp = 0;
 const PLAYER_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
+let playerNegativeCacheTimestamp = 0;
+const PLAYER_NEGATIVE_CACHE_TTL_MS = 5 * 60 * 1000;
 
 // ============================================================================
 // Rate Limiter Helpers & Graceful Logging
@@ -173,7 +187,8 @@ export function isRateLimitError(err: unknown): boolean {
     msg.includes('429') ||
     msg.includes('too many requests') ||
     msg.includes('too_many_requests') ||
-    msg.includes('rate limit')
+    msg.includes('rate limit') ||
+    msg.includes('rate_limit')
   );
 }
 
@@ -237,6 +252,11 @@ export function isRateLimited(): boolean {
 export function resetRateLimit(): void {
   requestTimestamps.length = 0;
   cooldownExpiresAt = 0;
+  playerNegativeCacheTimestamp = 0;
+}
+
+export function resetPlayerNegativeCache(): void {
+  playerNegativeCacheTimestamp = 0;
 }
 
 /**
@@ -569,17 +589,6 @@ export interface SleeperScheduleGame {
   game_id?: string;
 }
 
-export interface SeasonContext {
-  season: string;
-  leagueId: string;
-  currentWeek: number;
-  lastRegularWeek: number;
-  byeWeeks: Record<string, number>;
-  weekDates: Record<number, string>;
-  matchupsByWeek: Record<number, SleeperMatchup[]>;
-}
-
-let seasonContext: SeasonContext | null = null;
 // Promise caches, so concurrent syncs share one request. Empty results are
 // evicted so they are retried on the next sync.
 const scheduleCache = new Map<string, Promise<SleeperScheduleGame[]>>();
@@ -589,15 +598,11 @@ const scheduleFetchedAt = new Map<string, number>();
 const matchupWeekCache = new Map<string, Promise<SleeperMatchup[]>>();
 
 export function setSeasonContext(ctx: SeasonContext | null): void {
-  seasonContext = ctx;
+  setSeasonContextState(ctx);
   if (!ctx) {
     clearGameStatus();
     clearNflGames();
   }
-}
-
-export function getSeasonContext(): SeasonContext | null {
-  return seasonContext;
 }
 
 /**
@@ -606,10 +611,12 @@ export function getSeasonContext(): SeasonContext | null {
  * schedule is registered (mock mode).
  */
 export function getTeamByeWeek(team?: string | null): number | undefined {
-  if (!seasonContext || Object.keys(seasonContext.byeWeeks).length === 0) {
+  const ctx = getSeasonContext();
+  if (!ctx || Object.keys(ctx.byeWeeks).length === 0) {
     return undefined;
   }
-  return (team && seasonContext.byeWeeks[team]) || 0;
+  const normalized = (team || '').toUpperCase();
+  return (normalized && ctx.byeWeeks[normalized]) || 0;
 }
 
 /**
@@ -672,7 +679,7 @@ export function deriveByeWeeks(
   played.forEach((teamWeeks, team) => {
     const bye = Array.from(weeks)
       .sort((a, b) => a - b)
-      .find((w) => !teamWeeks.has(w));
+      .find((w) => isNFLByeWeek(w) && !teamWeeks.has(w));
     if (bye) byes[team] = bye;
   });
   return byes;
@@ -752,28 +759,58 @@ export async function loadSeasonContext(
   }
   // Real games for the matchup cards: Sleeper's dates and home/away teams,
   // overlaid with ESPN's kickoffs and venues where available.
+  const sleeperWeekGamesByWeek = new Map<number, NflGame[]>();
   for (let w = 1; w <= lastRegularWeek; w++) {
-    setWeekGames(
-      w,
-      games
-        .filter((g) => g.week === w)
-        .map((g): NflGame => ({
-          week: w,
-          home: g.home,
-          away: g.away,
-          kickoff: null,
-          date: g.date || null,
-          venue: null,
-          neutral: false,
-        })),
-    );
+    const wkGames = games
+      .filter((g) => g.week === w)
+      .map((g): NflGame => ({
+        week: w,
+        home: g.home,
+        away: g.away,
+        kickoff: null,
+        date: g.date || null,
+        venue: null,
+        neutral: false,
+      }));
+    sleeperWeekGamesByWeek.set(w, wkGames);
+    setWeekGames(w, wkGames);
   }
   const espnRequests: Promise<void>[] = [];
   for (let w = 1; w <= lastRegularWeek; w++) {
     const week = w;
     espnRequests.push(
       fetchEspnWeek(season, week, week < currentWeek).then((espn) => {
-        if (espn) setWeekGames(week, espn);
+        if (!espn || espn.length === 0) return;
+        const base = sleeperWeekGamesByWeek.get(week) || [];
+        if (base.length === 0) {
+          setWeekGames(week, espn);
+          return;
+        }
+        const pairKey = (a: string, b: string) => [a, b].sort().join(':');
+        const espnByPair = new Map<string, NflGame>();
+        for (const eg of espn) {
+          espnByPair.set(pairKey(eg.home, eg.away), eg);
+        }
+        const seenPairs = new Set<string>();
+        const merged: NflGame[] = base.map((sg) => {
+          const key = pairKey(sg.home, sg.away);
+          seenPairs.add(key);
+          const match = espnByPair.get(key);
+          if (!match) return sg;
+          return {
+            ...sg,
+            kickoff: match.kickoff ?? sg.kickoff,
+            date: match.date ?? sg.date,
+            venue: match.venue ?? sg.venue,
+            neutral: match.neutral ?? sg.neutral,
+          };
+        });
+        for (const eg of espn) {
+          if (!seenPairs.has(pairKey(eg.home, eg.away))) {
+            merged.push(eg);
+          }
+        }
+        setWeekGames(week, merged);
       }),
     );
   }
@@ -1076,7 +1113,7 @@ export async function getUser(usernameOrId: string): Promise<SleeperUser> {
  */
 export async function fetchUserLeagues(
   username: string,
-  seasons: string[] = ['2025', '2024', '2023', '2026'],
+  seasons: string[] = ['2026', '2025', '2024', '2023'],
 ): Promise<{user: SleeperUser; leagues: SleeperLeague[]}> {
   if (!username || username === 'mock') {
     return {
@@ -1218,6 +1255,43 @@ export async function fetchUserLeagues(
  * Fetch NFL master player dictionary: GET /v1/players/nfl (cached 24h)
  * Reference: https://docs.sleeper.com/#players
  */
+const VALID_NFL_TEAMS = new Set<string>([
+  'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE',
+  'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
+  'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
+  'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS',
+]);
+
+function isValidNFLPlayerRecord(
+  _pid: string,
+  record?: SleeperPlayerRecord | null,
+): boolean {
+  if (!record) return false;
+  const fn = String(record.first_name || '').trim();
+  const ln = String(record.last_name || '').trim();
+  return Boolean(fn && ln);
+}
+
+function isSignedActiveNFLPlayer(
+  pid: string,
+  record?: SleeperPlayerRecord | null,
+): boolean {
+  if (!isValidNFLPlayerRecord(pid, record) || !record) return false;
+  const team = String(record.team || '').toUpperCase();
+  if (!VALID_NFL_TEAMS.has(team)) return false;
+  const pos = String(record.position || '').toUpperCase();
+  return (
+    record.active === true ||
+    record.status === 'Active' ||
+    record.status === 'Injured Reserve' ||
+    record.status === 'Physically Unable to Perform' ||
+    (record.depth_chart_order !== null &&
+      record.depth_chart_order !== undefined) ||
+    Boolean(record.injury_status) ||
+    pos === 'DEF'
+  );
+}
+
 export async function fetchNFLPlayers(): Promise<
   Record<string, SleeperPlayerRecord>
 > {
@@ -1228,6 +1302,9 @@ export async function fetchNFLPlayers(): Promise<
   ) {
     return playerDictionaryCache;
   }
+  if (now - playerNegativeCacheTimestamp < PLAYER_NEGATIVE_CACHE_TTL_MS) {
+    return playerDictionaryCache ?? {};
+  }
 
   if (playerDictionaryPromise) {
     return playerDictionaryPromise;
@@ -1235,29 +1312,37 @@ export async function fetchNFLPlayers(): Promise<
 
   playerDictionaryPromise = (async () => {
     try {
-      if (isRateLimited()) return playerDictionaryCache ?? {};
-      checkRateLimit();
+      try {
+        if (isRateLimited()) {
+          return playerDictionaryCache ?? {};
+        }
+        checkRateLimit();
 
-      const res = await fetchWithTimeout(
-        `${SLEEPER_BASE_URL}/players/nfl`,
-        15000,
-      );
-      if (res.status === 429) {
-        triggerRateLimitCooldown();
-        return playerDictionaryCache ?? {};
+        const res = await fetchWithTimeout(
+          `${SLEEPER_BASE_URL}/players/nfl`,
+          15000,
+        );
+        if (res.status === 429) {
+          triggerRateLimitCooldown();
+          return playerDictionaryCache ?? {};
+        }
+        if (res.ok) {
+          const data = (await res.json()) as Record<string, SleeperPlayerRecord>;
+          playerDictionaryCache = data;
+          playerCacheTimestamp = Date.now();
+          playerNegativeCacheTimestamp = 0;
+          return data;
+        } else {
+          playerNegativeCacheTimestamp = Date.now();
+        }
+      } catch (err) {
+        // Unreachable or offline live Sleeper API
+        playerNegativeCacheTimestamp = Date.now();
       }
-      if (res.ok) {
-        const data = (await res.json()) as Record<string, SleeperPlayerRecord>;
-        playerDictionaryCache = data;
-        playerCacheTimestamp = Date.now();
-        return data;
-      }
-    } catch (err) {
-      // Gracefully handle player fetch failure
+      return playerDictionaryCache ?? {};
     } finally {
       playerDictionaryPromise = null;
     }
-    return playerDictionaryCache ?? {};
   })();
 
   return playerDictionaryPromise;
@@ -1306,7 +1391,8 @@ export function calculateActivePick(
 
 /**
  * Enriches cosmic board players with live Sleeper NFL master dictionary updates
- * (status, injury_status, depth_chart_order, team, number).
+ * (status, injury_status, depth_chart_order, team, number) and appends any
+ * active signed NFL players missing from the baseline board.
  */
 export function enrichCosmicBoardWithNFLPlayers(
   board: CosmicPlayer[],
@@ -1316,11 +1402,17 @@ export function enrichCosmicBoardWithNFLPlayers(
     return board;
   }
 
+  const allowedPositions = new Set<string>(['QB', 'RB', 'WR', 'TE']);
+  for (const p of board) {
+    if (p?.position) allowedPositions.add(String(p.position).toUpperCase());
+  }
+
   const existingIds = new Set<string>();
   const enriched = board.map((player) => {
-    existingIds.add(String(player.id));
-    const record = playerDict[player.id];
-    if (!record) return player;
+    const pid = String(player.id);
+    existingIds.add(pid);
+    const record = playerDict[pid];
+    if (!record || !isValidNFLPlayerRecord(pid, record)) return player;
 
     const firstName =
       record.first_name && record.last_name
@@ -1350,11 +1442,31 @@ export function enrichCosmicBoardWithNFLPlayers(
           ? record.injury_status
           : player.injury_status,
       depth_chart_order: record.depth_chart_order ?? player.depth_chart_order,
+      fantasy_positions: Array.isArray(record.fantasy_positions)
+        ? record.fantasy_positions
+        : player.fantasy_positions,
       team: record.team || player.team,
       bye_week: getTeamByeWeek(record.team || player.team) ?? player.bye_week,
       jersey_number: record.number ?? player.jersey_number,
     };
   });
+
+  const extraCandidates: Array<{id: string; searchRank: number}> = [];
+  for (const [pid, record] of Object.entries(playerDict)) {
+    if (existingIds.has(pid)) continue;
+    const pos = String(record?.position || '').toUpperCase();
+    if (!allowedPositions.has(pos)) continue;
+    if (!isSignedActiveNFLPlayer(pid, record)) continue;
+    const searchRank = Number(record?.search_rank || 9999);
+    extraCandidates.push({id: pid, searchRank});
+  }
+  extraCandidates.sort((a, b) => a.searchRank - b.searchRank);
+  for (const cand of extraCandidates) {
+    const synth = synthesizeCosmicPlayerFromId(cand.id, playerDict, false);
+    synth.draft_status = 'available';
+    enriched.push(synth);
+    existingIds.add(cand.id);
+  }
 
   return enriched;
 }
@@ -1451,7 +1563,7 @@ export function calculateSleeperLeagueProjection(
   return Math.round(total * 100) / 100;
 }
 
-const KNOWN_ROSTERED_NFL_PLAYERS: Record<
+export const KNOWN_ROSTERED_NFL_PLAYERS: Record<
   string,
   {
     first_name: string;
@@ -2214,8 +2326,8 @@ const KNOWN_ROSTERED_NFL_PLAYERS: Record<
     first_name: 'Caleb',
     last_name: 'Douglas',
     position: 'WR',
-    team: 'TEX',
-    number: 8,
+    team: 'MIA',
+    number: 83,
   },
   '13298': {
     first_name: 'KC',
@@ -2259,6 +2371,100 @@ const KNOWN_ROSTERED_NFL_PLAYERS: Record<
     team: 'SF',
     number: 7,
   },
+  '96': {first_name: 'Aaron', last_name: 'Rodgers', position: 'QB', team: 'PIT', number: 8},
+  '1479': {first_name: 'Keenan', last_name: 'Allen', position: 'WR', team: 'IND', number: 10},
+  '1737': {first_name: 'Case', last_name: 'Keenum', position: 'QB', team: 'CHI', number: 11},
+  '2306': {first_name: 'Jameis', last_name: 'Winston', position: 'QB', team: 'NYG', number: 19},
+  '2307': {first_name: 'Marcus', last_name: 'Mariota', position: 'QB', team: 'WAS', number: 8},
+  '2505': {first_name: 'Darren', last_name: 'Waller', position: 'TE', team: 'CAR', number: 88},
+  '3198': {first_name: 'Derrick', last_name: 'Henry', position: 'RB', team: 'BAL', number: 22},
+  '3214': {first_name: 'Hunter', last_name: 'Henry', position: 'TE', team: 'NE', number: 85},
+  '3271': {first_name: 'Tyler', last_name: 'Higbee', position: 'TE', team: 'LAR', number: 89},
+  '3294': {first_name: 'Dak', last_name: 'Prescott', position: 'QB', team: 'DAL', number: 4},
+  '3321': {first_name: 'Tyreek', last_name: 'Hill', position: 'WR', team: 'MIA', number: 10},
+  '3634': {first_name: 'Kalif', last_name: 'Raymond', position: 'WR', team: 'CHI', number: 14},
+  '4017': {first_name: 'Deshaun', last_name: 'Watson', position: 'QB', team: 'CLE', number: 4},
+  '4034': {first_name: 'Christian', last_name: 'McCaffrey', position: 'RB', team: 'SF', number: 23},
+  '4046': {first_name: 'Patrick', last_name: 'Mahomes', position: 'QB', team: 'KC', number: 15},
+  '4177': {first_name: 'Mack', last_name: 'Hollins', position: 'WR', team: 'NE', number: 13},
+  '4454': {first_name: 'Kendrick', last_name: 'Bourne', position: 'WR', team: 'ARI', number: 17},
+  '4663': {first_name: 'Austin', last_name: 'Ekeler', position: 'RB', team: 'WAS', number: 30},
+  '4866': {first_name: 'Saquon', last_name: 'Barkley', position: 'RB', team: 'PHI', number: 26},
+  '4881': {first_name: 'Lamar', last_name: 'Jackson', position: 'QB', team: 'BAL', number: 8},
+  '4983': {first_name: 'DJ', last_name: 'Moore', position: 'WR', team: 'BUF', number: 2},
+  '4984': {first_name: 'Josh', last_name: 'Allen', position: 'QB', team: 'BUF', number: 17},
+  '5850': {first_name: 'Josh', last_name: 'Jacobs', position: 'RB', team: 'GB', number: 8},
+  '5859': {first_name: 'A.J.', last_name: 'Brown', position: 'WR', team: 'NE', number: 1},
+  '6770': {first_name: 'Joe', last_name: 'Burrow', position: 'QB', team: 'CIN', number: 9},
+  '6786': {first_name: 'CeeDee', last_name: 'Lamb', position: 'WR', team: 'DAL', number: 88},
+  '6794': {first_name: 'Justin', last_name: 'Jefferson', position: 'WR', team: 'MIN', number: 18},
+  '6797': {first_name: 'Justin', last_name: 'Herbert', position: 'QB', team: 'LAC', number: 10},
+  '6801': {first_name: 'Tee', last_name: 'Higgins', position: 'WR', team: 'CIN', number: 5},
+  '6804': {first_name: 'Jordan', last_name: 'Love', position: 'QB', team: 'GB', number: 10},
+  '6813': {first_name: 'Jonathan', last_name: 'Taylor', position: 'RB', team: 'IND', number: 28},
+  '6904': {first_name: 'Jalen', last_name: 'Hurts', position: 'QB', team: 'PHI', number: 1},
+  '7083': {first_name: 'Tyler', last_name: 'Huntley', position: 'QB', team: 'BAL', number: 5},
+  '7523': {first_name: 'Trevor', last_name: 'Lawrence', position: 'QB', team: 'JAX', number: 16},
+  '7525': {first_name: 'DeVonta', last_name: 'Smith', position: 'WR', team: 'PHI', number: 6},
+  '7547': {first_name: 'Amon-Ra', last_name: 'St. Brown', position: 'WR', team: 'DET', number: 14},
+  '7564': {first_name: "Ja'Marr", last_name: 'Chase', position: 'WR', team: 'CIN', number: 1},
+  '7588': {first_name: 'Javonte', last_name: 'Williams', position: 'RB', team: 'DAL', number: 33},
+  '7600': {first_name: 'Pat', last_name: 'Freiermuth', position: 'TE', team: 'PIT', number: 88},
+  '8110': {first_name: 'Jake', last_name: 'Ferguson', position: 'TE', team: 'DAL', number: 87},
+  '8112': {first_name: 'Drake', last_name: 'London', position: 'WR', team: 'ATL', number: 5},
+  '8129': {first_name: 'Dameon', last_name: 'Pierce', position: 'RB', team: 'PHI', number: 39},
+  '8130': {first_name: 'Trey', last_name: 'McBride', position: 'TE', team: 'ARI', number: 85},
+  '8134': {first_name: 'Khalil', last_name: 'Shakir', position: 'WR', team: 'BUF', number: 10},
+  '8136': {first_name: 'Rachaad', last_name: 'White', position: 'RB', team: 'WAS', number: 1},
+  '8137': {first_name: 'George', last_name: 'Pickens', position: 'WR', team: 'DAL', number: 3},
+  '8144': {first_name: 'Chris', last_name: 'Olave', position: 'WR', team: 'NO', number: 12},
+  '8150': {first_name: 'Kyren', last_name: 'Williams', position: 'RB', team: 'LAR', number: 23},
+  '8151': {first_name: 'Kenneth', last_name: 'Walker', position: 'RB', team: 'KC', number: 9},
+  '8155': {first_name: 'Breece', last_name: 'Hall', position: 'RB', team: 'NYJ', number: 20},
+  '9221': {first_name: 'Jahmyr', last_name: 'Gibbs', position: 'RB', team: 'DET', number: 0},
+  '9224': {first_name: 'Chase', last_name: 'Brown', position: 'RB', team: 'CIN', number: 30},
+  '9230': {first_name: 'Tanner', last_name: 'McKee', position: 'QB', team: 'PHI', number: 16},
+  '9486': {first_name: 'Dontayvion', last_name: 'Wicks', position: 'WR', team: 'PHI', number: 13},
+  '9488': {first_name: 'Jaxon', last_name: 'Smith-Njigba', position: 'WR', team: 'SEA', number: 11},
+  '9493': {first_name: 'Puka', last_name: 'Nacua', position: 'WR', team: 'LAR', number: 12},
+  '9509': {first_name: 'Bijan', last_name: 'Robinson', position: 'RB', team: 'ATL', number: 7},
+  '9511': {first_name: 'Keaton', last_name: 'Mitchell', position: 'RB', team: 'LAC', number: 34},
+  '9753': {first_name: 'Zach', last_name: 'Charbonnet', position: 'RB', team: 'SEA', number: 26},
+  '9757': {first_name: 'Kendre', last_name: 'Miller', position: 'RB', team: 'NO', number: 5},
+  '9758': {first_name: 'C.J.', last_name: 'Stroud', position: 'QB', team: 'HOU', number: 7},
+  '9997': {first_name: 'Zay', last_name: 'Flowers', position: 'WR', team: 'BAL', number: 4},
+  '10229': {first_name: 'Rashee', last_name: 'Rice', position: 'WR', team: 'KC', number: 4},
+  '10235': {first_name: 'Roschon', last_name: 'Johnson', position: 'RB', team: 'CHI', number: 23},
+  '10859': {first_name: 'Sam', last_name: 'LaPorta', position: 'TE', team: 'DET', number: 87},
+  '11435': {first_name: 'Emanuel', last_name: 'Wilson', position: 'RB', team: 'SEA', number: 23},
+  '11439': {first_name: 'Jaleel', last_name: 'McLaughlin', position: 'RB', team: 'CLE', number: 38},
+  '11559': {first_name: 'Michael', last_name: 'Penix', position: 'QB', team: 'ATL', number: 9},
+  '11564': {first_name: 'Drake', last_name: 'Maye', position: 'QB', team: 'NE', number: 10},
+  '11566': {first_name: 'Jayden', last_name: 'Daniels', position: 'QB', team: 'WAS', number: 5},
+  '11576': {first_name: 'Braelon', last_name: 'Allen', position: 'RB', team: 'NYJ', number: 0},
+  '11586': {first_name: 'Blake', last_name: 'Corum', position: 'RB', team: 'LAR', number: 24},
+  '11604': {first_name: 'Brock', last_name: 'Bowers', position: 'TE', team: 'LV', number: 89},
+  '11628': {first_name: 'Marvin', last_name: 'Harrison', position: 'WR', team: 'ARI', number: 18},
+  '11632': {first_name: 'Malik', last_name: 'Nabers', position: 'WR', team: 'NYG', number: 1},
+  '11635': {first_name: 'Ladd', last_name: 'McConkey', position: 'WR', team: 'LAC', number: 15},
+  '11637': {first_name: 'Keon', last_name: 'Coleman', position: 'WR', team: 'BUF', number: 0},
+  '11783': {first_name: 'Ryan', last_name: 'Flournoy', position: 'WR', team: 'DAL', number: 19},
+  '12474': {first_name: 'Woody', last_name: 'Marks', position: 'RB', team: 'HOU', number: 4},
+  '12481': {first_name: 'Cam', last_name: 'Skattebo', position: 'RB', team: 'NYG', number: 44},
+  '12495': {first_name: 'Ollie', last_name: 'Gordon', position: 'RB', team: 'MIA', number: 0},
+  '12504': {first_name: 'Kaleb', last_name: 'Johnson', position: 'RB', team: 'GB', number: 26},
+  '12506': {first_name: 'Harold', last_name: 'Fannin', position: 'TE', team: 'CLE', number: 44},
+  '12507': {first_name: 'Omarion', last_name: 'Hampton', position: 'RB', team: 'LAC', number: 8},
+  '12514': {first_name: 'Emeka', last_name: 'Egbuka', position: 'WR', team: 'TB', number: 2},
+  '12517': {first_name: 'Colston', last_name: 'Loveland', position: 'TE', team: 'CHI', number: 84},
+  '12518': {first_name: 'Tyler', last_name: 'Warren', position: 'TE', team: 'IND', number: 84},
+  '12526': {first_name: 'Tetairoa', last_name: 'McMillan', position: 'WR', team: 'CAR', number: 4},
+  '12527': {first_name: 'Ashton', last_name: 'Jeanty', position: 'RB', team: 'LV', number: 2},
+  '13285': {first_name: 'Malachi', last_name: 'Fields', position: 'WR', team: 'NYG', number: 88},
+  '13287': {first_name: 'Jeremiyah', last_name: 'Love', position: 'RB', team: 'ARI', number: 4},
+  '13301': {first_name: 'Antonio', last_name: 'Williams', position: 'WR', team: 'WAS', number: 14},
+  '13330': {first_name: 'Kenyon', last_name: 'Sadiq', position: 'TE', team: 'NYJ', number: 16},
+  '13425': {first_name: 'Jalon', last_name: 'Daniels', position: 'QB', team: 'TB', number: 10},
 };
 
 /**
@@ -2271,7 +2477,11 @@ export function synthesizeCosmicPlayerFromId(
   meta?: SleeperPick['metadata'],
 ): CosmicPlayer {
   const record =
-    playerDict?.[playerId] || KNOWN_ROSTERED_NFL_PLAYERS[String(playerId)];
+    (playerDict && typeof playerDict === 'object' && playerId in playerDict)
+      ? (playerDict as any)[playerId]
+      : (playerDict && typeof playerDict === 'object' && ('position' in (playerDict as any) || 'first_name' in (playerDict as any) || 'fantasy_positions' in (playerDict as any)))
+        ? (playerDict as any)
+        : KNOWN_ROSTERED_NFL_PLAYERS[String(playerId)];
 
   const firstName =
     meta?.first_name ||
@@ -2293,7 +2503,11 @@ export function synthesizeCosmicPlayerFromId(
     ? (rawPos as NFLPosition)
     : 'WR';
 
-  const team = meta?.team || record?.team || 'NFL';
+  const liveTeam =
+    record?.team && record.team !== 'FA' && record.team !== 'NFL'
+      ? record.team
+      : undefined;
+  const team = liveTeam || meta?.team || record?.team || 'NFL';
   const jerseyNumber =
     Number(meta?.number || record?.number || 0) || 0;
   const status =
@@ -2430,7 +2644,9 @@ export function synthesizeCosmicPlayerFromId(
     position,
     team,
     jersey_number: jerseyNumber,
-    bye_week: getTeamByeWeek(team) ?? 7 + (absHash % 8),
+    bye_week: getTeamByeWeek(team) ?? 0,
+    depth_chart_order: (record && 'depth_chart_order' in record) ? (record.depth_chart_order ?? undefined) : undefined,
+    fantasy_positions: (record && 'fantasy_positions' in record && Array.isArray(record.fantasy_positions)) ? record.fantasy_positions : undefined,
     adp: 0, // unknown; drafted players get their real pick number
     projected_points: weeklyPts,
     weekly_projected_points: weeklyPts,
@@ -2468,7 +2684,7 @@ export function synthesizeCosmicPlayerFromId(
  * to its eligible positions.
  */
 export function expandSlotPositions(slot: string): NFLPosition[] {
-  const s = (slot || '').toUpperCase().trim();
+  const s = (slot || '').toUpperCase().trim().replace(/\d+$/, '');
   switch (s) {
     case 'QB':
       return ['QB'];
@@ -2515,11 +2731,243 @@ export function expandSlotPositions(slot: string): NFLPosition[] {
     case 'RES':
       return [];
     default:
-      if (['QB', 'RB', 'WR', 'TE', 'K', 'DEF'].includes(s)) {
-        return [s as NFLPosition];
-      }
+      if (isBenchOrReserveSlot(s)) return [];
       return ['WR', 'RB', 'TE'];
   }
+}
+
+/**
+ * Formats a Sleeper starting slot role for concise display (e.g. FLEX -> WRT, SUPER_FLEX -> WRTQ).
+ */
+export function formatStarterRole(role: string): string {
+  const r = (role || '').toUpperCase().trim().replace(/\d+$/, '');
+  if (r === 'FLEX') return 'WRT';
+  if (r === 'SUPER_FLEX' || r === 'SUPERFLEX') return 'WRTQ';
+  if (r === 'WRRB_FLEX' || r === 'WRRB') return 'WR/RB';
+  if (r === 'REC_FLEX' || r === 'WRTE') return 'WR/TE';
+  if (r === 'IDP_FLEX') return 'IDP';
+  return r;
+}
+
+export function isBenchOrReserveSlot(role: string): boolean {
+  const s = String(role || '').toUpperCase().trim();
+  if (!s) return false;
+  return /^(BN|BENCH|IR|TAXI|RES|RESERVE)\d*$/.test(s);
+}
+
+/**
+ * Extracts active starting slots from league roster positions or team roster slots,
+ * filtering out bench and reserve slots ('BN', 'IR', 'TAXI', 'RES').
+ */
+export function extractStartingSlots(
+  rosterPositions?: string[] | null,
+  fallbackRoster?: RosterSlot[] | null,
+): string[] {
+  const raw = Array.isArray(rosterPositions) ? rosterPositions : [];
+  const nonBench = raw.filter((p) => p && !isBenchOrReserveSlot(p));
+  if (nonBench.length > 0) return nonBench;
+
+  if (Array.isArray(fallbackRoster)) {
+    const fromRoster = fallbackRoster
+      .filter((s: RosterSlot) => {
+        const sid = s.slot_id || s.slot_name || '';
+        return sid && !isBenchOrReserveSlot(sid);
+      })
+      .map((s: RosterSlot) => s.slot_id || s.slot_name || '');
+    if (fromRoster.length > 0) return fromRoster;
+  }
+
+  return ['QB', 'RB', 'RB', 'WR', 'WR', 'TE', 'FLEX', 'SUPER_FLEX'];
+}
+
+export interface StarterPairRow {
+  slotLabel: string;
+  slotRole: string;
+  user: PlayerMatchupFavorability | null;
+  opp: PlayerMatchupFavorability | null;
+}
+
+function isPlayerEligibleForSlot(
+  p: PlayerMatchupFavorability,
+  cleanRole: string,
+  eligible: NFLPosition[],
+): boolean {
+  if (p.position === cleanRole || eligible.includes(p.position)) return true;
+  if (Array.isArray(p.fantasy_positions)) {
+    return p.fantasy_positions.some(
+      (fp) =>
+        typeof fp === 'string' &&
+        (fp.toUpperCase() === cleanRole || eligible.includes(fp.toUpperCase() as NFLPosition)),
+    );
+  }
+  return false;
+}
+
+function isPlayerEarmarkedForLaterSlot(
+  pid: string,
+  p: PlayerMatchupFavorability,
+  currentIdx: number,
+  starterIds: string[],
+  startingSlots: string[],
+): boolean {
+  if (!Array.isArray(starterIds) || !Array.isArray(startingSlots)) return false;
+  const laterIdx = starterIds.findIndex(
+    (id, idx) =>
+      idx > currentIdx &&
+      idx < startingSlots.length &&
+      String(id) === pid &&
+      isPlayerEligibleForSlot(
+        p,
+        String(startingSlots[idx]).toUpperCase().trim().replace(/\d+$/, ''),
+        expandSlotPositions(startingSlots[idx]),
+      ),
+  );
+  return laterIdx !== -1;
+}
+
+/**
+ * Builds aligned starter pair rows matching the Sleeper league's starting slot order.
+ * Strictly assigns by index when starter ID arrays are provided, treating '0' as an empty slot.
+ * Validates positional eligibility before accepting an index-mapped player to guard against unordered rosters.
+ * Appends any unassigned starters as overflow rows to guarantee zero lost starters.
+ */
+export function buildStarterPairs(
+  startingSlots: string[],
+  allUserStarters: PlayerMatchupFavorability[],
+  allOppStarters: PlayerMatchupFavorability[],
+  userStarterIds: string[] | null | undefined = [],
+  oppStarterIds: string[] | null | undefined = [],
+): StarterPairRow[] {
+  const safeStartingSlots = Array.isArray(startingSlots) ? startingSlots : [];
+  const safeUserStarters = Array.isArray(allUserStarters) ? allUserStarters : [];
+  const safeOppStarters = Array.isArray(allOppStarters) ? allOppStarters : [];
+  const uIds = Array.isArray(userStarterIds) ? userStarterIds : [];
+  const oIds = Array.isArray(oppStarterIds) ? oppStarterIds : [];
+
+  const userFavMap = new Map<string, PlayerMatchupFavorability>(
+    safeUserStarters.map((p) => [String(p.player_id), p]),
+  );
+  const oppFavMap = new Map<string, PlayerMatchupFavorability>(
+    safeOppStarters.map((p) => [String(p.player_id), p]),
+  );
+
+  const assignedUser = new Set<string>();
+  const assignedOpp = new Set<string>();
+  const pairs: StarterPairRow[] = [];
+
+  const hasUserIds = uIds.length > 0;
+  const hasOppIds = oIds.length > 0;
+
+  const userStarterIdSet = hasUserIds
+    ? new Set(uIds.map(String).filter((id) => id && id !== '0'))
+    : null;
+  const oppStarterIdSet = hasOppIds
+    ? new Set(oIds.map(String).filter((id) => id && id !== '0'))
+    : null;
+
+  const candidateUserStarters = userStarterIdSet
+    ? safeUserStarters.filter((p) => userStarterIdSet.has(String(p.player_id)))
+    : safeUserStarters;
+  const candidateOppStarters = oppStarterIdSet
+    ? safeOppStarters.filter((p) => oppStarterIdSet.has(String(p.player_id)))
+    : safeOppStarters;
+
+  for (let i = 0; i < safeStartingSlots.length; i++) {
+    const rawRole = safeStartingSlots[i];
+    if (!rawRole) continue;
+    const cleanRole = String(rawRole).toUpperCase().trim().replace(/\d+$/, '');
+    const slotLabel = formatStarterRole(rawRole);
+    const eligible = expandSlotPositions(rawRole);
+
+    let u: PlayerMatchupFavorability | null = null;
+    if (hasUserIds) {
+      const uId = uIds[i] ? String(uIds[i]) : null;
+      if (uId && uId !== '0' && userFavMap.has(uId) && !assignedUser.has(uId)) {
+        const candidate = userFavMap.get(uId)!;
+        if (isPlayerEligibleForSlot(candidate, cleanRole, eligible)) {
+          u = candidate;
+        }
+      }
+    }
+    // Only fall back to an unassigned starter if uIds[i] was not explicitly the '0' sentinel
+    const uExplicitEmpty = hasUserIds && String(uIds[i]) === '0';
+    if (!u && !uExplicitEmpty) {
+      const direct = candidateUserStarters.find((p) => {
+        const pid = String(p.player_id);
+        if (assignedUser.has(pid)) return false;
+        if (p.position !== cleanRole) return false;
+        return !isPlayerEarmarkedForLaterSlot(pid, p, i, uIds, safeStartingSlots);
+      });
+      const flexMatch = !direct
+        ? candidateUserStarters.find((p) => {
+            const pid = String(p.player_id);
+            if (assignedUser.has(pid)) return false;
+            if (!isPlayerEligibleForSlot(p, cleanRole, eligible)) return false;
+            return !isPlayerEarmarkedForLaterSlot(pid, p, i, uIds, safeStartingSlots);
+          })
+        : null;
+      u = direct || flexMatch || null;
+    }
+    if (u) assignedUser.add(String(u.player_id));
+
+    let o: PlayerMatchupFavorability | null = null;
+    if (hasOppIds) {
+      const oId = oIds[i] ? String(oIds[i]) : null;
+      if (oId && oId !== '0' && oppFavMap.has(oId) && !assignedOpp.has(oId)) {
+        const candidate = oppFavMap.get(oId)!;
+        if (isPlayerEligibleForSlot(candidate, cleanRole, eligible)) {
+          o = candidate;
+        }
+      }
+    }
+    const oExplicitEmpty = hasOppIds && String(oIds[i]) === '0';
+    if (!o && !oExplicitEmpty) {
+      const direct = candidateOppStarters.find((p) => {
+        const pid = String(p.player_id);
+        if (assignedOpp.has(pid)) return false;
+        if (p.position !== cleanRole) return false;
+        return !isPlayerEarmarkedForLaterSlot(pid, p, i, oIds, safeStartingSlots);
+      });
+      const flexMatch = !direct
+        ? candidateOppStarters.find((p) => {
+            const pid = String(p.player_id);
+            if (assignedOpp.has(pid)) return false;
+            if (!isPlayerEligibleForSlot(p, cleanRole, eligible)) return false;
+            return !isPlayerEarmarkedForLaterSlot(pid, p, i, oIds, safeStartingSlots);
+          })
+        : null;
+      o = direct || flexMatch || null;
+    }
+    if (o) assignedOpp.add(String(o.player_id));
+
+    pairs.push({ slotLabel, slotRole: rawRole, user: u, opp: o });
+  }
+
+  // Overflow starters: append any leftover unassigned starters so NO starter is ever dropped.
+  // One-sided rows are used for leftover starters to avoid unfair cross-position comparison.
+  const leftoverUser = safeUserStarters.filter(
+    (p) =>
+      !assignedUser.has(String(p.player_id)) &&
+      (!userStarterIdSet || userStarterIdSet.has(String(p.player_id))),
+  );
+  const leftoverOpp = safeOppStarters.filter(
+    (p) =>
+      !assignedOpp.has(String(p.player_id)) &&
+      (!oppStarterIdSet || oppStarterIdSet.has(String(p.player_id))),
+  );
+
+  for (const u of leftoverUser) {
+    assignedUser.add(String(u.player_id));
+    const role = u.position || 'FLEX';
+    pairs.push({ slotLabel: formatStarterRole(role), slotRole: role, user: u, opp: null });
+  }
+  for (const o of leftoverOpp) {
+    assignedOpp.add(String(o.player_id));
+    const role = o.position || 'FLEX';
+    pairs.push({ slotLabel: formatStarterRole(role), slotRole: role, user: null, opp: o });
+  }
+
+  return pairs;
 }
 
 /**
@@ -2555,12 +3003,7 @@ export function deriveEligiblePositions(
     });
 
   if (Array.isArray(rosterPositions) && rosterPositions.length > 0) {
-    const startingPos = rosterPositions.filter(
-      (pos) =>
-        !['BN', 'BENCH', 'IR', 'TAXI', 'RES'].includes(
-          (pos || '').toUpperCase().trim(),
-        ),
-    );
+    const startingPos = rosterPositions.filter((pos) => !isBenchOrReserveSlot(pos));
     for (const pos of startingPos) {
       const expanded = expandSlotPositions(pos);
       expanded.forEach((p) => {
@@ -2570,9 +3013,7 @@ export function deriveEligiblePositions(
     }
   } else if (Array.isArray(fallbackRoster) && fallbackRoster.length > 0) {
     const startingSlots = fallbackRoster.filter(
-      (slot) =>
-        !slot.slot_id.startsWith('BN') &&
-        slot.slot_id.toUpperCase() !== 'BENCH',
+      (slot) => !isBenchOrReserveSlot(slot.slot_id),
     );
     for (const slot of startingSlots) {
       if (
@@ -2580,11 +3021,7 @@ export function deriveEligiblePositions(
         slot.eligible_positions.length > 0
       ) {
         slot.eligible_positions.forEach((p) => {
-          if (
-            !['BN', 'BENCH', 'IR', 'TAXI', 'RES'].includes(
-              (p || '').toUpperCase().trim(),
-            )
-          ) {
+          if (!isBenchOrReserveSlot(p)) {
             if (p === 'K' && !hasFallbackKicker) return;
             set.add(p as NFLPosition);
           }
@@ -2915,16 +3352,14 @@ export function generateMatchupWeeks(
           (userTeam.avatar ? getSleeperAvatarUrl(userTeam.avatar) : null),
         projected_points: userPts,
         starters:
-          Array.isArray((userTeam as any).starters) &&
-          (userTeam as any).starters.length > 0
-            ? (userTeam as any).starters
+          Array.isArray(userTeam.starters) && userTeam.starters.length > 0
+            ? userTeam.starters
             : userTeam.picks
               ? userTeam.picks.slice(0, 8).map((p) => p.player_id)
               : [],
         players:
-          Array.isArray((userTeam as any).players) &&
-          (userTeam as any).players.length > 0
-            ? (userTeam as any).players
+          Array.isArray(userTeam.players) && userTeam.players.length > 0
+            ? userTeam.players
             : userTeam.picks
               ? userTeam.picks.map((p) => p.player_id)
               : [],
@@ -2941,15 +3376,14 @@ export function generateMatchupWeeks(
           (opp.avatar ? getSleeperAvatarUrl(opp.avatar) : null),
         projected_points: oppPts,
         starters:
-          Array.isArray((opp as any).starters) &&
-          (opp as any).starters.length > 0
-            ? (opp as any).starters
+          Array.isArray(opp.starters) && opp.starters.length > 0
+            ? opp.starters
             : opp.picks
               ? opp.picks.slice(0, 8).map((p) => p.player_id)
               : [],
         players:
-          Array.isArray((opp as any).players) && (opp as any).players.length > 0
-            ? (opp as any).players
+          Array.isArray(opp.players) && opp.players.length > 0
+            ? opp.players
             : opp.picks
               ? opp.picks.map((p) => p.player_id)
               : [],
@@ -2968,9 +3402,9 @@ export function generateMatchupWeeks(
           Math.round((opp.avg_spirit_score ?? 80.0) * 10) / 10,
         user_harmony_score: userHarmony,
         opponent_harmony_score: oppHarmony,
-        user_elemental_dominance: '—',
-        opponent_elemental_dominance: '—',
-        elemental_dominance: {user: '—', opponent: '—'},
+        user_elemental_dominance: '-',
+        opponent_elemental_dominance: '-',
+        elemental_dominance: {user: '-', opponent: '-'},
         celestial_conjunctions: [],
         verdict_summary: `${userTeam.name} holds ${
           winProbability >= 50 ? 'favorable' : 'contested'
@@ -3488,24 +3922,7 @@ export function deriveWeeklyMatchup(
     },
   };
 
-  const mockFavByPlayerId = new Map<string, PlayerMatchupFavorability>();
-  for (const mf of mockPlayerFavorabilities) {
-    if (mf.player_id) {
-      mockFavByPlayerId.set(String(mf.player_id), mf);
-    }
-  }
-
   const getTeamPlayers = (team: CompetitorTeam, match: any): CosmicPlayer[] => {
-    // If team is user and fullRoster is provided with players, use the complete roster
-    if (team.is_user && Array.isArray(fullRoster)) {
-      const rosterPlayers = fullRoster
-        .filter((s) => s.player)
-        .map((s) => s.player!);
-      if (rosterPlayers.length >= 15) {
-        return rosterPlayers.slice(0, 15);
-      }
-    }
-
     const orderedStarterIds: string[] =
       match?.starters &&
       Array.isArray(match.starters) &&
@@ -3513,9 +3930,8 @@ export function deriveWeeklyMatchup(
         ? match.starters
             .filter((pid: any) => pid && String(pid) !== '0')
             .map(String)
-        : Array.isArray((team as any).starters) &&
-            (team as any).starters.length > 0
-          ? (team as any).starters
+        : Array.isArray(team.starters) && team.starters.length > 0
+          ? team.starters
               .filter((pid: any) => pid && String(pid) !== '0')
               .map(String)
           : [];
@@ -3523,9 +3939,8 @@ export function deriveWeeklyMatchup(
     const activeRosterIds: string[] =
       match?.players && Array.isArray(match.players) && match.players.length > 0
         ? match.players.filter(Boolean).map(String)
-        : Array.isArray((team as any).players) &&
-            (team as any).players.length > 0
-          ? (team as any).players.filter(Boolean).map(String)
+        : Array.isArray(team.players) && team.players.length > 0
+          ? team.players.filter(Boolean).map(String)
           : [];
 
     const teamPlayerIds = new Set<string>();
@@ -3545,7 +3960,22 @@ export function deriveWeeklyMatchup(
       }
     }
 
+    if (team.is_user && Array.isArray(fullRoster)) {
+      fullRoster.forEach((s) => {
+        if (s.player?.id && teamPlayerIds.size < 15) {
+          teamPlayerIds.add(String(s.player.id));
+        }
+      });
+    }
+
     const uniqueById = new Map<string, CosmicPlayer>();
+    if (team.is_user && Array.isArray(fullRoster)) {
+      fullRoster.forEach((s) => {
+        if (s.player?.id && teamPlayerIds.has(String(s.player.id))) {
+          uniqueById.set(String(s.player.id), s.player);
+        }
+      });
+    }
     for (const p of board) {
       const pid = String(p.id);
       if (teamPlayerIds.has(pid) && !uniqueById.has(pid)) {
@@ -3561,7 +3991,7 @@ export function deriveWeeklyMatchup(
       }
     });
 
-    let players = Array.from(uniqueById.values());
+    const players = Array.from(uniqueById.values());
 
     if (orderedStarterIds.length > 0) {
       const starterOrderMap = new Map<string, number>();
@@ -3578,91 +4008,31 @@ export function deriveWeeklyMatchup(
       });
     }
 
-    // Ensure full roster (up to 15 players) by filling from board or mockCosmicBoard
-    if (players.length < 15) {
-      const currentIds = new Set(players.map((p) => String(p.id)));
-      const sourcePool = board.length >= 15 ? board : mockCosmicBoard;
-      const startIdx =
-        ((team.slot - 1) * 7) % Math.max(1, sourcePool.length - 20);
-      const remainingPool = [
-        ...sourcePool.slice(startIdx),
-        ...sourcePool.slice(0, startIdx),
-      ].filter((p) => !currentIds.has(String(p.id)));
-
-      for (const candidate of remainingPool) {
-        if (players.length >= 15) break;
-        const cid = String(candidate.id);
-        if (!currentIds.has(cid)) {
-          players.push(candidate);
-          currentIds.add(cid);
-        }
-      }
-    }
-
     return players.slice(0, 15);
   };
 
   const userPlayers = getTeamPlayers(userTeam, userMatch);
   const oppPlayers = getTeamPlayers(oppTeam, oppMatch);
 
-  const normalizeStartersSet = (
-    players: CosmicPlayer[],
-    candidateStarterIds: string[],
-  ): Set<string> => {
-    const validRosterIds = new Set(
-      players.slice(0, 15).map((p) => String(p.id)),
-    );
-    const result = new Set<string>();
-    for (const id of candidateStarterIds) {
-      const sid = String(id);
-      if (sid && sid !== '0' && validRosterIds.has(sid) && result.size < 8) {
-        result.add(sid);
-      }
-    }
-    for (const p of players.slice(0, 15)) {
-      if (result.size >= 8) break;
-      const pid = String(p.id);
-      if (!result.has(pid)) {
-        result.add(pid);
-      }
-    }
-    return result;
-  };
-
   const rawUserStarterIds: string[] = [];
-  if (userMatch?.starters && Array.isArray(userMatch.starters)) {
+  if (userMatch?.starters && Array.isArray(userMatch.starters) && userMatch.starters.length > 0) {
     userMatch.starters.forEach((id: string) => {
       if (id && String(id) !== '0') rawUserStarterIds.push(String(id));
     });
-  }
-  if (Array.isArray(fullRoster) && fullRoster.length > 0) {
+  } else if (Array.isArray(fullRoster) && fullRoster.length > 0) {
     fullRoster.forEach((s) => {
-      const isBench =
-        String(s.slot_id).startsWith('BN') ||
-        String(s.slot_id).toUpperCase() === 'BENCH';
+      const isBench = isBenchOrReserveSlot(String(s.slot_id));
       if (!isBench && s.player?.id) {
         rawUserStarterIds.push(String(s.player.id));
       }
     });
-  }
-  if (
-    rawUserStarterIds.length === 0 &&
-    Array.isArray((userTeam as any).starters) &&
-    (userTeam as any).starters.length > 0
+  } else if (
+    Array.isArray(userTeam?.starters) &&
+    userTeam.starters.length > 0
   ) {
-    (userTeam as any).starters.forEach((id: string) => {
+    userTeam.starters.forEach((id: string) => {
       if (id && String(id) !== '0') rawUserStarterIds.push(String(id));
     });
-  }
-  if (
-    rawUserStarterIds.length < 8 &&
-    (userTeam.slot === 7 ||
-      userTeam.roster_id === 2 ||
-      userTeam.name?.toLowerCase().includes('astraloracles'))
-  ) {
-    ['4574', '6813', '9224', '7547', '10229', '8131', '7588', '96'].forEach(
-      (id) => rawUserStarterIds.push(id),
-    );
   }
 
   const rawOppStarterIds: string[] = [];
@@ -3675,56 +4045,122 @@ export function deriveWeeklyMatchup(
       if (id && String(id) !== '0') rawOppStarterIds.push(String(id));
     });
   } else if (
-    Array.isArray((oppTeam as any).starters) &&
-    (oppTeam as any).starters.length > 0
+    Array.isArray(oppTeam?.starters) &&
+    oppTeam.starters.length > 0
   ) {
-    (oppTeam as any).starters.forEach((id: string) => {
+    oppTeam.starters.forEach((id: string) => {
       if (id && String(id) !== '0') rawOppStarterIds.push(String(id));
     });
   }
-  if (
-    rawOppStarterIds.length < 8 &&
-    (oppTeam.roster_id === 8 ||
-      oppTeam.slot === 8 ||
-      oppTeam.name?.toLowerCase().includes('solarflare'))
-  ) {
-    ['3294', '9509', '8138', '7569', '12519', '5012', '8228', '421'].forEach(
-      (id) => rawOppStarterIds.push(id),
-    );
-  } else if (
-    rawOppStarterIds.length < 8 &&
-    (oppTeam.slot === 5 ||
-      oppTeam.roster_id === 11 ||
-      oppTeam.name?.toLowerCase().includes('zenithvoyager') ||
-      oppTeam.name?.toLowerCase().includes('lunareclipse'))
-  ) {
-    ['4984', '4866', '8155', '6786', '7564', '8130', '4046', '6770'].forEach(
-      (id) => rawOppStarterIds.push(id),
-    );
-  }
 
-  const userStartersSet = normalizeStartersSet(userPlayers, rawUserStarterIds);
-  const oppStartersSet = normalizeStartersSet(oppPlayers, rawOppStarterIds);
+  const hasExplicitUserStarters =
+    (Array.isArray(userMatch?.starters) && userMatch.starters.length > 0) ||
+    (Array.isArray(fullRoster) && fullRoster.length > 0) ||
+    (Array.isArray(userTeam?.starters) && userTeam.starters.length > 0);
+
+  const hasExplicitOppStarters =
+    (Array.isArray(oppMatch?.starters) && oppMatch.starters.length > 0) ||
+    (Array.isArray(oppTeam?.starters) && oppTeam.starters.length > 0);
+
+  const fromRosterSlots =
+    Array.isArray(fullRoster) && fullRoster.length > 0
+      ? extractStartingSlots(null, fullRoster)
+      : null;
+
+  const explicitSlotCount =
+    fromRosterSlots && fromRosterSlots.length > 0
+      ? fromRosterSlots.length
+      : Array.isArray(userMatch?.starters) && userMatch.starters.length > 0
+        ? userMatch.starters.length
+        : Array.isArray(oppMatch?.starters) && oppMatch.starters.length > 0
+          ? oppMatch.starters.length
+          : Array.isArray(userTeam?.starters) && userTeam.starters.length > 0
+            ? userTeam.starters.length
+            : Array.isArray(oppTeam?.starters) && oppTeam.starters.length > 0
+              ? oppTeam.starters.length
+              : null;
+
+  const targetStarterCount = explicitSlotCount !== null ? explicitSlotCount : 8;
+
+  const normalizeStartersSet = (
+    players: CosmicPlayer[],
+    candidateStarterIds: string[],
+    cap: number = targetStarterCount,
+    hasExplicit: boolean = false,
+  ): Set<string> => {
+    const validRosterIds = new Set(
+      players.slice(0, 15).map((p) => String(p.id)),
+    );
+    const result = new Set<string>();
+    for (const id of candidateStarterIds) {
+      const sid = String(id);
+      if (sid && sid !== '0' && validRosterIds.has(sid) && result.size < cap) {
+        result.add(sid);
+      }
+    }
+    if (!hasExplicit) {
+      for (const p of players.slice(0, 15)) {
+        if (result.size >= cap) break;
+        const pid = String(p.id);
+        if (!result.has(pid)) {
+          result.add(pid);
+        }
+      }
+    }
+    return result;
+  };
+
+  const userStartersSet = normalizeStartersSet(
+    userPlayers,
+    rawUserStarterIds,
+    targetStarterCount,
+    hasExplicitUserStarters,
+  );
+  const oppStartersSet = normalizeStartersSet(
+    oppPlayers,
+    rawOppStarterIds,
+    targetStarterCount,
+    hasExplicitOppStarters,
+  );
 
   const calcStartersProj = (
     players: CosmicPlayer[],
     startersSet: Set<string>,
+    hasExplicit: boolean,
     matchObj?: any,
   ): number => {
-    const starterPlayers = players.filter((p, idx) =>
-      startersSet.size > 0 ? startersSet.has(String(p.id)) : idx < 8,
+    const starterPlayers = hasExplicit
+      ? players.filter((p) => startersSet.has(String(p.id)))
+      : players.filter((p, idx) =>
+          startersSet.size > 0 ? startersSet.has(String(p.id)) : idx < targetStarterCount,
+        );
+    const currentSeasonCtx = getSeasonContext();
+    const isCompletedPastWeek = Boolean(
+      currentSeasonCtx &&
+        week < currentSeasonCtx.currentWeek &&
+        matchObj?.players_points &&
+        Object.keys(matchObj.players_points).length > 0,
     );
     const sum = starterPlayers.reduce((acc, p) => {
-      if (p.bye_week && p.bye_week === week) return acc;
+      const pTeam = (p.team || '').toUpperCase();
+      if (isPlayerOnByeWeek(week, p.bye_week, pTeam, currentSeasonCtx?.byeWeeks)) return acc;
       const actualPts = Number(matchObj?.players_points?.[String(p.id)] ?? 0);
-      const weeklyPts =
+      const rawPts =
         p.weekly_projected_points ??
         p.sleeper_projected_points ??
         p.projected_points ??
         14.5;
+      const weeklyPts =
+        week !== currentSeasonCtx?.currentWeek && rawPts <= 0
+          ? Number((p as any).baseline_projected_points || 12.5)
+          : rawPts;
       // A finished game counts only what he scored (even 0). In progress, the
       // final can't be below the actual, so take the larger.
-      const status = week === seasonContext?.currentWeek ? teamGameStatus(p.team) : undefined;
+      const status = isCompletedPastWeek
+        ? 'complete'
+        : week === currentSeasonCtx?.currentWeek
+          ? teamGameStatus(p.team)
+          : undefined;
       if (status === 'complete') return acc + actualPts;
       return acc + (actualPts > 0 ? Math.max(actualPts, weeklyPts) : weeklyPts);
     }, 0);
@@ -3734,11 +4170,13 @@ export function deriveWeeklyMatchup(
   const calculatedUserProj = calcStartersProj(
     userPlayers,
     userStartersSet,
+    hasExplicitUserStarters,
     userMatch,
   );
   const calculatedOppProj = calcStartersProj(
     oppPlayers,
     oppStartersSet,
+    hasExplicitOppStarters,
     oppMatch,
   );
 
@@ -3785,8 +4223,44 @@ export function deriveWeeklyMatchup(
       (p as any).weekly_projected_points ??
       (p as any).sleeper_projected_points ??
       (p.projected_points ?? (isStarter ? 14.5 : 9.5));
-    const playerWeeklyProj =
-      hasPlayed && rawWeeklyProj <= 0 ? actualPts : rawWeeklyProj;
+    const rawTeamCode = (p.team || '').toUpperCase();
+    const nflStadiumMeta =
+      (rawTeamCode && NFL_TEAM_STADIUMS[rawTeamCode]) || {
+        stadium_name: 'NFL Stadium',
+        city: 'NFL',
+        state: '',
+        roof_type: 'Open Air',
+        latitude: null,
+        longitude: null,
+        celestial_house: '1st House of Beginnings',
+        zodiac_ascendant: 'Aries Ascendant',
+        geo_magnetic_resonance: 'Neutral Prime Meridian',
+      };
+    const currentSeasonCtx = getSeasonContext();
+    const teamBye = (rawTeamCode ? currentSeasonCtx?.byeWeeks?.[rawTeamCode] : undefined) ?? p.bye_week;
+    const onByeThisWeek = isPlayerOnByeWeek(week, p.bye_week, rawTeamCode, currentSeasonCtx?.byeWeeks);
+    const isCompletedPastWeek = Boolean(
+      currentSeasonCtx &&
+        week < currentSeasonCtx.currentWeek &&
+        matchObj?.players_points &&
+        Object.keys(matchObj.players_points).length > 0,
+    );
+    const gameStatus = isCompletedPastWeek
+      ? 'complete'
+      : week === currentSeasonCtx?.currentWeek
+        ? teamGameStatus(p.team)
+        : undefined;
+    const effectiveRawProj =
+      !onByeThisWeek && week !== currentSeasonCtx?.currentWeek && rawWeeklyProj <= 0
+        ? Number((p as any).baseline_projected_points || (isStarter ? 12.5 : 8.5))
+        : rawWeeklyProj;
+    const playerWeeklyProj = onByeThisWeek
+      ? 0
+      : gameStatus === 'complete'
+        ? actualPts
+        : hasPlayed
+          ? Math.max(actualPts, effectiveRawProj)
+          : effectiveRawProj;
 
     const isInjured =
       p.injury_status === 'Doubtful' ||
@@ -3794,9 +4268,6 @@ export function deriveWeeklyMatchup(
       p.injury_status === 'IR' ||
       (p as any).status === 'Injured Reserve';
 
-    const rawTeamCode = (p.team || 'KC').toUpperCase();
-    const nflStadiumMeta =
-      NFL_TEAM_STADIUMS[rawTeamCode] || NFL_TEAM_STADIUMS['KC'];
     const sourceStadium = (p as any).stadium;
 
     const stadiumLat =
@@ -3832,12 +4303,23 @@ export function deriveWeeklyMatchup(
     // is played at (the home team's stadium, or a neutral site), the kickoff,
     // and the moon and planetary hour at that kickoff. These are display
     // only; Stars don't depend on them.
-    const liveSeason = Boolean(seasonContext);
+    const liveSeason = Boolean(getSeasonContext());
     const game = liveSeason ? teamGame(week, rawTeamCode) : undefined;
     let liveKickoff: string | null = null;
     let liveMoon: string | null = null;
     let liveHour: string | null = null;
-    if (game) {
+    if (onByeThisWeek) {
+      Object.assign(stadiumObj, {
+        stadium_name: 'No game this week',
+        city: '',
+        state: '',
+        roof_type: '-',
+        latitude: null,
+        longitude: null,
+        coordinates: null,
+      });
+      liveKickoff = 'Bye week';
+    } else if (game) {
       const homeMeta = NFL_TEAM_STADIUMS[game.home] || nflStadiumMeta;
       const neutralCoords = game.neutral ? neutralVenueCoords(game.venue?.name) : null;
       const lat = game.neutral ? neutralCoords?.lat ?? null : homeMeta.latitude;
@@ -3866,17 +4348,31 @@ export function deriveWeeklyMatchup(
           : null;
       liveMoon = when ? moonAt(when) : null;
       liveHour = game.kickoff && lon !== null ? planetaryHourAt(new Date(game.kickoff), lon) : null;
-    } else if (liveSeason) {
+    } else {
+      const homeMeta = (rawTeamCode && NFL_TEAM_STADIUMS[rawTeamCode]) || nflStadiumMeta;
       Object.assign(stadiumObj, {
-        stadium_name: 'No game this week',
-        city: '',
-        state: '',
-        roof_type: '—',
-        latitude: null,
-        longitude: null,
-        coordinates: null,
+        stadium_name: stadiumObj.stadium_name || homeMeta.stadium_name,
+        city: stadiumObj.city || homeMeta.city,
+        state: stadiumObj.state || homeMeta.state,
+        roof_type:
+          stadiumObj.roof_type &&
+          stadiumObj.roof_type !== '-'
+            ? stadiumObj.roof_type
+            : homeMeta.roof_type,
+        latitude: stadiumObj.latitude ?? homeMeta.latitude,
+        longitude: stadiumObj.longitude ?? homeMeta.longitude,
+        coordinates:
+          stadiumObj.coordinates ??
+          (homeMeta.latitude !== null && homeMeta.longitude !== null
+            ? {lat: homeMeta.latitude, lon: homeMeta.longitude}
+            : null),
+        celestial_house: stadiumObj.celestial_house || homeMeta.celestial_house,
+        zodiac_ascendant:
+          stadiumObj.zodiac_ascendant || homeMeta.zodiac_ascendant,
+        geo_magnetic_resonance:
+          stadiumObj.geo_magnetic_resonance || homeMeta.geo_magnetic_resonance,
       });
-      liveKickoff = 'Bye week';
+      liveKickoff = (p as any).game_kickoff || (p as any).kickoff_time || (liveSeason ? 'Time TBA' : null);
     }
 
     // A player's Stars never depend on where he sits in a lineup (owner decision):
@@ -3898,7 +4394,7 @@ export function deriveWeeklyMatchup(
     let aspectHighlights: string[];
 
     if (calc.health_penalty < 0) {
-      const onBye = Boolean(p.bye_week && p.bye_week === week);
+      const onBye = onByeThisWeek;
       rationaleText = onBye
         ? `🌑 Fallow week: ${p.name} (${sunSign} / ${elem}) is on bye (−22 Stars).`
         : p.injury_status
@@ -3951,9 +4447,11 @@ export function deriveWeeklyMatchup(
 
     // Sample (mock) data keeps the illustrative slots; a live season shows the
     // real game, or nothing when it isn't known.
-    const gameKickoff = liveSeason
-      ? liveKickoff ?? 'Time TBA'
-      : kickoffSlots[(Math.abs(idHash) + week) % kickoffSlots.length];
+    const gameKickoff = onByeThisWeek
+      ? 'Bye week'
+      : liveSeason
+        ? liveKickoff ?? 'Time TBA'
+        : kickoffSlots[(Math.abs(idHash) + week) % kickoffSlots.length];
     const lunarPhase = liveSeason
       ? liveMoon ?? ''
       : lunarPhases[(Math.abs(idHash) + week) % lunarPhases.length];
@@ -3965,8 +4463,10 @@ export function deriveWeeklyMatchup(
       player_id: pid,
       player_name: p.name,
       position: p.position,
+      fantasy_positions: p.fantasy_positions,
       team: p.team || 'NFL',
       nfl_team: p.team || 'NFL',
+      bye_week: teamBye || p.bye_week || 0,
       opponent: oppTeamObj?.name || 'OPP',
       team_name: teamObj?.name || (isUserTeam ? 'My Team' : 'Opponent'),
       is_user_team: isUserTeam,
@@ -4098,7 +4598,7 @@ export function deriveWeeklyMatchup(
     let sum = 0;
     for (const id of m.starters) {
       const p = boardById.get(String(id));
-      if (!p || (p.bye_week && p.bye_week === w)) continue;
+      if (!p || isPlayerOnByeWeek(w, p.bye_week, p.team, seasonCtx?.byeWeeks)) continue;
       sum +=
         p.weekly_projected_points ??
         p.sleeper_projected_points ??
@@ -4147,13 +4647,21 @@ export function deriveWeeklyMatchup(
         (userTeam.avatar ? getSleeperAvatarUrl(userTeam.avatar) : null),
       projected_points: Math.round(userProj * 100) / 100,
       starters:
-        userMatch?.starters ||
-        (userStartersSet.size > 0
-          ? Array.from(userStartersSet)
-          : userPlayers.slice(0, 8).map((p) => p.id)),
+        Array.isArray(userMatch?.starters) && userMatch.starters.length > 0
+          ? userMatch.starters
+          : Array.isArray(fullRoster) && fullRoster.length > 0
+            ? fullRoster
+                .filter((s: RosterSlot) => {
+                  const sid = s.slot_id || s.slot_name || '';
+                  return sid && !isBenchOrReserveSlot(sid);
+                })
+                .map((s: RosterSlot) => (s.player?.id ? String(s.player.id) : '0'))
+            : Array.isArray(userTeam.starters) && userTeam.starters.length > 0
+              ? userTeam.starters
+              : Array.from(userStartersSet),
       players:
         userMatch?.players ||
-        (userTeam as any).players ||
+        userTeam.players ||
         userPlayers.map((p) => p.id),
       harmony_score: userHarmony,
     },
@@ -4168,23 +4676,21 @@ export function deriveWeeklyMatchup(
         (oppTeam.avatar ? getSleeperAvatarUrl(oppTeam.avatar) : null),
       projected_points: Math.round(oppProj * 100) / 100,
       starters:
-        oppMatch?.starters ||
-        (oppStartersSet.size > 0
-          ? Array.from(oppStartersSet)
-          : oppPlayers.slice(0, 8).map((p) => p.id)),
+        Array.isArray(oppMatch?.starters) && oppMatch.starters.length > 0
+          ? oppMatch.starters
+          : Array.isArray(oppTeam.starters) && oppTeam.starters.length > 0
+            ? oppTeam.starters
+            : Array.from(oppStartersSet),
       players:
         oppMatch?.players ||
-        (oppTeam as any).players ||
+        oppTeam.players ||
         oppPlayers.map((p) => p.id),
       harmony_score: oppHarmony,
     },
     win_probability: winProbability,
     win_probability_label: favorabilityLabel,
     team_comparison: teamComparison,
-    player_favorabilities:
-      playerFavorabilities.length > 0
-        ? playerFavorabilities
-        : mockPlayerFavorabilities,
+    player_favorabilities: playerFavorabilities,
     start_sit_recommendations: (() => {
       const activeStarterIds = new Set(
         userMatch?.starters ||
@@ -4249,7 +4755,7 @@ export function deriveWeeklyMatchup(
 
 /**
  * Dynamically derives 18-week schedule matrix and bye week coverage from the active roster.
- * Simulates weekly starting lineups, conflict triage, and championship playoff depth for Weeks 1–18.
+ * Simulates weekly starting lineups, conflict triage, and championship playoff depth for Weeks 1-18.
  */
 export function derive18WeekCoverage(
   roster: RosterSlot[],
@@ -4276,16 +4782,20 @@ export function derive18WeekCoverage(
 
   for (let week = 1; week <= 18; week++) {
     // 1. Identify players on bye for this week
-    const byePlayers = players
-      .filter((p) => p.bye_week === week)
-      .map((p) => ({
-        player_id: String(p.id),
-        player_name: p.name,
-        position: p.position as NFLPosition,
-      }));
+    const byePlayers = isNFLByeWeek(week)
+      ? players
+          .filter((p) => isPlayerOnByeWeek(week, p.bye_week, p.team, getSeasonContext()?.byeWeeks))
+          .map((p) => ({
+            player_id: String(p.id),
+            player_name: p.name,
+            position: p.position as NFLPosition,
+          }))
+      : [];
 
     // 2. Identify active (non-bye) players
-    const activePlayers = players.filter((p) => p.bye_week !== week);
+    const activePlayers = isNFLByeWeek(week)
+      ? players.filter((p) => !isPlayerOnByeWeek(week, p.bye_week, p.team, getSeasonContext()?.byeWeeks))
+      : players;
 
     // 3. Form optimal starting lineup from active players
     const usedPlayerIds = new Set<string>();
@@ -4397,8 +4907,13 @@ export function transformToDraftState(
   weeklyProjections?: Record<string, any> | null,
 ): DraftState {
   const isSyntheticOrLive =
+    userSettings?.mode === 'live' ||
     Boolean(leagueDetails?.league_id) ||
-    (Boolean(userSettings?.league_id) && userSettings?.league_id !== '9000000000000000001');
+    (Boolean(userSettings?.league_id) && userSettings?.league_id !== '9000000000000000001') ||
+    (Boolean(metadata.draft_id) &&
+      metadata.draft_id !== 'mock' &&
+      metadata.draft_id !== 'mock_oneiromancy_draft_2025' &&
+      metadata.draft_id !== '9000000000000000002');
 
   const baseAvailableLeagues = isSyntheticOrLive
     ? (leagueDetails
@@ -4462,23 +4977,22 @@ export function transformToDraftState(
   }
 
   const isExplicitMock =
-    metadata.draft_id === 'mock' ||
-    metadata.draft_id === 'mock_oneiromancy_draft_2025' ||
-    settings.draft_id === 'mock_oneiromancy_draft_2025' ||
-    settings.mode === 'mock' ||
-    (!weeklyProjections &&
-      (!leagueRosters || leagueRosters.length === 0) &&
-      (!picks || picks.length === 0));
+    settings.mode !== 'live' &&
+    (metadata.draft_id === 'mock' ||
+      metadata.draft_id === 'mock_oneiromancy_draft_2025' ||
+      settings.draft_id === 'mock_oneiromancy_draft_2025' ||
+      settings.mode === 'mock');
+
+  const hasPopulatedLeagueRosters =
+    Array.isArray(leagueRosters) &&
+    leagueRosters.some((r) => Array.isArray(r?.players) && r.players.length > 0);
+  const hasCompletedRosterSync = isDraftComplete && hasPopulatedLeagueRosters;
 
   // 1. Gather all unique players from draft picks, league rosters, and weekly projections
   const playerMap = new Map<string, CosmicPlayer>();
 
   // Seed baseline board only in explicit mock mode
-  const baseBoard = isExplicitMock
-    ? playerDict && Object.keys(playerDict).length > 0
-      ? enrichCosmicBoardWithNFLPlayers(mockCosmicBoard, playerDict)
-      : mockCosmicBoard
-    : [];
+  const baseBoard = isExplicitMock ? mockCosmicBoard : [];
 
   for (const player of baseBoard) {
     const pid = String(player.id);
@@ -4490,9 +5004,23 @@ export function transformToDraftState(
 
     playerMap.set(pid, {
       ...player,
-      draft_status: isMyPick ? 'my_team' : pick ? 'drafted' : 'available',
-      drafted_by_user_id: pick ? pick.picked_by : null,
-      drafted_pick_no: pick ? pick.pick_no : null,
+      draft_status: hasCompletedRosterSync
+        ? 'available'
+        : isMyPick
+          ? 'my_team'
+          : pick
+            ? 'drafted'
+            : 'available',
+      drafted_by_user_id: hasCompletedRosterSync
+        ? null
+        : pick
+          ? pick.picked_by
+          : null,
+      drafted_pick_no: hasCompletedRosterSync
+        ? null
+        : pick
+          ? pick.pick_no
+          : null,
     });
   }
 
@@ -4510,7 +5038,7 @@ export function transformToDraftState(
         player = synthesizeCosmicPlayerFromId(
           pid,
           playerDict,
-          isMyPick,
+          hasCompletedRosterSync ? false : Boolean(isMyPick),
           pick.metadata,
         );
       }
@@ -4521,11 +5049,15 @@ export function transformToDraftState(
       const position = pick.metadata?.position
         ? (pick.metadata.position.toUpperCase() as NFLPosition)
         : player.position;
-      const team = pick.metadata?.team || player.team;
+      const liveRecord = playerDict?.[pid];
+      const liveTeam =
+        liveRecord?.team && liveRecord.team !== 'FA' && liveRecord.team !== 'NFL'
+          ? liveRecord.team
+          : undefined;
+      const team = liveTeam || pick.metadata?.team || player.team;
       const jerseyNumber =
         Number(pick.metadata?.number) || player.jersey_number;
 
-      const liveRecord = playerDict?.[pid];
       player = {
         ...player,
         first_name: firstName,
@@ -4534,9 +5066,16 @@ export function transformToDraftState(
         position,
         team,
         jersey_number: jerseyNumber,
-        draft_status: isMyPick ? 'my_team' : 'drafted',
-        drafted_by_user_id: pick.picked_by || null,
-        drafted_pick_no: pick.pick_no || null,
+        bye_week: getTeamByeWeek(team) ?? player.bye_week,
+        draft_status: hasCompletedRosterSync
+          ? 'available'
+          : isMyPick
+            ? 'my_team'
+            : 'drafted',
+        drafted_by_user_id: hasCompletedRosterSync
+          ? null
+          : pick.picked_by || null,
+        drafted_pick_no: hasCompletedRosterSync ? null : (pick.pick_no || null),
         status: liveRecord?.status || pick.metadata?.status || player.status,
         injury_status:
           liveRecord !== undefined
@@ -4577,11 +5116,17 @@ export function transformToDraftState(
             player = {
               ...player,
               draft_status: 'my_team',
+              drafted_by_user_id: r.owner_id
+                ? String(r.owner_id)
+                : player.drafted_by_user_id,
             };
           } else if (player.draft_status !== 'my_team') {
             player = {
               ...player,
               draft_status: 'drafted',
+              drafted_by_user_id: r.owner_id
+                ? String(r.owner_id)
+                : player.drafted_by_user_id,
             };
           }
           playerMap.set(pid, player);
@@ -4649,12 +5194,12 @@ export function transformToDraftState(
     weeklyProjections && Object.keys(weeklyProjections).length > 0,
   );
 
-  // If live projections exist, ingest all unowned available players from weeklyProjections
+  // Ingest all unowned available players from weekly projections (when available)
   if (hasLiveProjections && playerDict && Object.keys(playerDict).length > 0) {
     for (const [pid, proj] of Object.entries(weeklyProjections!)) {
       if (playerMap.has(pid)) continue;
       const record = playerDict[pid];
-      if (!record) continue;
+      if (!record || !isValidNFLPlayerRecord(pid, record)) continue;
       const pos = (record.position || '').toUpperCase();
       if (!validPositions.has(pos)) continue;
 
@@ -4685,12 +5230,10 @@ export function transformToDraftState(
         playerMap.set(pid, p);
       }
     }
-  } else if (
-    !hasLiveProjections &&
-    playerDict &&
-    Object.keys(playerDict).length > 0
-  ) {
-    // Offline / mock fallback for available free agents
+  }
+
+  // Ingest all signed active NFL players from playerDict (live mode only)
+  if (!isExplicitMock && playerDict && Object.keys(playerDict).length > 0) {
     const availableCandidates: Array<{
       id: string;
       searchRank: number;
@@ -4698,17 +5241,19 @@ export function transformToDraftState(
 
     for (const [pid, record] of Object.entries(playerDict)) {
       if (playerMap.has(pid)) continue;
+      if (!isValidNFLPlayerRecord(pid, record)) continue;
       const pos = (record.position || '').toUpperCase();
       if (!validPositions.has(pos)) continue;
+
       const searchRank = Number((record as any).search_rank || 9999);
-      if (searchRank < 1000 || record.status === 'Active') {
+      if (isSignedActiveNFLPlayer(pid, record)) {
         availableCandidates.push({id: pid, searchRank});
       }
     }
 
     availableCandidates.sort((a, b) => a.searchRank - b.searchRank);
 
-    for (const cand of availableCandidates.slice(0, 350)) {
+    for (const cand of availableCandidates) {
       const p = synthesizeCosmicPlayerFromId(cand.id, playerDict, false);
       p.draft_status = 'available';
       playerMap.set(cand.id, p);
@@ -4716,6 +5261,15 @@ export function transformToDraftState(
   }
 
   playerMap.forEach((player, pid) => {
+    const baselinePts = Number(
+      (player as any).baseline_projected_points ??
+        player.sleeper_projected_points ??
+        player.projected_points ??
+        0,
+    );
+    if (baselinePts > 0) {
+      (player as any).baseline_projected_points = baselinePts;
+    }
     const proj = weeklyProjections?.[pid];
     let nflPts = 0;
     let sleeperPts = 0;
@@ -5163,11 +5717,14 @@ export function transformToDraftState(
         } else if (record?.position) {
           matched.position = record.position.toUpperCase() as NFLPosition;
         }
-        if (pick?.metadata?.team) {
+        if (record?.team && record.team !== 'FA' && record.team !== 'NFL') {
+          matched.team = record.team;
+        } else if (pick?.metadata?.team) {
           matched.team = pick.metadata.team;
         } else if (record?.team) {
           matched.team = record.team;
         }
+        matched.bye_week = getTeamByeWeek(matched.team) ?? matched.bye_week;
         if (pick?.metadata?.number) {
           matched.jersey_number = Number(pick.metadata.number);
         } else if (record?.number !== undefined && record?.number !== null) {
@@ -5300,11 +5857,14 @@ export function transformToDraftState(
         } else if (record?.position) {
           matched.position = record.position.toUpperCase() as NFLPosition;
         }
-        if (pick?.metadata?.team) {
+        if (record?.team && record.team !== 'FA' && record.team !== 'NFL') {
+          matched.team = record.team;
+        } else if (pick?.metadata?.team) {
           matched.team = pick.metadata.team;
         } else if (record?.team) {
           matched.team = record.team;
         }
+        matched.bye_week = getTeamByeWeek(matched.team) ?? matched.bye_week;
         if (pick?.metadata?.number) {
           matched.jersey_number = Number(pick.metadata.number);
         } else if (record?.number !== undefined && record?.number !== null) {
@@ -5548,31 +6108,29 @@ export function transformToDraftState(
     };
   });
 
-  let competitorTeams: CompetitorTeam[] = isExplicitMock
-    ? mockCompetitorTeams.map((t) => {
-        const isUser = t.slot === targetSlot;
-        const baseName = t.name.replace(/\s*\(You\)\s*/g, '').trim();
-        return {
-          ...t,
-          is_user: isUser,
-          name: isUser ? `${baseName} (You)` : baseName,
-          avatar_url: t.avatar_url || getSleeperAvatarUrl(t.avatar),
-        };
-      })
-    : [];
-  if (
-    Array.isArray(leagueUsers) &&
-    leagueUsers.length > 0 &&
-    Array.isArray(leagueRosters) &&
-    leagueRosters.length > 0
-  ) {
-    const userMap = new Map<string, any>();
+  let competitorTeams: CompetitorTeam[] =
+    isExplicitMock
+      ? mockCompetitorTeams.map((t) => {
+          const isUser = t.slot === targetSlot;
+          const baseName = t.name.replace(/\s*\(You\)\s*/g, '').trim();
+          return {
+            ...t,
+            is_user: isUser,
+            name: isUser ? `${baseName} (You)` : baseName,
+            avatar_url: t.avatar_url || getSleeperAvatarUrl(t.avatar),
+          };
+        })
+      : [];
+  const userMap = new Map<string, any>();
+  if (Array.isArray(leagueUsers)) {
     for (const u of leagueUsers) {
       userMap.set(String(u.user_id), u);
     }
+  }
 
-    // Determine the single primary user roster ID
-    let userTeamRosterId: number = targetSlot;
+  // Determine the single primary user roster ID
+  let userTeamRosterId: number = targetSlot;
+  if (Array.isArray(leagueRosters) && leagueRosters.length > 0) {
     if (explicitSlot === undefined) {
       if (userRoster && userRoster.roster_id !== undefined) {
         userTeamRosterId = Number(userRoster.roster_id);
@@ -5703,6 +6261,104 @@ export function transformToDraftState(
 
   const activeUserTeam =
     competitorTeams.find((t) => t.is_user) || competitorTeams[0];
+  const userPlayerIdSet = new Set<string>(
+    fullRoster
+      .filter((s) => s.player !== null)
+      .map((s) => String(s.player!.id)),
+  );
+  const compOwnerByPid = new Map<string, {name: string; ownerId?: string}>();
+
+  // 1. Build competitor ownership directly from leagueRosters
+  if (Array.isArray(leagueRosters) && leagueRosters.length > 0) {
+    for (const r of leagueRosters) {
+      if (Number(r.roster_id) === userTeamRosterId) continue;
+      const ownerId = String(r.owner_id || '');
+      const userObj = userMap.get(ownerId);
+      const customTeamName = userObj?.metadata?.team_name?.trim();
+      const displayName = (
+        userObj?.display_name ||
+        userObj?.username ||
+        `Team ${r.roster_id}`
+      ).trim();
+      const cleanName = (customTeamName || displayName)
+        .replace(/\s*\(You\)$/, '')
+        .trim();
+      const rPlayerList =
+        Array.isArray(r.players) && r.players.length > 0
+          ? r.players
+          : Array.isArray(r.starters)
+            ? r.starters
+            : [];
+      for (const pid of rPlayerList) {
+        if (pid && String(pid) !== '0') {
+          compOwnerByPid.set(String(pid), {
+            name: cleanName,
+            ownerId: ownerId || undefined,
+          });
+        }
+      }
+    }
+  }
+
+  // 2. Incorporate competitor picks from draft if roster sync is not yet complete
+  for (const ct of competitorTeams) {
+    if (ct.is_user) continue;
+    const cleanName = ct.name.replace(/\s*\(You\)$/, '').trim();
+    if (!hasCompletedRosterSync) {
+      for (const pk of ct.picks || []) {
+        if (pk?.player_id) {
+          compOwnerByPid.set(String(pk.player_id), {
+            name: cleanName,
+            ownerId: ct.owner_id,
+          });
+        }
+      }
+    }
+    const ctPlayerList =
+      Array.isArray(ct.players) && ct.players.length > 0
+        ? ct.players
+        : Array.isArray(ct.starters)
+          ? ct.starters
+          : [];
+    for (const pid of ctPlayerList) {
+      if (pid && String(pid) !== '0') {
+        compOwnerByPid.set(String(pid), {
+          name: cleanName,
+          ownerId: ct.owner_id,
+        });
+      }
+    }
+  }
+
+  const userTeamCleanName = (activeUserTeam?.name || 'Your Team')
+    .replace(/\s*\(You\)$/, '')
+    .trim();
+
+  // Skip the availability reset pass if competitor roster data is unpopulated
+  const shouldResetAvailability =
+    hasPopulatedLeagueRosters &&
+    (Array.isArray(leagueRosters) && leagueRosters.length > 1
+      ? compOwnerByPid.size > 0
+      : true);
+
+  for (const bp of scoredCosmicBoard) {
+    const pid = String(bp.id);
+    if (userPlayerIdSet.has(pid)) {
+      bp.draft_status = 'my_team';
+      bp.drafted_by = userTeamCleanName;
+    } else if (compOwnerByPid.has(pid)) {
+      const owner = compOwnerByPid.get(pid)!;
+      bp.draft_status = 'drafted';
+      bp.drafted_by = owner.name;
+      if (owner.ownerId) {
+        bp.drafted_by_user_id = owner.ownerId;
+      }
+    } else if (shouldResetAvailability) {
+      bp.draft_status = 'available';
+      bp.drafted_by = undefined;
+      bp.drafted_by_user_id = null;
+    }
+  }
   const userAvatarUrl =
     activeUserTeam?.avatar_url ||
     (activeUserTeam?.avatar
@@ -5726,14 +6382,17 @@ export function transformToDraftState(
 
   const userRosterId = activeUserTeam?.roster_id ?? targetSlot;
   const resolvedWeek = activeWeek || leagueDetails?.settings?.leg || 2;
-  const weeklyMatchup = deriveWeeklyMatchup(
-    userRosterId,
-    competitorTeams,
-    leagueMatchups,
-    scoredCosmicBoard,
-    fullRoster,
-    resolvedWeek,
-  );
+  const weeklyMatchup =
+    !isExplicitMock && competitorTeams.length === 0
+      ? undefined
+      : deriveWeeklyMatchup(
+          userRosterId,
+          competitorTeams,
+          leagueMatchups,
+          scoredCosmicBoard,
+          fullRoster,
+          resolvedWeek,
+        );
 
   // Dynamically reconcile waiver upgrades and trade proposals with active user roster
   const activeUserBench = fullRoster.filter(
@@ -5792,7 +6451,7 @@ export function transformToDraftState(
   const currentWeek = getSeasonContext()?.currentWeek ?? activeWeek;
   const sortedWeakestBench = [...activeUserBench]
     .filter((b) => b.player && leagueEligibleSet.has(b.player.position))
-    .filter((b) => !(currentWeek && b.player?.bye_week === currentWeek))
+    .filter((b) => !isPlayerOnByeWeek(currentWeek, b.player?.bye_week, b.player?.team, getSeasonContext()?.byeWeeks))
     .sort(
       (a, b) =>
         (a.player?.draft_score ?? 0) - (b.player?.draft_score ?? 0) ||
@@ -5952,6 +6611,8 @@ export function transformToDraftState(
     trade_proposals: reconciledTradeProposals,
     settings,
     available_leagues: settings.available_leagues,
+    isLive: !isExplicitMock,
+    mode: isExplicitMock ? 'mock' : 'live',
     competitor_teams: competitorTeams,
     weekly_matchup: weeklyMatchup,
     roster_positions: activeRosterPositions,
@@ -6180,7 +6841,11 @@ export async function fetchSleeperDraft(
     if (options?.throwOnError) {
       throw new Error('HTTP_429_TOO_MANY_REQUESTS');
     }
-    const isMock = !draftId || draftId === 'mock' || draftId === 'mock_oneiromancy_draft_2025';
+    const isMock =
+      userSettings?.mode === 'mock' ||
+      draftId === 'mock' ||
+      draftId === 'mock_oneiromancy_draft_2025' ||
+      (!draftId && userSettings?.mode !== 'live' && !userSettings?.league_id);
     const retainedLeagues =
       availableLeagues.length > 0
         ? availableLeagues
@@ -6209,7 +6874,7 @@ export async function fetchSleeperDraft(
       };
     }
     return {
-      draft_id: draftId,
+      draft_id: draftId || userSettings?.draft_id || 'live',
       isLive: true,
       mode: 'live',
       status: 'pre_draft',
@@ -6222,7 +6887,7 @@ export async function fetchSleeperDraft(
       settings: {
         ...DEFAULT_LIVE_SETTINGS,
         ...userSettings,
-        draft_id: draftId,
+        draft_id: draftId || userSettings?.draft_id || 'live',
         offline_mode_active: true,
         last_error: 'HTTP_429_TOO_MANY_REQUESTS',
         available_leagues: retainedLeagues,
@@ -6255,7 +6920,10 @@ export async function fetchSleeperDraft(
         fetchDraftMetadata(draftId),
         fetchDraftPicks(draftId),
       ]);
-      const activeDict = playerDict || playerDictionaryCache || undefined;
+      let activeDict = playerDict || playerDictionaryCache || undefined;
+      if (!activeDict || Object.keys(activeDict).length === 0) {
+        activeDict = await fetchNFLPlayers().catch(() => ({}));
+      }
       const targetLeagueId = metadata?.league_id || userSettings?.league_id;
 
       if (targetLeagueId) {
@@ -6465,11 +7133,12 @@ export async function fetchSleeperDraft(
 
     if (effectiveDraftId === 'mock_oneiromancy_draft_2025') {
       setSeasonContext(null);
+      const activeDict = playerDict || undefined;
       const state = transformToDraftState(
         mockDraftMetadata,
         mockPicks,
         effectiveSettings,
-        playerDict,
+        activeDict,
       );
       const isCanonicalSlot7 =
         !effectiveSettings.user_slot || effectiveSettings.user_slot === 7;

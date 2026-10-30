@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import { execSync } from 'node:child_process';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { isMainThread } from 'node:worker_threads';
-import { register } from 'node:module';
+import { register, createRequire } from 'node:module';
 
 if (isMainThread && !globalThis.__ONEIROMANCY_LOADER_REGISTERED__) {
   globalThis.__ONEIROMANCY_LOADER_REGISTERED__ = true;
@@ -37,30 +37,58 @@ const defaultDistDir = process.env.TEST_TMPDIR
   ? path.join(process.env.TEST_TMPDIR, 'oneiromancy_dist')
   : path.join('/tmp', `oneiromancy_dist_${process.pid}`);
 
+const isInheritedDistDir = Boolean(process.env.ONEIROMANCY_DIST_DIR);
 export const distDir = process.env.ONEIROMANCY_DIST_DIR || defaultDistDir;
+process.env.ONEIROMANCY_DIST_DIR = distDir;
+
+// Only clean up if this process generated its own unshared temporary PID dist directory.
+// Never delete an inherited ONEIROMANCY_DIST_DIR (managed exclusively by the parent runner process).
+if (!isInheritedDistDir) {
+  process.on('exit', () => {
+    try {
+      if (fs.existsSync(distDir)) {
+        fs.rmSync(distDir, { recursive: true, force: true });
+      }
+    } catch {
+      // Ignore exit cleanup error
+    }
+  });
+}
 
 export function ensureCompiled() {
   if (!fs.existsSync(path.join(distDir, 'core', 'lib', 'sleeper.js'))) {
     fs.mkdirSync(distDir, { recursive: true });
+    const user = process.env.USER || 'default';
     const tscPaths = [
       path.join(clientRoot, 'node_modules/typescript/bin/tsc'),
+      ...(process.env.TEST_TMPDIR
+        ? [path.join(process.env.TEST_TMPDIR, 'node_modules/typescript/bin/tsc')]
+        : []),
+      `/tmp/oneiromancy_runner_${user}/node_modules/typescript/bin/tsc`,
       '/google/src/files/head/depot/google3/third_party/javascript/node_modules/typescript/v6_0_3/lib/tsc.js',
     ];
     const tscPath = tscPaths.find((p) => fs.existsSync(p));
-    if (tscPath) {
-      try {
-        execSync(`node "${tscPath}" -p "${path.join(testsDir, 'tsconfig.json')}" --outDir "${distDir}"`, {
-          cwd: clientRoot,
-          stdio: 'pipe',
-        });
-      } catch (e) {
-        // Fallback or ignore if compilation error handled upstream
-      }
+    if (!tscPath) {
+      throw new Error(`TypeScript compiler (tsc) not found in any of: ${tscPaths.join(', ')}`);
     }
+    execSync(`node "${tscPath}" -p "${path.join(testsDir, 'tsconfig.json')}" --outDir "${distDir}"`, {
+      cwd: clientRoot,
+      stdio: 'inherit',
+    });
   }
 }
 
 ensureCompiled();
+
+function getFallbackPackageBases() {
+  const user = process.env.USER || 'default';
+  const bases = [path.resolve(clientRoot, 'package.json')];
+  if (process.env.TEST_TMPDIR) {
+    bases.push(path.join(process.env.TEST_TMPDIR, 'package.json'));
+  }
+  bases.push(`/tmp/oneiromancy_runner_${user}/package.json`);
+  return bases;
+}
 
 function findPath(basePath) {
   if (basePath.startsWith(distDir)) {
@@ -101,24 +129,6 @@ function findPath(basePath) {
 }
 
 export async function resolve(specifier, context, nextResolve) {
-  if (
-    [
-      'react',
-      'react/jsx-runtime',
-      'react-dom',
-      'react-dom/server',
-      'react-dom/client',
-      'lucide-react',
-      'clsx',
-      'tailwind-merge',
-    ].includes(specifier)
-  ) {
-    return {
-      url: pathToFileURL(path.join(testsDir, 'helpers/react_shim.mjs')).href,
-      shortCircuit: true,
-    };
-  }
-
   const queryIdx = specifier.indexOf('?');
   const cleanSpecifier = queryIdx !== -1 ? specifier.slice(0, queryIdx) : specifier;
   const querySuffix = queryIdx !== -1 ? specifier.slice(queryIdx) : '';
@@ -195,28 +205,36 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
 
+  if (!cleanSpecifier.startsWith('.') && !cleanSpecifier.startsWith('/') && !cleanSpecifier.startsWith('node:')) {
+    const fallbackBases = getFallbackPackageBases();
+    for (const basePkg of fallbackBases) {
+      if (fs.existsSync(basePkg) && fs.existsSync(path.join(path.dirname(basePkg), 'node_modules'))) {
+        try {
+          const req = createRequire(basePkg);
+          const resolved = req.resolve(cleanSpecifier);
+          if (fs.existsSync(resolved)) {
+            return { url: pathToFileURL(resolved).href + querySuffix, shortCircuit: true };
+          }
+        } catch {
+          // Try next base
+        }
+      }
+    }
+  }
+
   try {
     return await nextResolve(specifier, context);
   } catch (err) {
-    const user = process.env.USER || 'default';
-    const fallbackNodeModules = [
-      `/tmp/oneiromancy_runner_${user}/node_modules`,
-      path.resolve(clientRoot, 'node_modules'),
-    ];
-    for (const nm of fallbackNodeModules) {
-      const pkgDir = path.join(nm, cleanSpecifier);
-      const pkgJsonPath = path.join(pkgDir, 'package.json');
-      if (fs.existsSync(pkgJsonPath)) {
-        const pkgJson = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
-        const entry = pkgJson.module || pkgJson.main || 'index.js';
-        const resolvedEntry = path.resolve(pkgDir, typeof entry === 'string' ? entry : 'index.js');
-        if (fs.existsSync(resolvedEntry)) {
-          return { url: pathToFileURL(resolvedEntry).href + querySuffix, shortCircuit: true };
+    const fallbackBases = getFallbackPackageBases();
+    for (const basePkg of fallbackBases) {
+      if (fs.existsSync(basePkg) && fs.existsSync(path.join(path.dirname(basePkg), 'node_modules'))) {
+        try {
+          const req = createRequire(basePkg);
+          const resolved = req.resolve(cleanSpecifier);
+          return { url: pathToFileURL(resolved).href + querySuffix, shortCircuit: true };
+        } catch {
+          // Try next base
         }
-      }
-      const directFound = findPath(pkgDir);
-      if (directFound) {
-        return { url: pathToFileURL(directFound).href + querySuffix, shortCircuit: true };
       }
     }
     throw err;

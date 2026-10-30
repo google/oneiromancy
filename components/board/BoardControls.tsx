@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,7 +18,7 @@
 'use client';
 
 import React from 'react';
-import { Search, X, SlidersHorizontal, ArrowUpDown } from 'lucide-react';
+import { Search, X, ArrowUpDown } from 'lucide-react';
 
 export type BoardSortField =
   | 'oracle'
@@ -31,6 +32,7 @@ export type BoardSortField =
   | 'adp';
 export type BoardSortDirection = 'asc' | 'desc';
 export type PositionFilterValue = 'ALL' | 'QB' | 'RB' | 'WR' | 'TE' | 'FLEX';
+export type BoardModeFilter = 'all' | 'waivers' | 'trades' | 'my_team';
 
 export interface BoardControlsProps {
   searchQuery: string;
@@ -40,12 +42,21 @@ export interface BoardControlsProps {
   sortField: BoardSortField;
   sortDirection: BoardSortDirection;
   onSortChange: (field: BoardSortField, direction?: BoardSortDirection) => void;
-  hideDrafted: boolean;
-  onToggleHideDrafted: (hide: boolean) => void;
+  hideDrafted?: boolean;
+  onToggleHideDrafted?: (hide: boolean) => void;
+  modeFilter?: BoardModeFilter;
+  onModeFilterChange?: (mode: BoardModeFilter) => void;
   positionCounts?: Record<PositionFilterValue, number>;
   totalVisibleCount?: number;
   className?: string;
 }
+
+const MODE_PILLS: Array<{ id: BoardModeFilter; label: string }> = [
+  { id: 'all', label: 'All Players' },
+  { id: 'waivers', label: 'Waivers' },
+  { id: 'trades', label: 'Trades' },
+  { id: 'my_team', label: 'My Roster' },
+];
 
 export const BoardControls: React.FC<BoardControlsProps> = ({
   searchQuery,
@@ -53,10 +64,11 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
   positionFilter,
   onPositionFilterChange,
   sortField,
-  sortDirection,
   onSortChange,
-  hideDrafted,
+  hideDrafted = false,
   onToggleHideDrafted,
+  modeFilter = 'all',
+  onModeFilterChange,
   positionCounts,
   totalVisibleCount,
   className = '',
@@ -85,14 +97,43 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
 
   return (
     <div className={`space-y-3 w-full min-w-0 ${className}`}>
-      {/* Top Controls Row: Search Input & Hide Drafted Toggle */}
+      {/* Mode Filter Pills (All Players | Waivers | Trades | My Roster) */}
+      {onModeFilterChange && (
+        <div
+          data-testid="board-mode-pills"
+          className="flex items-center gap-1.5 overflow-x-auto pb-0.5 scrollbar-none"
+        >
+          {MODE_PILLS.map((pill) => {
+            const active = modeFilter === pill.id;
+            const isMyTeamPill = pill.id === 'my_team';
+            return (
+              <button
+                key={pill.id}
+                type="button"
+                data-testid={`board-mode-${pill.id}`}
+                onClick={() => onModeFilterChange(pill.id)}
+                className={`px-3 py-1.5 rounded-xl text-xs font-mono font-bold transition-all whitespace-nowrap border ${
+                  active
+                    ? isMyTeamPill
+                      ? 'bg-purple-950/80 border-purple-500/60 text-purple-200 shadow-[0_0_10px_rgba(168,85,247,0.3)]'
+                      : 'bg-cyan-950/80 border-cyan-500/50 text-cyan-200 shadow-[0_0_10px_rgba(6,182,212,0.25)]'
+                    : 'bg-slate-900/70 border-white/10 text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                {pill.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Search Input, 3-Metric Sort Dropdown & Free Agents Toggle */}
       <div className="flex flex-col sm:flex-row gap-2.5 items-stretch sm:items-center">
-        {/* Search Box */}
         <div className="relative flex-1">
           <Search className="w-4 h-4 absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-500" />
           <input
             type="text"
-            placeholder="Search celestial player or team..."
+            placeholder="Search player or team..."
             value={searchQuery}
             onChange={(e) => onSearchChange(e.target.value)}
             className="w-full pl-10 pr-9 py-2 rounded-xl bg-slate-900/90 border border-white/10 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500/60 focus:ring-1 focus:ring-cyan-500/30"
@@ -109,44 +150,47 @@ export const BoardControls: React.FC<BoardControlsProps> = ({
           )}
         </div>
 
-        {/* Sort Dropdown */}
+        {/* Strictly 3 Canonical Metrics Sort Dropdown (Oracle, Stats, Stars) */}
         <div className="flex items-center gap-2 min-w-0">
           <div className="relative flex-1 min-w-0 sm:flex-none">
             <select
-              value={sortField}
+              value={
+                sortField === 'projected_points' || sortField === 'stars'
+                  ? sortField
+                  : 'oracle'
+              }
               onChange={(e) => {
                 const field = e.target.value as BoardSortField;
-                const dir = field === 'adp' ? 'asc' : 'desc';
-                onSortChange(field, dir);
+                onSortChange(field, 'desc');
               }}
               aria-label="Sort players by"
               className="w-full truncate appearance-none pl-8 pr-8 py-2 rounded-xl bg-slate-900/90 border border-white/10 text-xs font-mono text-slate-200 focus:outline-none focus:border-cyan-500/60 cursor-pointer"
             >
-              <option value="oracle">Oracle score (recommended)</option>
+              <option value="oracle">Oracle: blended score</option>
               <option value="projected_points">Stats: projected points</option>
               <option value="stars">Stars: this week</option>
-              <option value="adp">Draft position</option>
             </select>
             <ArrowUpDown className="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-cyan-400 pointer-events-none" />
           </div>
 
-          {/* Hide Drafted Switch */}
-          <button
-            type="button"
-            onClick={() => onToggleHideDrafted(!hideDrafted)}
-            className={`px-3 py-2 rounded-xl text-xs font-mono border transition-all flex items-center gap-2 whitespace-nowrap active:scale-95 ${
-              hideDrafted
-                ? 'bg-cyan-950/80 border-cyan-500/40 text-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
-                : 'bg-slate-900/80 border-white/10 text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span
-              className={`w-2 h-2 rounded-full ${
-                hideDrafted ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'
+          {onToggleHideDrafted && modeFilter === 'all' && (
+            <button
+              type="button"
+              onClick={() => onToggleHideDrafted(!hideDrafted)}
+              className={`px-3 py-2 rounded-xl text-xs font-mono border transition-all flex items-center gap-2 whitespace-nowrap active:scale-95 ${
+                hideDrafted
+                  ? 'bg-cyan-950/80 border-cyan-500/40 text-cyan-300 shadow-[0_0_8px_rgba(6,182,212,0.3)]'
+                  : 'bg-slate-900/80 border-white/10 text-slate-400 hover:text-slate-200'
               }`}
-            />
-            <span>Free agents only</span>
-          </button>
+            >
+              <span
+                className={`w-2 h-2 rounded-full ${
+                  hideDrafted ? 'bg-cyan-400 animate-pulse' : 'bg-slate-600'
+                }`}
+              />
+              <span>Free agents only</span>
+            </button>
+          )}
         </div>
       </div>
 

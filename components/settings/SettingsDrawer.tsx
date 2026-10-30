@@ -192,7 +192,9 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => {
-      window.removeEventListener('keydown', handleKeyDown);
+      if (typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+        window.removeEventListener('keydown', handleKeyDown);
+      }
     };
   }, [isOpen, onClose]);
 
@@ -220,7 +222,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
       onClick={onClose}
     >
       <div
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
         className={`w-full max-w-md max-h-[85vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-[#161622] border border-cyan-500/30 p-5 sm:p-6 shadow-[0_0_30px_rgba(6,182,212,0.2)] space-y-5 ${className}`}
       >
         {/* Drawer Header */}
@@ -421,13 +423,13 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
             disabled={isLoading || !hasConfiguredUsername || isMock}
             className="w-full p-2.5 rounded-xl bg-slate-900/90 border border-cyan-500/30 text-slate-100 font-mono text-xs focus:outline-none focus:border-cyan-400 transition-colors disabled:opacity-50"
           >
-            {isMock ? (
-              <option value="" disabled className="bg-slate-900 text-slate-400">
-                Sample league (not on Sleeper)
-              </option>
-            ) : !hasConfiguredUsername ? (
+            {!hasConfiguredUsername ? (
               <option value="" disabled className="bg-slate-900 text-slate-400">
                 Enter a Sleeper username above to load leagues
+              </option>
+            ) : isMock ? (
+              <option value="" disabled className="bg-slate-900 text-slate-400">
+                Sample league (not on Sleeper)
               </option>
             ) : availableLeagues.length === 0 ? (
               <option value="" disabled className="bg-slate-900 text-slate-400">

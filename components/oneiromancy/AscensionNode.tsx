@@ -141,7 +141,7 @@ export const AscensionNode: React.FC<AscensionNodeProps> = ({
           </div>
         )}
 
-        {/* Elemental Synergy Tag & Strategic Rationale */}
+        {/* Elemental Stack Tag & Strategic Rationale */}
         <div className="mt-2 flex flex-wrap gap-1.5 items-center">
           {step.elemental_synergy_tag && (
             <span className="text-[10px] font-mono text-purple-300 bg-purple-950/50 border border-purple-500/30 px-2 py-0.5 rounded flex items-center gap-1">

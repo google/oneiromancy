@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -21,9 +22,7 @@ import { OneiromancyProvider, useOneiromancy } from '@/context/OneiromancyContex
 import NavigationShell from '@/components/common/NavigationShell';
 import OneiromancyDashboard from '@/components/screens/OneiromancyDashboard';
 import CosmicBoard from '@/components/screens/CosmicBoard';
-import PlayerMarketplace from '@/components/screens/PlayerMarketplace';
 import MatchupsScreen from '@/components/screens/MatchupsScreen';
-import TradesScreen from '@/components/screens/TradesScreen';
 import LeagueScreen from '@/components/screens/LeagueScreen';
 import SettingsDrawer from '@/components/settings/SettingsDrawer';
 import OraclePanel from '@/components/oracle/OraclePanel';
@@ -46,6 +45,7 @@ function OneiromancyApp() {
   } = useOneiromancy();
 
   const [isOracleOpen, setIsOracleOpen] = useState(false);
+
   // Legacy deep links to the old Scoring Model tab open the Oracle panel.
   useEffect(() => {
     if (activeTab === 'chaos' || activeTab === 'dial') {
@@ -53,15 +53,23 @@ function OneiromancyApp() {
       setTab('oneiromancy');
     }
   }, [activeTab, setTab]);
-  // Screens open the Oracle panel in place, without leaving their tab.
+
+  // Screens open the Oracle panel in place via this event rather than switching tabs.
   useEffect(() => {
     const open = () => setIsOracleOpen(true);
     window.addEventListener('oneiromancy:open-oracle', open);
+    if (typeof window !== 'undefined' && window.location?.search) {
+      const tabParam = new URLSearchParams(window.location.search).get('tab')?.trim();
+      if (tabParam === 'weights' || tabParam === 'oracle' || tabParam === 'chaos' || tabParam === 'dial') {
+        setIsOracleOpen(true);
+      }
+    }
     return () => window.removeEventListener('oneiromancy:open-oracle', open);
   }, []);
 
-  // In mock mode the settings hold the demo persona; the Live button should
-  // still name the user's own saved Sleeper account.
+  // In mock mode the live state holds the demo persona, not the owner's
+  // account; read the real username from storage so the banner can offer a
+  // one-click return.
   const [savedUsername, setSavedUsername] = useState<string | null>(null);
   useEffect(() => {
     try {
@@ -92,30 +100,24 @@ function OneiromancyApp() {
       oracleLambda={draftState.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA}
       onOpenOracle={() => setIsOracleOpen(true)}
     >
-      {/* Screen Router with responsive transition container */}
+      {/* 4 Consolidated Top-Level Sections: Roster, Matchup, Players, League */}
       <div className="w-full relative transition-all duration-200">
-        {(activeTab === 'oneiromancy' || activeTab === 'matchups' || activeTab === 'matchup') && (
-          <div className="flex flex-col gap-8">
-            <OneiromancyDashboard />
-            <section aria-labelledby="matchup-details-heading" className="flex flex-col gap-3">
-              <h2 id="matchup-details-heading" className="font-serif text-xl font-bold text-slate-100">
-                Matchup details
-              </h2>
-              <MatchupsScreen embedded part="details" />
-            </section>
-          </div>
+        {activeTab === 'oneiromancy' && <OneiromancyDashboard />}
+        {(activeTab === 'matchups' || activeTab === 'matchup') && <MatchupsScreen />}
+        {(activeTab === 'board' || activeTab === 'market' || activeTab === 'marketplace' || activeTab === 'trades') && (
+          <CosmicBoard
+            initialFilter={
+              activeTab === 'market' || activeTab === 'marketplace'
+                ? 'waivers'
+                : activeTab === 'trades'
+                  ? 'trades'
+                  : 'all'
+            }
+          />
         )}
-        {(activeTab === 'market' || activeTab === 'marketplace' || activeTab === 'board') && (
-          <div className="flex flex-col gap-8">
-            <PlayerMarketplace section="waivers" />
-            <CosmicBoard />
-          </div>
-        )}
-        {activeTab === 'trades' && <TradesScreen />}
         {activeTab === 'league' && <LeagueScreen />}
       </div>
 
-      {/* Global Slide-up Settings Modal / Drawer */}
       <OraclePanel isOpen={isOracleOpen} onClose={() => setIsOracleOpen(false)} />
 
       <SettingsDrawer

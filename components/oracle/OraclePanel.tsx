@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,29 +17,19 @@
 
 'use client';
 
-import React, { useEffect, useMemo, useState } from 'react';
-import { X, Compass } from 'lucide-react';
+import React, { useEffect } from 'react';
+import { X, Compass, HelpCircle } from 'lucide-react';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import ChaosDial from '@/components/screens/ChaosDial';
-import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
-import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
 import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
-import { getSeasonContext } from '@/lib/sleeper';
-import { computeLineupCheck, computeWaiverMoves } from '@/lib/oracle';
 import { oracleLeaning } from '@/components/common/NavigationShell';
-
-import type { CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
-
-// Stable empty defaults so memo dependencies don't change every render.
-const NO_MY_ROSTER: RosterSlot[] = [];
-const NO_COSMIC_BOARD: CosmicPlayer[] = [];
 
 export interface OraclePanelProps {
   isOpen: boolean;
   onClose: () => void;
 }
 
-// Symmetric around the middle; "Mostly stars" is the owner's default λ.
+// Symmetric around the middle; default is λ = 0.75 (mostly stars).
 const PRESETS = [
   { value: 0, label: 'Stats only' },
   { value: 1 - DEFAULT_CHAOS_LAMBDA, label: 'Mostly stats' },
@@ -47,32 +38,21 @@ const PRESETS = [
 ];
 
 /**
- * The Oracle: one place to decide how much the stars move your decisions,
- * previewed on your own lineup and waiver moves.
+ * The Oracle: one place to decide how much the stars move your decisions
+ * and inspect the 5-pillar Spirit weights and astrology reference guide.
  */
 export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => {
   const { draftState, updateChaosLambda } = useOneiromancy();
   const lambda = draftState.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
-  const [inspected, setInspected] = useState<InspectTarget | null>(null);
-  const roster = draftState.my_roster ?? NO_MY_ROSTER;
-  const board = draftState.cosmic_board ?? NO_COSMIC_BOARD;
-  const currentWeek = getSeasonContext()?.currentWeek;
-
-  const swaps = useMemo(() => computeLineupCheck(roster, lambda), [roster, lambda]);
-  const topWaiver = useMemo(
-    () => computeWaiverMoves(board, roster, lambda, currentWeek, 1)[0],
-    [board, roster, lambda, currentWeek],
-  );
 
   useEffect(() => {
     if (!isOpen || typeof window === 'undefined') return;
-    // With a player open on top, Escape closes only the player view.
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape' && !inspected) onClose();
+      if (e.key === 'Escape') onClose();
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose, inspected]);
+  }, [isOpen, onClose]);
 
   if (!isOpen) return null;
 
@@ -83,18 +63,18 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
         aria-modal="true"
         aria-label="Oracle settings"
         className="h-full w-full max-w-lg overflow-y-auto bg-[#14141c] border-l border-purple-500/30 p-5 space-y-5"
-        onClick={(e) => e.stopPropagation()}
+        onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
       >
         <div className="flex items-start justify-between gap-3">
           <div>
             <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/80">
-              Divination Equilibrium
+              Weights &amp; Astrology Encyclopedia
             </span>
             <h2 className="font-serif text-2xl font-bold text-slate-100 flex items-center gap-2">
-              <Compass className="w-5 h-5 text-purple-300" /> Oracle
+              <Compass className="w-5 h-5 text-purple-300" /> Oracle &amp; Weights
             </h2>
             <p className="text-xs text-slate-400 mt-1">
-              How much should the stars move your decisions? Every ranking and pick in the app uses this.
+              Control how football stats and astrological alignment blend across every player card, lineup check, and trade.
             </p>
           </div>
           <button
@@ -107,30 +87,39 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
           </button>
         </div>
 
-        {/* The four numbers, named the same everywhere in the app */}
-        <dl className="grid grid-cols-2 gap-x-3 gap-y-1.5 text-[11px] font-sans">
+        {/* The three canonical player metrics, named the same everywhere in the app */}
+        <dl className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-sans">
           {(
             [
               ['Stats', 'text-cyan-300', "This week's projected points."],
-              ['Spirit', 'text-purple-300', 'Season-long score from the five pillars below.'],
-              ['Stars', 'text-emerald-300', "This week's favorability, built on Spirit (0–100)."],
-              ['Oracle', 'text-amber-300', 'Stats and Stars blended by λ.'],
+              ['Oracle', 'text-purple-300', 'Stats and Stars blended by λ.'],
+              ['Stars', 'text-emerald-300', "This week's alignment (0-100), built from the 5-pillar Spirit weights."],
             ] as const
           ).map(([term, color, def]) => (
-            <div key={term}>
-              <dt className={`inline font-mono font-bold ${color}`}>{term}</dt>
-              <dd className="inline text-slate-400"> {def}</dd>
+            <div key={term} className="p-2 rounded-lg bg-slate-900/60 border border-white/5">
+              <dt className={`font-mono font-bold ${color}`}>{term}</dt>
+              <dd className="text-slate-400 mt-0.5">{def}</dd>
             </div>
           ))}
         </dl>
 
         <section className="space-y-3 p-4 rounded-xl bg-slate-900/70 border border-white/10">
           <div className="flex items-baseline justify-between">
-            <label htmlFor="oracle-lambda" className="text-xs font-mono text-slate-300">
-              λ = <span className="text-purple-200 font-bold text-base">{lambda.toFixed(2)}</span>
+            <label
+              htmlFor="oracle-lambda"
+              className="text-xs font-mono text-slate-300 flex items-center gap-1.5"
+              title="What it measures: The blend ratio between football projections (Stats) and astrological alignment (Stars). Why it matters: Raising λ promotes players with hot game-day transits over chalk projections."
+            >
+              <span>
+                λ = <span className="text-purple-200 font-bold text-base">{lambda.toFixed(2)}</span>
+              </span>
+              <HelpCircle className="w-3.5 h-3.5 text-slate-500" />
             </label>
             <span className="text-xs font-mono text-purple-300">{oracleLeaning(lambda)}</span>
           </div>
+          <p className="text-[11px] text-slate-400">
+            Sets how much astrological alignment (Stars) shifts a player&apos;s Oracle rating vs. raw football Stats.
+          </p>
           <input
             id="oracle-lambda"
             type="range"
@@ -151,6 +140,7 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
               <button
                 key={p.value}
                 type="button"
+                data-testid={`preset-${p.value}`}
                 onClick={() => updateChaosLambda(p.value)}
                 className={`py-1.5 rounded-lg text-[10px] font-mono border ${
                   Math.abs(lambda - p.value) < 0.01
@@ -166,62 +156,10 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
           <p className="text-[11px] font-mono text-slate-400">Oracle = (1 − λ) × Stats + λ × Stars</p>
         </section>
 
-        <section className="space-y-2" data-testid="oracle-preview">
-          <h3 className="text-xs font-mono uppercase tracking-wider text-slate-400">At this setting</h3>
-          {swaps.length === 0 ? (
-            <p className="text-sm text-slate-300 p-3 rounded-lg bg-slate-900/60 border border-white/10">
-              Your current lineup is already the Oracle&apos;s best lineup.
-            </p>
-          ) : (
-            swaps.map((s) => (
-              <div
-                key={s.playerIn.id}
-                className="p-3 rounded-lg bg-slate-900/60 border border-white/10 text-sm flex flex-col gap-0.5"
-              >
-                <span className="text-slate-100">
-                  {s.slot}: start{' '}
-                  <strong>
-                    <PlayerLink player={s.playerIn} vs={s.playerOut ?? null} onOpen={setInspected} />
-                  </strong>
-                  {s.playerOut ? (
-                    <>
-                      {' '}over <PlayerLink player={s.playerOut} vs={s.playerIn} onOpen={setInspected} />
-                    </>
-                  ) : null}
-                  {s.moved ? ` (${s.moved.player.name} moves to ${s.moved.to})` : ''}
-                </span>
-                <span className="text-[11px] font-mono text-slate-400">
-                  {s.flipLambda !== null
-                    ? `Stats and Stars disagree. This flips at λ ${s.flipLambda.toFixed(2)}.`
-                    : 'Stats and Stars agree.'}
-                </span>
-              </div>
-            ))
-          )}
-          {topWaiver && (
-            <div className="p-3 rounded-lg bg-slate-900/60 border border-white/10 text-sm">
-              Top waiver move: add{' '}
-              <strong>
-                <PlayerLink player={topWaiver.add} vs={topWaiver.drop} onOpen={setInspected} />
-              </strong>
-              , drop <PlayerLink player={topWaiver.drop} vs={topWaiver.add} onOpen={setInspected} />
-            </div>
-          )}
-        </section>
-
         {/* Star weights and the astrology reference are always shown (owner preference). */}
         <section aria-label="Star weights and astrology reference">
           <ChaosDial embedded />
         </section>
-      </div>
-      <div onClick={(e) => e.stopPropagation()}>
-        <PlayerDetailModal
-          player={inspected?.player ?? null}
-          compareWith={inspected?.vs ?? null}
-          isOpen={inspected !== null}
-          onClose={() => setInspected(null)}
-          roster={roster}
-        />
       </div>
     </div>
   );

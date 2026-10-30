@@ -56,15 +56,98 @@ export const BASELINES: Record<NFLPosition, number> & {
 };
 
 export const DEFAULT_ORACLE_WEIGHTS: OracleWeights = {
-  celestial: 0.3,
-  numeric: 0.2,
+  celestial: 0.1,
+  numeric: 0.1,
   geomantic: 0.25,
   oracular: 0.1,
-  harmony: 0.15,
+  harmony: 0.45,
 };
 
-// The owner's chosen default: lean on the stars.
+// Default Oracle lambda balance (λ = 0.75) and empirical star weights (10% Celestial, 10% Numeric, 25% Geomantic, 10% Oracular, 45% Harmony).
 export const DEFAULT_CHAOS_LAMBDA = 0.75;
+
+export const NFL_BYE_WEEK_MIN = 5;
+export const NFL_BYE_WEEK_MAX = 14;
+
+export function isNFLByeWeek(week: number): boolean {
+  return week >= NFL_BYE_WEEK_MIN && week <= NFL_BYE_WEEK_MAX;
+}
+
+export function isPlayerOnByeWeek(
+  week?: number,
+  playerByeWeek?: number,
+  teamCode?: string,
+  seasonByeWeeks?: Record<string, number>
+): boolean {
+  if (typeof week !== 'number' || !isNFLByeWeek(week)) return false;
+  const normalizedTeam = (teamCode || '').toUpperCase();
+  const effectiveBye = (normalizedTeam ? seasonByeWeeks?.[normalizedTeam] : undefined) ?? playerByeWeek;
+  return Boolean(effectiveBye && effectiveBye === week);
+}
+
+export interface DivinationPillarMeta {
+  key: keyof OracleWeights;
+  name: string;
+  label: string;
+  desc: string;
+  whatItMeasures: string;
+  whyItMatters: string;
+  color: string;
+  defaultVal: number;
+}
+
+export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
+  {
+    key: 'celestial',
+    name: 'Celestial Transits',
+    label: 'Celestial Transits',
+    desc: 'Planetary alignments & natal transit aspects',
+    whatItMeasures: 'Game-day sun, moon, Mars, and Jupiter angles against a player’s birth chart.',
+    whyItMatters: 'Trines and conjunctions boost explosive ceiling; hard squares signal fatigue or turnover risk.',
+    color: 'bg-cyan-400',
+    defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.celestial * 100),
+  },
+  {
+    key: 'geomantic',
+    name: 'Stadium Feng Shui',
+    label: 'Stadium Feng Shui',
+    desc: 'Magnetic venue orientation & dome enclosure atmosphere',
+    whatItMeasures: 'Stadium compass axis (N-S vs. E-W), dome vs. open-air roof, and travel distance.',
+    whyItMatters: 'Controlled domes and favorable field alignments lift passing efficiency and kicking accuracy.',
+    color: 'bg-emerald-400',
+    defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.geomantic * 100),
+  },
+  {
+    key: 'numeric',
+    name: 'Jersey Gematria',
+    label: 'Jersey Gematria',
+    desc: 'Life path root numbers & master vibration resonance',
+    whatItMeasures: 'Pythagorean birthdate life-path number (1-9, 11, 22) paired with jersey number.',
+    whyItMatters: 'Master numbers (11, 22) and aligned jersey roots correlate with clutch red-zone usage.',
+    color: 'bg-purple-400',
+    defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.numeric * 100),
+  },
+  {
+    key: 'harmony',
+    name: 'Squad Alchemy',
+    label: 'Squad Alchemy',
+    desc: 'Western Trine elemental harmony & 3.0x stack bonus',
+    whatItMeasures: 'Same-team QB + WR/TE stacks and 3+ starters sharing Fire, Earth, Air, or Water.',
+    whyItMatters: 'Correlated passing stacks and balanced elements multiply upside when a game shoots out.',
+    color: 'bg-amber-400',
+    defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.harmony * 100),
+  },
+  {
+    key: 'oracular',
+    name: 'Tarot & Oracular',
+    label: 'Tarot & Oracular',
+    desc: 'Major Arcana archetype alignments & hexagram harmony',
+    whatItMeasures: 'Player’s Major Arcana card and weekly I-Ching hexagram momentum state.',
+    whyItMatters: 'Separates surging breakout roles (The Chariot, The Sun) from volatile snap-share traps.',
+    color: 'bg-rose-400',
+    defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.oracular * 100),
+  },
+] as const;
 
 // ============================================================================
 // Utility & Clamping

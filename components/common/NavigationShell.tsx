@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,7 +19,7 @@
 
 import React from 'react';
 import UserAvatar from '@/components/common/UserAvatar';
-import { Sparkles, Scale, Settings, ArrowRightLeft, Trophy, Compass } from 'lucide-react';
+import { Sparkles, Swords, Users, Trophy, Settings, Compass } from 'lucide-react';
 
 export type OneiromancyTab =
   | 'oneiromancy'
@@ -61,24 +62,24 @@ interface TabItem {
   icon: React.ComponentType<{ className?: string }>;
 }
 
-/** The manager's four weekly calls: positioning, acquiring (x2), context. */
+/** Four consolidated top-level sections: Roster, Matchup, Players, League. */
 const TABS: TabItem[] = [
-  { id: 'oneiromancy', label: 'This Week', short: 'Week', icon: Sparkles },
-  { id: 'market', label: 'Waivers', short: 'Waivers', icon: Scale },
-  { id: 'trades', label: 'Trades', short: 'Trades', icon: ArrowRightLeft },
+  { id: 'oneiromancy', label: 'Roster', short: 'Roster', icon: Sparkles },
+  { id: 'matchups', label: 'Matchup', short: 'Matchup', icon: Swords },
+  { id: 'board', label: 'Players', short: 'Players', icon: Users },
   { id: 'league', label: 'League', short: 'League', icon: Trophy },
 ];
 
 const TAB_ALIASES: Record<string, OneiromancyTab> = {
   oneiromancy: 'oneiromancy',
-  matchups: 'oneiromancy',
-  matchup: 'oneiromancy',
   dial: 'oneiromancy',
   chaos: 'oneiromancy',
-  market: 'market',
-  marketplace: 'market',
-  board: 'market',
-  trades: 'trades',
+  matchups: 'matchups',
+  matchup: 'matchups',
+  board: 'board',
+  market: 'board',
+  marketplace: 'board',
+  trades: 'board',
   league: 'league',
 };
 
@@ -124,7 +125,6 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
       : statusType === 'syncing'
       ? 'bg-amber-500'
       : 'bg-slate-500';
-  // The original's glow on the status dot (live = emerald).
   const statusGlow =
     statusType === 'live'
       ? 'shadow-[0_0_8px_rgba(16,185,129,0.8)]'
@@ -135,12 +135,12 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
   return (
     <div className="min-h-screen flex flex-col bg-[#131318] text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200">
       {/* Sticky Header */}
-      <header className="sticky top-0 z-30 bg-[#131318]/90 backdrop-blur-md border-b border-white/10 px-4 py-2 flex items-center justify-between gap-2">
-        <div className="flex items-center gap-2 min-w-0">
-          <span className="text-purple-400 text-lg select-none" aria-hidden="true">
+      <header className="sticky top-0 z-30 bg-[#131318]/90 backdrop-blur-md border-b border-white/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-1.5 sm:gap-2">
+        <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">
+          <span className="text-purple-400 text-base sm:text-lg select-none shrink-0" aria-hidden="true">
             ✦
           </span>
-          <h1 className="font-serif font-bold text-sm sm:text-base tracking-wider bg-gradient-to-r from-slate-100 via-slate-200 to-cyan-300 bg-clip-text text-transparent mr-2">
+          <h1 className="font-serif font-bold text-xs sm:text-base tracking-wider bg-gradient-to-r from-slate-100 via-slate-200 to-cyan-300 bg-clip-text text-transparent mr-1 sm:mr-2 truncate">
             ONEIROMANCY
           </h1>
           {/* Desktop tabs; phones use the bottom bar instead */}
@@ -169,26 +169,25 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 shrink-0">
-          {/* Oracle chip: how much the stars move every recommendation */}
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+          {/* Oracle chip: opens Weights & Astrology Encyclopedia */}
           {onOpenOracle && (
             <button
               type="button"
               data-testid="oracle-chip"
               onClick={onOpenOracle}
               aria-label={`Oracle settings, lambda ${(oracleLambda ?? 0).toFixed(2)}`}
-              className="flex items-center gap-1.5 px-2.5 py-1 rounded-full border border-purple-500/40 bg-purple-950/40 text-purple-200 text-[11px] font-mono hover:border-purple-400 transition-colors"
+              className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 rounded-full border border-purple-500/40 bg-purple-950/40 text-purple-200 text-[10px] sm:text-[11px] font-mono hover:border-purple-400 transition-colors whitespace-nowrap"
             >
-              <Compass className="w-3.5 h-3.5" />
-              <span>λ {(oracleLambda ?? 0).toFixed(2)}</span>
-              <span className="hidden sm:inline text-purple-300/70">· {oracleLeaning(oracleLambda ?? 0)}</span>
+              <Compass className="w-3 h-3 sm:w-3.5 sm:h-3.5 shrink-0" />
+              <span>Weights · λ {(oracleLambda ?? 0).toFixed(2)}</span>
             </button>
           )}
 
           {/* Single sync indicator */}
           <div
             data-testid="draft-status-indicator"
-            className="flex items-center gap-2 px-2.5 py-1 rounded-full bg-slate-900/80 border border-white/10 text-[11px] font-mono"
+            className="flex items-center gap-1.5 px-2 sm:px-2.5 py-1 rounded-full bg-slate-900/80 border border-white/10 text-[10px] sm:text-[11px] font-mono whitespace-nowrap"
           >
             <span className="relative flex h-2 w-2">
               {statusType === 'syncing' && (
@@ -247,13 +246,13 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
         </div>
       )}
 
-      {/* Mock mode is always labelled, with a way back */}
+      {/* Mock mode notice */}
       {mode === 'mock' && (
         <div
           data-testid="sleeper-mock-banner"
           className="bg-purple-950/40 border-b border-purple-500/20 px-4 py-1.5 flex items-center justify-between gap-2 text-[11px] font-mono text-purple-300/90"
         >
-          <span>🔮 Mock league · sample data, not your Sleeper account</span>
+          <span>🔮 Mock league · sample data</span>
           {sleeperUsername ? (
             <button
               type="button"
@@ -268,7 +267,7 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
               onClick={onOpenSettings}
               className="text-[11px] text-cyan-400 hover:underline shrink-0"
             >
-              Connect your Sleeper account →
+              Connect Sleeper →
             </button>
           )}
         </div>
@@ -303,7 +302,7 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
                   <span aria-hidden="true" className="absolute top-0 h-0.5 w-8 bg-cyan-400 rounded-full shadow-[0_0_8px_#06b6d4] transition-all" />
                 )}
                 <Icon className="w-5 h-5" />
-                <span className="text-[10px] font-mono tracking-tight font-medium">{tab.short}</span>
+                <span data-testid={`mobile-nav-tab-${tab.id}`} className="text-[10px] font-mono tracking-tight font-medium">{tab.short}</span>
               </button>
             );
           })}

@@ -102,7 +102,44 @@ async function startServerIfNeeded() {
   return true; // spawned
 }
 
+function listFilesRecursive(dir) {
+  if (!fs.existsSync(dir)) return [];
+  const results = [];
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      results.push(...listFilesRecursive(full));
+    } else {
+      results.push(full);
+    }
+  }
+  return results;
+}
+
+function verifyStaticInvariants() {
+  console.log('[Launch Verification] Verifying static invariants...');
+
+  // 1. Verify components/screens/*.tsx total LOC < 3500
+  const screensDir = path.join(rootDir, 'components', 'screens');
+  if (fs.existsSync(screensDir)) {
+    const files = fs.readdirSync(screensDir).filter((f) => f.endsWith('.tsx'));
+    let totalLines = 0;
+    for (const file of files) {
+      const fullPath = path.join(screensDir, file);
+      const content = fs.readFileSync(fullPath, 'utf8');
+      const lines = (content.match(/\n/g) || []).length;
+      totalLines += lines;
+    }
+    assert.ok(
+      totalLines < 3500,
+      `Total lines of components/screens/*.tsx is ${totalLines}, which must be strictly < 3500`
+    );
+    console.log(`✓ Screen LOC budget verified: ${totalLines} lines across ${files.length} screens (< 3500).`);
+  }
+}
+
 async function runVerification() {
+  verifyStaticInvariants();
   const spawned = await startServerIfNeeded();
   let attempt = 0;
   let success = false;

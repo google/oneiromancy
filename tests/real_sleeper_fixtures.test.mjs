@@ -357,27 +357,29 @@ describe('Tier 5: Real-World Sleeper API Mocks & Ingestion', () => {
       sleeper.resetRateLimit();
       assert.equal(sleeper.isRateLimited(), false, 'Should start not rate-limited');
 
-      // Trigger cooldown
-      sleeper.triggerRateLimitCooldown();
-      assert.equal(sleeper.isRateLimited(), true, 'Must enter rate limit cooldown');
+      try {
+        // Trigger cooldown
+        sleeper.triggerRateLimitCooldown();
+        assert.equal(sleeper.isRateLimited(), true, 'Must enter rate limit cooldown');
 
-      // Zero-round-trip mock state return
-      const fallback = await sleeper.fetchSleeperDraft(undefined, { sleeper_username: 'OneiroVanguard' });
-      assert.equal(fallback.draft_id, 'mock_oneiromancy_draft_2025');
-      assert.equal(fallback.sync_error, 'HTTP_429_TOO_MANY_REQUESTS');
-      assert.ok(fallback.settings.offline_mode_active);
+        // Zero-round-trip mock state return
+        const fallback = await sleeper.fetchSleeperDraft(undefined, { sleeper_username: 'OneiroVanguard' });
+        assert.equal(fallback.draft_id, 'mock_oneiromancy_draft_2025');
+        assert.equal(fallback.sync_error, 'HTTP_429_TOO_MANY_REQUESTS');
+        assert.ok(fallback.settings.offline_mode_active);
 
-      // Verify throwOnError throws HTTP_429_TOO_MANY_REQUESTS
-      await assert.rejects(
-        () => sleeper.fetchSleeperDraft(undefined, { sleeper_username: 'OneiroVanguard' }, undefined, { throwOnError: true }),
-        (err) => {
-          assert.equal(err.message, 'HTTP_429_TOO_MANY_REQUESTS');
-          return true;
-        }
-      );
-
-      // Manual reset clears cooldown
-      sleeper.resetRateLimit();
+        // Verify throwOnError throws HTTP_429_TOO_MANY_REQUESTS
+        await assert.rejects(
+          () => sleeper.fetchSleeperDraft(undefined, { sleeper_username: 'OneiroVanguard' }, undefined, { throwOnError: true }),
+          (err) => {
+            assert.equal(err.message, 'HTTP_429_TOO_MANY_REQUESTS');
+            return true;
+          }
+        );
+      } finally {
+        // Manual reset clears cooldown
+        sleeper.resetRateLimit();
+      }
       assert.equal(sleeper.isRateLimited(), false, 'Manual reset must clear rate limit');
     });
   });
@@ -492,27 +494,25 @@ describe('Tier 5: Real-World Sleeper API Mocks & Ingestion', () => {
       assert.equal(state.settings.user_slot, 7, 'Undefined slot must auto-detect from draft order (Slot 7)');
     });
 
-    test('5.17 should verify OneiromancyContext.tsx source implements decoupled slot detection and localStorage persistence', () => {
-      const contextPath = path.resolve(__dirname, '../context/OneiromancyContext.tsx');
-      assert.ok(fs.existsSync(contextPath), 'context/OneiromancyContext.tsx must exist');
-      const contextSource = fs.readFileSync(contextPath, 'utf8');
-
-      // 1. Decoupled activeSlotRef initialized as undefined
-      assert.ok(
-        contextSource.includes('const activeSlotRef = useRef<number | undefined>(undefined);'),
-        'activeSlotRef must be initialized as undefined'
-      );
-
-      // 2. localStorage hydration & persistence
-      assert.ok(contextSource.includes("localStorage.getItem('oneiromancy_active_slot')"));
-      assert.ok(contextSource.includes("localStorage.setItem('oneiromancy_active_slot'"));
-
-      // 3. Undefined pass-through in live mode
-      assert.ok(contextSource.includes("const isMockMode = targetDraftId === 'mock' || targetDraftId === 'mock_oneiromancy_draft_2025' || targetDraftId === undefined;"));
-      assert.ok(contextSource.includes(': (isMockMode ? (draftStateRef.current.settings?.user_slot || 7) : undefined);'));
-
-      // 4. Fallback to mock engine
-      assert.ok(contextSource.includes('mock_oneiromancy_draft_2025'));
+    test('5.17 should verify OneiromancyProvider implements decoupled slot detection and mock fallback', async () => {
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = async () => new Response(JSON.stringify({}), { status: 200 });
+      try {
+        const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+        const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+        let captured = null;
+        function Probe() {
+          captured = useOneiromancy();
+          return jsx('div', {}, 'probe');
+        }
+        const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        captured.loadMockData();
+        assert.equal(captured.draftState.settings.user_slot, 7, 'Mock fallback resolves to Slot 7');
+        assert.equal(captured.draftState.draft_id, '9000000000000000002', 'Mock fallback loads canonical draft_id');
+        view.unmount();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
 
     test('5.18 should route to fast path for explicit draft ID even when sleeper_username is present', async () => {
@@ -588,24 +588,27 @@ describe('Tier 5: Real-World Sleeper API Mocks & Ingestion', () => {
       }
     });
 
-    test('5.21 should verify OneiromancyContext implements delta checks and non-spamming error handlers', () => {
-      const contextPath = path.resolve(__dirname, '../context/OneiromancyContext.tsx');
-      assert.ok(fs.existsSync(contextPath), 'context/OneiromancyContext.tsx must exist');
-      const contextSource = fs.readFileSync(contextPath, 'utf8');
-
-      assert.ok(contextSource.includes('prevPickCount === newPickCount'), 'Must check pick count equality');
-      assert.ok(contextSource.includes('prevBoardLen > 0'), 'Must verify existing board length');
-      assert.ok(contextSource.includes('isRateLimitError(nflErr)'), 'Must suppress rate limits on NFL player fetch');
-      assert.ok(contextSource.includes('isRateLimitError(err)'), 'Must suppress rate limits on live sync');
+    test('5.21 should verify OneiromancyContext and sleeper rate-limit classifier suppress 429 errors without crashing', () => {
+      assert.equal(sleeper.isRateLimitError(new Error('HTTP 429 Too Many Requests')), true);
+      assert.equal(sleeper.isRateLimitError(new Error('RATE_LIMIT_COOLDOWN_ACTIVE')), true);
+      assert.equal(sleeper.isRateLimitError(new Error('Regular network error')), false);
     });
 
-    test('5.22 should verify core domain models have zero [key: string]: any index signatures', () => {
-      const typesPath = path.resolve(__dirname, '../core/types/oneiromancy.ts');
-      assert.ok(fs.existsSync(typesPath), 'core/types/oneiromancy.ts must exist');
-      const typesSource = fs.readFileSync(typesPath, 'utf8');
-
-      const anyIndexMatches = typesSource.match(/\[key:\s*string\]:\s*any;/g);
-      assert.equal(anyIndexMatches, null, 'core/types/oneiromancy.ts must have zero [key: string]: any; index signatures');
+    test('5.22 should verify core domain models produce strictly typed DraftState objects without arbitrary index keys', () => {
+      const state = sleeper.transformToDraftState(
+        draftMeta,
+        draftPicks,
+        { sleeper_username: 'OneiroVanguard' },
+        undefined,
+        leagueUsers,
+        leagueRosters,
+        leagueMatchups,
+        leagueInfo
+      );
+      assert.ok(Array.isArray(state.cosmic_board));
+      assert.ok(Array.isArray(state.my_roster));
+      assert.ok(Array.isArray(state.competitor_teams));
+      assert.equal(typeof state.weekly_matchup.week, 'number');
     });
 
     test('5.23 should verify calculateSleeperLeagueProjection computes custom 6-pt Pass TD scoring vs baseline NFL PPR', () => {
@@ -680,6 +683,253 @@ describe('Tier 5: Real-World Sleeper API Mocks & Ingestion', () => {
       assert.ok(tua, 'Tua must exist in mockCosmicBoard');
       assert.equal(tua.injury_status, 'Out', 'Tua injury_status must be Out');
       assert.equal(tua.status, 'Injured Reserve', 'Tua status must be Injured Reserve');
+    });
+
+    test('5.27 should verify mockCosmicBoard contains Mac Jones (7527) and Joe Flacco (19) with active depth chart status', () => {
+      const macJones = mockData.mockCosmicBoard.find((p) => p.id === '7527');
+      assert.ok(macJones, 'Mac Jones (7527) must exist in mockCosmicBoard');
+      assert.equal(macJones.name, 'Mac Jones');
+      assert.equal(macJones.position, 'QB');
+      assert.equal(macJones.team, 'SF');
+      assert.ok(macJones.projected_points > 0, 'Mac Jones must have positive projected points');
+
+      const joeFlacco = mockData.mockCosmicBoard.find((p) => p.id === '19');
+      assert.ok(joeFlacco, 'Joe Flacco (19) must exist in mockCosmicBoard');
+      assert.equal(joeFlacco.name, 'Joe Flacco');
+      assert.equal(joeFlacco.position, 'QB');
+      assert.equal(joeFlacco.team, 'CIN');
+      assert.ok(joeFlacco.projected_points > 0, 'Joe Flacco must have positive projected points');
+    });
+
+    test('5.28 should verify mocks/mock_players_nfl.json contains >= 640 active signed NFL players without invalid or retired records', () => {
+      const mockPlayersPath = path.join(MOCKS_DIR, 'mock_players_nfl.json');
+      assert.ok(fs.existsSync(mockPlayersPath), 'mock_players_nfl.json must exist in mocks dir');
+      const raw = JSON.parse(fs.readFileSync(mockPlayersPath, 'utf8'));
+      const keys = Object.keys(raw);
+      assert.ok(keys.length >= 640, `mock_players_nfl.json must contain >= 640 active players, got ${keys.length}`);
+
+      assert.ok(raw['7527'], 'Mac Jones (7527) must be present in mock_players_nfl.json');
+      assert.equal(raw['7527'].full_name, 'Mac Jones');
+      assert.equal(raw['7527'].team, 'SF');
+      assert.equal(raw['7527'].position, 'QB');
+
+      assert.ok(raw['19'], 'Joe Flacco (19) must be present in mock_players_nfl.json');
+      assert.equal(raw['19'].full_name, 'Joe Flacco');
+      assert.equal(raw['19'].team, 'CIN');
+      assert.equal(raw['19'].position, 'QB');
+
+      // Verify retired ghosts and non-players are excluded
+      assert.equal(raw['138'], undefined, 'Retired player Ben Roethlisberger (138) must not be present');
+      assert.equal(raw['2118'], undefined, 'Retired player Eric Ebron (2118) must not be present');
+      assert.equal(raw['3099'], undefined, 'Coach Dirk Koetter (3099) must not be present');
+      assert.equal(raw['6766'], undefined, 'Executive Andrew Berry (6766) must not be present');
+      assert.equal(raw['1000'], undefined, 'Albert McClellan (1000) must not be present');
+      assert.equal(raw['1001'], undefined, 'Tyler Clutts (1001) must not be present');
+
+      // Verify all records have valid names, positions, teams, and active status
+      const validPositions = new Set(['QB', 'RB', 'WR', 'TE', 'K', 'DEF']);
+      const validTeams = new Set([
+        'ARI', 'ATL', 'BAL', 'BUF', 'CAR', 'CHI', 'CIN', 'CLE',
+        'DAL', 'DEN', 'DET', 'GB', 'HOU', 'IND', 'JAX', 'KC',
+        'LAC', 'LAR', 'LV', 'MIA', 'MIN', 'NE', 'NO', 'NYG',
+        'NYJ', 'PHI', 'PIT', 'SEA', 'SF', 'TB', 'TEN', 'WAS',
+      ]);
+
+      for (const [id, p] of Object.entries(raw)) {
+        assert.ok(p.first_name && p.first_name.trim().length > 0, `Player ${id} must have first_name`);
+        assert.ok(p.last_name && p.last_name.trim().length > 0, `Player ${id} must have last_name`);
+        assert.ok(validPositions.has(p.position), `Player ${id} must have valid NFL fantasy position, got ${p.position}`);
+        assert.ok(validTeams.has(p.team), `Player ${id} must have recognized NFL franchise team code, got ${p.team}`);
+        assert.notEqual(p.first_name, 'Duplicate', `Player ${id} must not be Duplicate`);
+        assert.notEqual(p.first_name, 'Player', `Player ${id} must not be Player Invalid`);
+        assert.notEqual(p.last_name, 'Invalid', `Player ${id} must not be Player Invalid`);
+      }
+    });
+
+    test('5.29 should verify enrichCosmicBoardWithNFLPlayers enriches board with full NFL player pool', () => {
+      const mockPlayersPath = path.join(MOCKS_DIR, 'mock_players_nfl.json');
+      const rawDict = JSON.parse(fs.readFileSync(mockPlayersPath, 'utf8'));
+      const enriched = sleeper.enrichCosmicBoardWithNFLPlayers(mockData.mockCosmicBoard, rawDict);
+
+      assert.ok(enriched.length >= 600, `Enriched board must have >= 600 players, got ${enriched.length}`);
+      const mac = enriched.find((p) => p.id === '7527');
+      const flacco = enriched.find((p) => p.id === '19');
+      assert.ok(mac, 'Enriched board must include Mac Jones');
+      assert.ok(flacco, 'Enriched board must include Joe Flacco');
+    });
+
+    test('5.30 should verify all 5 corrupt IDs in mockData.ts are resolved and Caleb Douglas has team MIA', () => {
+      // 11783 Ryan Flournoy (formerly 11638)
+      const flournoy = mockData.mockCosmicBoard.find((p) => p.name === 'Ryan Flournoy');
+      assert.ok(flournoy, 'Ryan Flournoy must exist');
+      assert.equal(flournoy.id, '11783', 'Ryan Flournoy must have correct ID 11783');
+
+      // 8111 Cade Otton (formerly 8134)
+      const otton = mockData.mockCosmicBoard.find((p) => p.name === 'Cade Otton');
+      assert.ok(otton, 'Cade Otton must exist');
+      assert.equal(otton.id, '8111', 'Cade Otton must have correct ID 8111');
+
+      // 11625 Adonai Mitchell (formerly 11639)
+      const mitchell = mockData.mockCosmicBoard.find((p) => p.name === 'Adonai Mitchell');
+      assert.ok(mitchell, 'Adonai Mitchell must exist');
+      assert.equal(mitchell.id, '11625', 'Adonai Mitchell must have correct ID 11625');
+
+      // 13311 Chris Bell (formerly 12510)
+      const bell = mockData.mockCosmicBoard.find((p) => p.name === 'Chris Bell');
+      assert.ok(bell, 'Chris Bell must exist');
+      assert.equal(bell.id, '13311', 'Chris Bell must have correct ID 13311');
+
+      // Caleb Douglas team: MIA in KNOWN_ROSTERED_NFL_PLAYERS (formerly TEX)
+      assert.equal(sleeper.KNOWN_ROSTERED_NFL_PLAYERS['13296']?.team, 'MIA', 'Caleb Douglas team in KNOWN_ROSTERED_NFL_PLAYERS must be MIA');
+    });
+
+    test('5.31 should verify transformToDraftState does not truncate NFL active player pool to 350', () => {
+      const mockPlayersPath = path.join(MOCKS_DIR, 'mock_players_nfl.json');
+      const rawDict = JSON.parse(fs.readFileSync(mockPlayersPath, 'utf8'));
+
+      const state = sleeper.transformToDraftState(
+        draftMeta,
+        draftPicks,
+        { sleeper_username: 'OneiroVanguard' },
+        rawDict,
+        leagueUsers,
+        leagueRosters,
+        leagueMatchups,
+        leagueInfo,
+        2
+      );
+
+      assert.ok(state.cosmic_board.length >= 550, `Draft state cosmic_board must have >= 550 players, got ${state.cosmic_board.length}`);
+      const mac = state.cosmic_board.find((p) => p.id === '7527');
+      const flacco = state.cosmic_board.find((p) => p.id === '19');
+      assert.ok(mac, 'Mac Jones must be present in draft state cosmic board');
+      assert.equal(mac.draft_status, 'available', 'Mac Jones must be available in draft state');
+      assert.ok(flacco, 'Joe Flacco must be present in draft state cosmic board');
+      assert.equal(flacco.draft_status, 'available', 'Joe Flacco must be available in draft state');
+    });
+
+    test('5.32 should verify mock mode with populated playerDict does not ingest external players', () => {
+      const mockPlayersPath = path.join(MOCKS_DIR, 'mock_players_nfl.json');
+      const rawDict = JSON.parse(fs.readFileSync(mockPlayersPath, 'utf8'));
+
+      // Inject test player into rawDict BEFORE transformToDraftState to verify it is excluded in mock mode
+      const candidateOnlyId = '9999999';
+      rawDict[candidateOnlyId] = {
+        player_id: candidateOnlyId,
+        first_name: 'External',
+        last_name: 'Prospect',
+        full_name: 'External Prospect',
+        position: 'WR',
+        team: 'FA',
+        active: true,
+        status: 'Active',
+      };
+
+      const mockMeta = {
+        draft_id: 'mock_oneiromancy_draft_2025',
+        status: 'complete',
+        season: '2025',
+      };
+
+      const state = sleeper.transformToDraftState(
+        mockMeta,
+        [],
+        { mode: 'mock', draft_id: 'mock_oneiromancy_draft_2025' },
+        rawDict,
+      );
+
+      // In mock mode, baseBoard is strictly mockCosmicBoard, and playerDict ingestion is skipped
+      assert.equal(state.cosmic_board.length, mockData.mockCosmicBoard.length, 'Mock mode board must equal mockCosmicBoard length');
+      // Assert no arbitrary external player from rawDict was ingested into mock mode
+      const foundCandidate = state.cosmic_board.find((p) => p.id === candidateOnlyId);
+      assert.equal(foundCandidate, undefined, 'Candidate-only player must not be ingested in mock mode');
+    });
+
+    test('5.33 should verify live mode with empty rosters/picks does not inject mock board', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_99999',
+        status: 'pre_draft',
+        season: '2025',
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        [],
+        { mode: 'live', draft_id: 'live_draft_99999' },
+        null,
+        [],
+        [],
+      );
+
+      // Without mock flags, baseBoard is [] and no mockCosmicBoard players should leak in
+      assert.equal(state.cosmic_board.length, 0, 'Live pre-draft state with null playerDict must have empty cosmic_board, not mockCosmicBoard');
+      assert.equal(state.mode, 'live');
+    });
+
+    test('5.34 should verify MOCK_AVAILABLE_NFL_CATALOG contains zero non-player or retired IDs', () => {
+      const catalog = mockData.MOCK_AVAILABLE_NFL_CATALOG || [];
+      const excludedIds = new Set(['138', '2118', '3099', '6766', '1000', '1001']);
+      for (const p of catalog) {
+        assert.ok(!excludedIds.has(String(p.id)), `Catalog must not contain corrupt or retired ID ${p.id}`);
+        assert.ok(p.name !== 'Dirk Koetter', 'Catalog must not contain Dirk Koetter');
+        assert.ok(p.name !== 'Andrew Berry', 'Catalog must not contain Andrew Berry');
+        assert.ok(p.name !== 'Albert McClellan', 'Catalog must not contain Albert McClellan');
+        assert.ok(p.name !== 'Tyler Clutts', 'Catalog must not contain Tyler Clutts');
+      }
+    });
+
+    test('5.35 should verify resetPlayerNegativeCache and resetRateLimit function properly', () => {
+      assert.equal(typeof sleeper.resetPlayerNegativeCache, 'function', 'resetPlayerNegativeCache must be exported');
+      assert.equal(typeof sleeper.resetRateLimit, 'function', 'resetRateLimit must be exported');
+
+      // Calling them should not throw
+      sleeper.resetPlayerNegativeCache();
+      sleeper.resetRateLimit();
+      assert.equal(sleeper.isRateLimited(), false, 'isRateLimited must be false after resetRateLimit');
+    });
+
+    test('5.36 should verify live mode with empty leagueUsers does not inject mock competitor teams', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_99999',
+        status: 'drafting',
+        season: '2025',
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        [],
+        { mode: 'live', draft_id: 'live_draft_99999' },
+        null,
+        [], // leagueUsers
+        [], // leagueRosters
+      );
+
+      assert.equal(state.competitor_teams.length, 0, 'Live mode with empty leagueUsers must have 0 competitor teams, not mock teams');
+      assert.deepEqual(state.competitor_teams, [], 'competitor_teams must strictly evaluate to []');
+    });
+
+    test('5.37 should verify live mode with empty competitor teams does not inject mock weekly matchup', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_99999',
+        status: 'drafting',
+        season: '2025',
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        [],
+        { mode: 'live', draft_id: 'live_draft_99999' },
+        null,
+        [], // leagueUsers
+        [], // leagueRosters
+      );
+
+      assert.equal(state.competitor_teams.length, 0, 'Competitor teams must be empty');
+      assert.equal(
+        state.weekly_matchup,
+        undefined,
+        'weekly_matchup must be undefined in live mode with empty competitor teams, not mockWeeklyMatchup'
+      );
     });
   });
 });

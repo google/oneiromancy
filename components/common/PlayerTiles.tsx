@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,13 +18,15 @@
 'use client';
 
 /**
- * The original Marketplace look (colored tags, stat tiles, element icons),
- * driven by the Stats / Stars / Oracle model. Shared by Waivers and Trades.
+ * Shared visual primitives (colored tags, 3-metric stat tiles, element icons),
+ * driven strictly by the 3 canonical metrics: Stats, Spirit/Oracle, and Stars.
  */
 
 import React from 'react';
 import { Droplet, Flame, Mountain, Wind } from 'lucide-react';
 import { favorabilityTone, oracleScore, starsScore, statsPoints, type Tone } from '@/lib/oracle';
+import { isPlayerOnByeWeek } from '@/lib/scoring';
+import { getSeasonContext } from '@/lib/sleeper';
 import type { CosmicPlayer } from '@/types/oneiromancy';
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -71,12 +74,23 @@ export const Tag: React.FC<{ tone: TagTone; children: React.ReactNode; className
   </span>
 );
 
-/** Injury tag; "Healthy" in green when there is none. */
+/** Injury tag; "Healthy" in green when there is none, or "BYE WK N" tag + muted "On Bye" label when on bye. */
 export const HealthTag: React.FC<{ player: CosmicPlayer }> = ({ player }) => {
   const s = player.injury_status;
-  if (!s) return <Tag tone="emerald">Healthy</Tag>;
-  const severe = ['Out', 'IR', 'NA', 'PUP', 'Sus', 'Doubtful'].includes(s);
-  return <Tag tone={severe ? 'rose' : 'amber'}>{s}</Tag>;
+  const severe = Boolean(s && ['Out', 'IR', 'NA', 'PUP', 'Sus', 'Doubtful'].includes(s));
+  if (s && severe) return <Tag tone="rose">{s}</Tag>;
+  const ctx = getSeasonContext();
+  const activeWk = ctx?.currentWeek;
+  if (isPlayerOnByeWeek(activeWk, player.bye_week, player.team, ctx?.byeWeeks)) {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Tag tone="amber">BYE WK {activeWk}</Tag>
+        <span className="text-[10px] font-mono text-slate-500">On Bye</span>
+      </span>
+    );
+  }
+  if (!s || s === 'Healthy') return <Tag tone="emerald">Healthy</Tag>;
+  return <Tag tone="amber">{s}</Tag>;
 };
 
 /** A signed delta badge such as "+12.4 ORACLE". */
@@ -93,8 +107,10 @@ export const DeltaBadge: React.FC<{ value: number; unit: string; tone: TagTone; 
 );
 
 /**
- * Stat tiles: projected points, this week's Stars (the weekly favorability,
- * tone-colored), Oracle at λ, and Spirit; then team / bye and element.
+ * 3-Metric Stat tiles:
+ * 1. Stats (projected points)
+ * 2. Spirit / Oracle (combined divinity weight score at λ)
+ * 3. Stars (upcoming week astrological alignment, 0-100)
  */
 export const StatTiles: React.FC<{ player: CosmicPlayer; lambda: number; muted?: boolean }> = ({
   player,
@@ -106,39 +122,38 @@ export const StatTiles: React.FC<{ player: CosmicPlayer; lambda: number; muted?:
   const tile = `${muted ? 'bg-slate-950/80' : 'bg-slate-900/80'} p-1.5 rounded border border-white/5`;
   return (
     <div className="space-y-1.5">
-      <div className="grid grid-cols-4 gap-1.5 text-center font-mono text-[10px]">
-        <div className={tile}>
-          <span className="text-slate-500 block text-[9px]">Proj pts</span>
+      <div className="grid grid-cols-3 gap-1.5 text-center font-mono text-[10px]">
+        <div className={tile} title="Stats: baseline projected fantasy points">
+          <span className="text-slate-500 block text-[9px]">Stats</span>
           <span className={`font-bold ${muted ? 'text-slate-300' : 'text-cyan-300'}`}>
             {statsPoints(player).toFixed(1)}
           </span>
         </div>
-        <div className={tile} title="Stars: this week's celestial favorability (0–100)">
-          <span className="text-slate-500 block text-[9px]">Stars</span>
-          <span className={`font-bold ${TONE_TEXT[tone]}`}>{stars.toFixed(0)}</span>
-        </div>
-        <div className={tile} title={`Oracle at λ ${lambda.toFixed(2)}`}>
+        <div
+          className={tile}
+          title={`Oracle at λ ${lambda.toFixed(2)} (Spirit ${(player.spirit_score ?? 0).toFixed(1)})`}
+        >
           <span className="text-slate-500 block text-[9px]">Oracle</span>
-          <span className={`font-bold ${muted ? 'text-slate-300' : 'text-emerald-400'}`}>
+          <span className={`font-bold ${muted ? 'text-slate-300' : 'text-purple-300'}`}>
             {oracleScore(player, lambda).toFixed(1)}
           </span>
         </div>
-        <div className={tile}>
-          <span className="text-slate-500 block text-[9px]">Spirit</span>
-          <span className="font-bold text-purple-300">{(player.spirit_score ?? 0).toFixed(1)}</span>
+        <div className={tile} title="Stars: upcoming week astrological alignment (0-100)">
+          <span className="text-slate-500 block text-[9px]">Stars</span>
+          <span className={`font-bold ${TONE_TEXT[tone]}`}>{stars.toFixed(0)}</span>
         </div>
       </div>
       <div className="grid grid-cols-2 gap-1.5 text-[10px] font-mono">
         <div className={`${tile} flex justify-between items-center gap-1`}>
           <span className="text-slate-500">Team / Bye</span>
           <span className="text-slate-200 font-bold">
-            {player.team || 'FA'} (Wk {player.bye_week || '—'})
+            {player.team || 'FA'} (Wk {player.bye_week || '-'})
           </span>
         </div>
         <div className={`${tile} flex justify-between items-center gap-1 min-w-0`}>
           <span className="text-slate-400 flex items-center gap-1 min-w-0">
             <ElementIcon element={player.elemental_traits?.element} />
-            <span className="truncate">{player.elemental_traits?.element || '—'}</span>
+            <span className="truncate">{player.elemental_traits?.element || '-'}</span>
           </span>
           <span className="text-slate-400 truncate">{player.elemental_traits?.sun_sign || ''}</span>
         </div>

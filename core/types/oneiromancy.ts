@@ -47,11 +47,11 @@ export type RosterSlotId =
 // ============================================================================
 
 export interface DivinationBreakdown {
-  celestial: number; // 0-100 (30% weight default)
-  numeric: number;   // 0-100 (20% weight default)
+  celestial: number; // 0-100 (10% weight default)
+  numeric: number;   // 0-100 (10% weight default)
   geomantic: number; // 0-100 (25% weight default)
   oracular: number;  // 0-100 (10% weight default)
-  harmony: number;   // 0-100 (15% weight default)
+  harmony: number;   // 0-100 (45% weight default)
 }
 
 export interface PlayerElementalTraits {
@@ -87,6 +87,7 @@ export interface CosmicPlayer {
   favorability_score?: number; // Weekly matchup favorability (0-100)
   favorability_verdict?: 'HEAVILY FAVORED' | 'ASTRALLY FAVORED' | 'NEUTRAL' | 'CELESTIALLY CHALLENGED' | 'FAVORED' | 'UNFAVORED';
   draft_status: DraftStatus;
+  drafted_by?: string | null;
   drafted_by_user_id?: string | null;
   drafted_pick_no?: number | null;
   elemental_traits: PlayerElementalTraits;
@@ -94,6 +95,7 @@ export interface CosmicPlayer {
   status?: string;
   injury_status?: string | null;
   depth_chart_order?: number | null;
+  fantasy_positions?: string[];
   catalysts?: string[];
   risks?: string[];
 }
@@ -326,9 +328,9 @@ export interface StadiumAstrologicalData {
   stadium_name: string;
   city: string;
   state: string;
-  coordinates: { lat: number; lon: number };
-  latitude?: number;
-  longitude?: number;
+  coordinates?: { lat: number | null; lon: number | null } | null;
+  latitude?: number | null;
+  longitude?: number | null;
   roof_type: 'Dome (Fixed)' | 'Dome (Retractable)' | 'Open Air (Coastal)' | 'Open Air (Inland)' | 'Open Air (High Altitude)' | string;
   celestial_house: string;
   zodiac_ascendant: string;
@@ -339,6 +341,7 @@ export interface PlayerMatchupFavorability {
   player_id: string;
   player_name: string;
   position: NFLPosition;
+  fantasy_positions?: string[];
   team: string;
   opponent?: string;
   opponent_team?: string;
@@ -359,7 +362,7 @@ export interface PlayerMatchupFavorability {
   kickoff_time?: string;
   lunar_phase: string;
   planetary_hour: string;
-  stadium: StadiumAstrologicalData;
+  stadium?: StadiumAstrologicalData | null;
   favorability_score: number; // 0-100
   favorability_verdict: 'HEAVILY FAVORED' | 'ASTRALLY FAVORED' | 'NEUTRAL' | 'CELESTIALLY CHALLENGED' | 'FAVORED' | 'UNFAVORED';
   rationale?: string;
@@ -367,6 +370,7 @@ export interface PlayerMatchupFavorability {
   astrological_transit?: string;
   aspect_highlights?: string[];
   aspect_description?: string;
+  bye_week?: number;
 }
 
 export interface TeamCelestialComparison {
@@ -402,6 +406,7 @@ export interface MatchupWeekData {
   start_sit_recommendations?: StartSitRecommendation[];
   status?: 'active' | 'upcoming' | 'completed';
   opponent_name?: string;
+  opponent_owner?: string;
   astral_alignment?: string;
   result?: 'W' | 'L' | 'T';
   score_user?: number;
@@ -550,7 +555,7 @@ export interface OneiromancySettings {
   user_slot: number;
   auto_update: boolean;
   poll_interval_ms: number; // 5000 or 10000
-  chaos_lambda: number; // 0.0 to 1.0 (default 0.65)
+  chaos_lambda: number; // 0.0 to 1.0 (default 0.75)
   lambda_chaos?: number;
   oracle_weights: OracleWeights;
   theme: 'deep_obsidian';
@@ -718,6 +723,7 @@ export interface SleeperPlayerRecord {
   position: NFLPosition;
   team: string | null;
   status: 'Active' | 'Inactive' | 'Injured Reserve' | 'Practice Squad' | string;
+  active?: boolean;
   birth_date: string | null;
   number: number | null;
   college: string | null;

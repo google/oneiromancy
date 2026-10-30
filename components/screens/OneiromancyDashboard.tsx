@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -16,51 +17,51 @@
 
 'use client';
 
+import React, { useMemo, useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import PlayerHeadshot from '@/components/common/PlayerHeadshot';
+import { type InspectTarget } from '@/components/common/PlayerLink';
+import { ElementIcon, HealthTag } from '@/components/common/PlayerTiles';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
-import AscensionTimeline from '@/components/oneiromancy/AscensionTimeline';
-import CelestialLeaderboardGraph from '@/components/oneiromancy/CelestialLeaderboardGraph';
-import TelemetryBar from '@/components/oneiromancy/TelemetryBar';
-import {useOneiromancy} from '@/context/OneiromancyContext';
+import { useOneiromancy } from '@/context/OneiromancyContext';
+import { mockCompetitorTeams, mockWeeklyMatchup } from '@/lib/mockData';
+import { deriveWeeklyMatchup, getSeasonContext } from '@/lib/sleeper';
+import { moonAt, neutralVenueCoords, planetaryHourAt, teamGame } from '@/lib/nflGames';
 import {
-  mockCompetitorTeams,
-  mockWeeklyMatchup,
-} from '@/lib/mockData';
-import {deriveWeeklyMatchup, getSeasonContext} from '@/lib/sleeper';
-import WeeklyMoves from '@/components/oneiromancy/WeeklyMoves';
-import MatchupsScreen from '@/components/screens/MatchupsScreen';
-import {TONE_PILL, elementRelation, favorabilityTone, starsScore, statsPoints} from '@/lib/oracle';
+  TONE_PILL,
+  compute18WeekByeCoverage,
+  computeLineupCheck,
+  favorabilityTone,
+  oracleScore,
+  starsScore,
+  statsPoints,
+} from '@/lib/oracle';
 import {
-  calculateTeamCelestialMetrics,
-  classifySpiritScoreTier,
+  DEFAULT_CHAOS_LAMBDA,
   computeRosterHarmony,
+  computeRosterHarmonyBreakdown,
+  isPlayerOnByeWeek,
 } from '@/lib/scoring';
-import {
+import type {
   CompetitorTeam,
   CosmicPlayer,
   DraftPickState,
   IdealDraftPick,
   RosterSlot,
-  WeeklyMatchup,
 } from '@/types/oneiromancy';
 import {
-  ArrowRight,
+  ArrowUpDown,
   Calendar,
   CheckCircle2,
-  ChevronDown,
-  ChevronUp,
-  Compass,
   Flame,
   Info,
-  Shield,
+  Moon,
+  Orbit,
   Sparkles,
-  TrendingUp,
   Trophy,
-  Users,
   Zap,
 } from 'lucide-react';
-import React, {useMemo, useState} from 'react';
 
 export interface OneiromancyDashboardProps {
   recommendedPick?: CosmicPlayer | null;
@@ -72,991 +73,668 @@ export interface OneiromancyDashboardProps {
   className?: string;
 }
 
+const ELEMENT_STROKE: Record<string, string> = {
+  Fire: '#f43f5e',
+  Earth: '#14b8a6',
+  Air: '#38bdf8',
+  Water: '#60a5fa',
+};
+
+/** Visual multi-ring Divination Aura around each player headshot. */
+function auraClasses(stars: number): { ring: string; glow: string; label: string } {
+  if (stars >= 84) {
+    return {
+      ring: 'ring-2 ring-amber-400 border-amber-300',
+      glow: 'shadow-[0_0_22px_rgba(251,191,36,0.75),0_0_40px_rgba(168,85,247,0.45)]',
+      label: 'Apex Aura',
+    };
+  }
+  if (stars >= 75) {
+    return {
+      ring: 'ring-2 ring-emerald-400/80 border-emerald-300',
+      glow: 'shadow-[0_0_16px_rgba(16,185,129,0.55)]',
+      label: 'Harmonic Aura',
+    };
+  }
+  if (stars >= 65) {
+    return {
+      ring: 'ring-1 ring-purple-400/60 border-purple-400/40',
+      glow: 'shadow-[0_0_10px_rgba(168,85,247,0.3)]',
+      label: 'Steady Aura',
+    };
+  }
+  return {
+    ring: 'ring-1 ring-rose-500/50 border-rose-500/40',
+    glow: 'shadow-[0_0_8px_rgba(244,63,94,0.25)]',
+    label: 'Challenged Aura',
+  };
+}
+
 export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
-  recommendedPick: propRecommendedPick,
-  ascensionPath: propAscensionPath,
   myRoster: propMyRoster,
-  currentPick: propCurrentPick,
-  onDraftPlayer: _propOnDraftPlayer,
   onInspectPlayer: propOnInspectPlayer,
   className = '',
 }) => {
-  // Consume global context
   const context = useOneiromancy();
-
   const draftState = context.draftState;
-  const cosmicBoard = useMemo(
-    () => draftState?.cosmic_board || [],
-    [draftState?.cosmic_board],
-  );
-  const currentPick = propCurrentPick || draftState?.current_pick;
+  const lambda = draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
+  const [inspected, setInspected] = useState<InspectTarget | null>(null);
+
   const myRoster = useMemo(
     () => propMyRoster || draftState?.my_roster || [],
     [propMyRoster, draftState?.my_roster],
   );
-  const ascensionPath = useMemo(
-    () => propAscensionPath || draftState?.ideal_draft_path || [],
-    [propAscensionPath, draftState?.ideal_draft_path],
-  );
-  const weeklyCoverage = useMemo(
-    () => draftState?.weekly_coverage || [],
-    [draftState?.weekly_coverage],
-  );
 
-  // Weekly matchup and start/sit divination (defaults to next/active upcoming match)
-  const weeklyMatchup = useMemo<WeeklyMatchup | null>(() => {
-    let rawMatchup = draftState?.weekly_matchup;
-    if (!rawMatchup && draftState?.competitor_teams && draftState.competitor_teams.length > 0) {
-      const activeSlot = draftState.settings?.user_slot || 1;
+  const weeklyMatchup = useMemo(() => {
+    let raw = draftState?.weekly_matchup;
+    if (!raw && draftState?.competitor_teams?.length) {
       const activeUserTeam = draftState.competitor_teams.find((t) => t.is_user);
-      const activeRosterId = activeUserTeam?.roster_id ?? activeSlot;
-      rawMatchup = deriveWeeklyMatchup(
+      const activeRosterId = activeUserTeam?.roster_id ?? (draftState.settings?.user_slot || 7);
+      const activeWk = getSeasonContext()?.currentWeek ?? 1;
+      raw = deriveWeeklyMatchup(
         activeRosterId,
         draftState.competitor_teams,
         null,
         draftState.cosmic_board,
         draftState.my_roster,
-        1,
+        activeWk,
       );
     }
-    if (!rawMatchup) {
-      return draftState?.isLive ? null : mockWeeklyMatchup;
+    return raw || (draftState?.isLive ? null : mockWeeklyMatchup);
+  }, [draftState]);
+
+  const starterSlots = useMemo(
+    () => myRoster.filter((s) => !s.slot_id.startsWith('BN')),
+    [myRoster],
+  );
+  const benchSlots = useMemo(
+    () => myRoster.filter((s) => s.slot_id.startsWith('BN')),
+    [myRoster],
+  );
+  const startingPlayers = useMemo(
+    () => starterSlots.map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p)),
+    [starterSlots],
+  );
+  const benchPlayers = useMemo(
+    () => benchSlots.map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p)),
+    [benchSlots],
+  );
+  const rosteredPlayers = useMemo(
+    () => myRoster.map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p)),
+    [myRoster],
+  );
+  const byeSchedule = useMemo(
+    () => compute18WeekByeCoverage(myRoster),
+    [myRoster],
+  );
+
+  // Global Universe State at current kickoff window
+  const universeState = useMemo(() => {
+    const season = getSeasonContext();
+    const activeWeek = weeklyMatchup?.week ?? season?.currentWeek ?? 2;
+    const starterGame = startingPlayers
+      .map((p) => teamGame(activeWeek, p.team))
+      .find((g) => Boolean(g?.kickoff));
+    const seasonYear = Number(season?.season) || 2025;
+    const fallbackIso = new Date(Date.UTC(seasonYear, 8, 7 + Math.max(0, activeWeek - 1) * 7, 17, 0, 0)).toISOString();
+    const refDate = new Date(starterGame?.kickoff || fallbackIso);
+    const homeFav = starterGame?.home
+      ? weeklyMatchup?.player_favorabilities?.find((pf) => (pf.nfl_team || pf.team) === starterGame.home)
+      : undefined;
+    const refLon =
+      neutralVenueCoords(starterGame?.venue?.name)?.lon ??
+      homeFav?.stadium?.longitude ??
+      weeklyMatchup?.player_favorabilities?.find((pf) => typeof pf.stadium?.longitude === 'number')?.stadium?.longitude;
+    const moon = moonAt(refDate);
+    const hour = planetaryHourAt(refDate, typeof refLon === 'number' && Number.isFinite(refLon) ? refLon : 0);
+    const isPeakMoon = moon.includes('Full Moon') || moon.includes('New Moon');
+    return { moon, hour, activeWeek, isPeakMoon };
+  }, [weeklyMatchup?.week, weeklyMatchup?.player_favorabilities, startingPlayers]);
+
+  // Lineup swap recommendations (bench -> starter)
+  const swaps = useMemo(() => computeLineupCheck(myRoster, lambda), [myRoster, lambda]);
+  const swapByStarterId = useMemo(() => {
+    const map = new Map<string, (typeof swaps)[number]>();
+    for (const s of swaps) {
+      if (s.playerOut) map.set(String(s.playerOut.id), s);
     }
-    return rawMatchup;
-  }, [
-    draftState?.weekly_matchup,
-    draftState?.competitor_teams,
-    draftState?.cosmic_board,
-    draftState?.my_roster,
-    draftState?.settings?.user_slot,
-    draftState?.isLive,
-  ]);
-
-  // Compute roster telemetry
-  const rosteredPlayers = useMemo(() => {
-    return myRoster
-      .map((slot) => slot.player)
-      .filter((p): p is CosmicPlayer => p !== null && p !== undefined);
-  }, [myRoster]);
-
-  const startingPlayers = useMemo(() => {
-    return myRoster
-      .filter(
-        (slot) =>
-          !slot.slot_id.startsWith('BN') &&
-          slot.player !== null &&
-          slot.player !== undefined,
-      )
-      .map((slot) => slot.player as CosmicPlayer);
-  }, [myRoster]);
-
-  const totalProjectedPoints = useMemo(() => {
-    if (startingPlayers.length === 0) {
-      if (weeklyMatchup?.user_team?.projected_points) {
-        return weeklyMatchup.user_team.projected_points;
-      }
-      return 0;
+    return map;
+  }, [swaps]);
+  const swapByBenchId = useMemo(() => {
+    const map = new Map<string, (typeof swaps)[number]>();
+    for (const s of swaps) {
+      map.set(String(s.playerIn.id), s);
     }
-    return startingPlayers.reduce(
-      (sum, p) => sum + (p.projected_points || 0),
-      0,
-    );
-  }, [startingPlayers, weeklyMatchup?.user_team?.projected_points]);
+    return map;
+  }, [swaps]);
 
-  const totalVOR = useMemo(() => {
-    if (rosteredPlayers.length === 0) return 0;
-    return rosteredPlayers.reduce((sum, p) => sum + (p.market_vor || 0), 0);
-  }, [rosteredPlayers]);
-
-  // Elemental traits
   const elementalDistribution = useMemo(() => {
-    if (draftState?.elemental_traits) return draftState.elemental_traits;
-    const dist = {Fire: 0, Earth: 0, Air: 0, Water: 0};
-    for (const p of rosteredPlayers) {
-      if (p.elemental_traits?.element) {
-        dist[p.elemental_traits.element] =
-          (dist[p.elemental_traits.element] || 0) + 1;
-      }
+    const dist = { Fire: 0, Earth: 0, Air: 0, Water: 0 };
+    for (const p of startingPlayers) {
+      const el = p.elemental_traits?.element;
+      if (el && el in dist) dist[el] += 1;
     }
     return dist;
-  }, [draftState?.elemental_traits, rosteredPlayers]);
-
-  // Active celestial aspects and harmonic conjunctions
-  // Element readings from this roster's starters (not fixed text).
-  const elementReadings = useMemo(() => {
-    const el = (p: CosmicPlayer) => p.elemental_traits?.element;
-    const qb = startingPlayers.find((p) => p.position === 'QB');
-    const catchers = startingPlayers.filter((p) => p.position === 'WR' || p.position === 'TE');
-    const groups: Record<string, string[]> = { Complementary: [], 'Same element': [], Opposed: [] };
-    if (qb) {
-      for (const c of catchers) {
-        const r = elementRelation(el(qb), el(c));
-        if (r in groups) groups[r].push(`${c.name} (${el(c)})`);
-      }
-    }
-    const airTargets = qb && el(qb) === 'Fire' ? catchers.filter((c) => el(c) === 'Air') : [];
-    const earthBacks = startingPlayers.filter((p) => p.position === 'RB' && el(p) === 'Earth');
-    const counts: Record<string, number> = {};
-    for (const p of startingPlayers) {
-      const e = el(p);
-      if (e) counts[e] = (counts[e] ?? 0) + 1;
-    }
-    const top = Object.entries(counts).sort((a, b) => b[1] - a[1]).map(([e]) => e);
-    const rel = top.length >= 2 ? elementRelation(top[0] as any, top[1] as any) : null;
-    const aspect =
-      top.length < 2
-        ? { angle: 0, name: 'Conjunction' }
-        : rel === 'Complementary'
-          ? { angle: 60, name: 'Sextile' }
-          : { angle: 90, name: 'Square' };
-    return { qb, qbElement: qb ? el(qb) : undefined, groups, airTargets, earthBacks, top: top.slice(0, 2), rel, aspect };
   }, [startingPlayers]);
 
-  // Starters only, like the Squad Harmony score these stacks add to.
   const activeAspects = useMemo(() => {
-    const aspects = [];
+    const aspects: {
+      team: string;
+      multiplier: number;
+      bonus_points: number;
+      description: string;
+      qb: CosmicPlayer;
+      passCatchers: CosmicPlayer[];
+    }[] = [];
     const qbs = startingPlayers.filter((p) => p.position === 'QB');
     for (const qb of qbs) {
       const passCatchers = startingPlayers.filter(
-        (p) =>
-          (p.position === 'WR' || p.position === 'TE') && p.team === qb.team,
+        (p) => (p.position === 'WR' || p.position === 'TE') && p.team === qb.team,
       );
       if (passCatchers.length > 0) {
         aspects.push({
           team: qb.team,
           multiplier: 3.0,
           bonus_points: passCatchers.length >= 2 ? 27.0 : 18.0,
-          description: `${qb.team} 3.0x Astral Conjunction ${qb.name} ☌ ${passCatchers.map((pc) => pc.name).join(' & ')}`,
-          qb_name: qb.name,
-          pass_catcher_names: passCatchers.map((pc) => pc.name),
+          description: `${qb.team} 3.0x Astral Stack Conjunction: ${qb.name} ☌ ${passCatchers.map((pc) => pc.name).join(' & ')}`,
+          qb,
+          passCatchers,
         });
       }
     }
     return aspects;
   }, [startingPlayers]);
 
-  // Competitor teams compilation with authentic Sleeper team names
+  const stackTeamSet = useMemo(() => new Set(activeAspects.map((a) => a.team)), [activeAspects]);
+
   const competitorTeams = useMemo<CompetitorTeam[]>(() => {
-    if (
-      draftState?.competitor_teams &&
-      draftState.competitor_teams.length > 0
-    ) {
-      return draftState.competitor_teams;
-    }
+    if (draftState?.competitor_teams?.length) return draftState.competitor_teams;
     return draftState?.isLive ? [] : mockCompetitorTeams;
   }, [draftState?.competitor_teams, draftState?.isLive]);
 
-  // Strict single-user resolution: exactly one team can be 'isUser'
-  const userTeam = useMemo(() => {
-    return (
+  const userTeam = useMemo(
+    () =>
       competitorTeams.find((t) => t.is_user === true) ||
       competitorTeams.find((t) => t.name.includes('(You)')) ||
-      competitorTeams.find(
-        (t) => t.slot === (draftState?.settings?.user_slot || 7),
-      ) ||
-      competitorTeams[0]
-    );
-  }, [competitorTeams, draftState?.settings?.user_slot]);
+      competitorTeams.find((t) => t.slot === (draftState?.settings?.user_slot || 7)) ||
+      competitorTeams[0],
+    [competitorTeams, draftState?.settings?.user_slot],
+  );
 
-  // Active user slot number
-  const userSlot = useMemo(() => {
-    return userTeam
-      ? userTeam.slot || userTeam.roster_id
-      : draftState?.settings?.user_slot || 7;
-  }, [userTeam, draftState?.settings?.user_slot]);
-
-  // Harmony score calculation (0-100), synchronized directly with the user team's authentic harmony_score
   const harmonyScore = useMemo(() => {
-    if (
-      userTeam?.harmony_score !== undefined &&
-      userTeam.harmony_score !== null
-    ) {
+    if (userTeam?.harmony_score !== undefined && userTeam.harmony_score !== null) {
       return Math.round(userTeam.harmony_score);
     }
-    if (rosteredPlayers.length > 0) {
-      return Math.round(computeRosterHarmony(rosteredPlayers));
-    }
+    if (rosteredPlayers.length > 0) return Math.round(computeRosterHarmony(rosteredPlayers));
     return 75;
   }, [userTeam?.harmony_score, rosteredPlayers]);
 
-  // Minimized Ascension Path toggle state (collapses by default when draft is inactive/complete)
-  const isDraftComplete = useMemo(() => {
-    return (
-      draftState?.status === 'complete' ||
-      rosteredPlayers.length >= 15 ||
-      ascensionPath.every((s) => s.is_ascended)
-    );
-  }, [draftState?.status, rosteredPlayers.length, ascensionPath]);
+  const harmonyBreakdown = useMemo(
+    () => computeRosterHarmonyBreakdown(startingPlayers.length ? startingPlayers : rosteredPlayers),
+    [startingPlayers, rosteredPlayers],
+  );
 
-  const [isHarmonyOpen, setIsHarmonyOpen] = useState(false);
-  const remainingCoverage = useMemo(() => {
-    const season = getSeasonContext();
-    if (!season) return weeklyCoverage;
-    return weeklyCoverage.filter(
-      (w) => w.week >= season.currentWeek && w.week <= season.lastRegularWeek,
-    );
-  }, [weeklyCoverage]);
-  const [isAscensionExpanded, setIsAscensionExpanded] =
-    useState<boolean>(!isDraftComplete);
-
-  const handleInspect = (player: CosmicPlayer) => {
-    if (propOnInspectPlayer) {
-      propOnInspectPlayer(player);
-    } else {
-      context.selectPlayer(player);
-    }
-  };
-
-  const handleInspectById = (playerId: string) => {
-    const found = cosmicBoard.find((p) => p.id === playerId);
-    if (found) {
-      handleInspect(found);
-    }
-  };
-
-  // Radar chart dynamic coordinates (5 axes: Fire, Air, Water, Earth, Celestial Aspect Resonance)
+  // 5-Spoke Elemental & Aspect Radar Coordinates
   const radarPoints = useMemo(() => {
-    const cx = 110;
-    const cy = 110;
-    const maxR = 75;
-
-    const fireNorm = Math.min(
-      1,
-      Math.max(0.3, (elementalDistribution.Fire || 1) / 3),
-    );
-    const airNorm = Math.min(
-      1,
-      Math.max(0.3, (elementalDistribution.Air || 1) / 3),
-    );
-    const waterNorm = Math.min(
-      1,
-      Math.max(0.3, (elementalDistribution.Water || 1) / 3),
-    );
-    const earthNorm = Math.min(
-      1,
-      Math.max(0.3, (elementalDistribution.Earth || 1) / 3),
-    );
-    const aspectNorm = Math.min(
-      1.0,
-      Math.max(0.1, (activeAspects.length / 3) * 0.8 + 0.2),
-    );
-
-    const norms = [fireNorm, airNorm, waterNorm, earthNorm, aspectNorm];
-    const angles = [-90, -18, 54, 126, 198]; // 5 spokes in degrees
-
+    const cx = 115;
+    const cy = 96;
+    const maxR = 62;
+    const scaleElem = (count: number) => 0.15 + Math.min(1, count / 4) * 0.85;
+    const norms = [
+      scaleElem(elementalDistribution.Fire),
+      scaleElem(elementalDistribution.Air),
+      scaleElem(elementalDistribution.Water),
+      scaleElem(elementalDistribution.Earth),
+      Math.min(1.0, Math.max(0.2, (activeAspects.length / 3) * 0.8 + 0.2)),
+    ];
+    const angles = [-90, -18, 54, 126, 198];
     const pts = norms.map((norm, i) => {
       const rad = (angles[i] * Math.PI) / 180;
       const r = norm * maxR;
-      const x = cx + r * Math.cos(rad);
-      const y = cy + r * Math.sin(rad);
-      return {x, y, angle: angles[i], norm};
+      return { x: cx + r * Math.cos(rad), y: cy + r * Math.sin(rad) };
     });
+    const polygonString = pts.map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+    return { cx, cy, maxR, pts, polygonString };
+  }, [elementalDistribution, activeAspects.length]);
 
-    const polygonString = pts
-      .map((p) => `${p.x.toFixed(1)},${p.y.toFixed(1)}`)
-      .join(' ');
-    return {cx, cy, maxR, pts, polygonString};
-  }, [elementalDistribution, activeAspects]);
+  const handleOpenPlayer = (player: CosmicPlayer, vs: CosmicPlayer | null = null) => {
+    if (propOnInspectPlayer && !vs) {
+      propOnInspectPlayer(player);
+      return;
+    }
+    setInspected({ player, vs });
+  };
+
+  const renderPlayerCard = (slot: RosterSlot, isBench: boolean) => {
+    const p = slot.player;
+    if (!p) {
+      return (
+        <div
+          key={slot.slot_id}
+          className="p-3 rounded-xl bg-slate-900/40 border border-dashed border-white/10 flex items-center justify-between text-xs font-mono text-slate-500"
+        >
+          <span>{slot.slot_name}</span>
+          <span>Empty Slot</span>
+        </div>
+      );
+    }
+    const stats = statsPoints(p);
+    const oracle = oracleScore(p, lambda);
+    const stars = starsScore(p);
+    const tone = favorabilityTone(stars);
+    const aura = auraClasses(stars);
+    const starterSwap = !isBench ? swapByStarterId.get(String(p.id)) : undefined;
+    const benchSwap = isBench ? swapByBenchId.get(String(p.id)) : undefined;
+    const compareTarget = starterSwap?.playerIn ?? benchSwap?.playerOut ?? null;
+    const el = p.elemental_traits?.element;
+    const hasTrine = Boolean(el && elementalDistribution[el] >= 3);
+    const hasStack =
+      !isBench &&
+      stackTeamSet.has(p.team) &&
+      (p.position === 'QB' || p.position === 'WR' || p.position === 'TE');
+    const onBye = isPlayerOnByeWeek(universeState.activeWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks);
+
+    return (
+      <div
+        key={slot.slot_id}
+        data-testid={`roster-card-${slot.slot_id}`}
+        data-bye={onBye ? 'true' : undefined}
+        role="button"
+        tabIndex={0}
+        onClick={() => handleOpenPlayer(p, compareTarget)}
+        onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
+          if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            handleOpenPlayer(p, compareTarget);
+          }
+        }}
+        className={`group relative p-3 rounded-xl border-2 transition-all cursor-pointer ${
+          onBye
+            ? 'bg-slate-950/70 border-slate-700/50 opacity-50 grayscale hover:opacity-75'
+            : starterSwap
+              ? 'bg-slate-900/85 border-amber-400/80 shadow-[0_0_16px_rgba(251,191,36,0.2)] hover:bg-slate-900'
+              : benchSwap
+                ? 'bg-slate-900/85 border-emerald-400/80 shadow-[0_0_16px_rgba(16,185,129,0.25)] hover:bg-slate-900'
+                : isBench
+                  ? 'bg-slate-900/85 border-purple-500/40 hover:border-purple-400 hover:bg-slate-900'
+                  : 'bg-slate-900/85 border-purple-500/60 hover:border-purple-400 hover:bg-slate-900'
+        }`}
+      >
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-2.5 min-w-0 flex-1">
+            {/* Divination Aura Headshot */}
+            <div data-testid="player-divination-aura" title={`${aura.label} (Stars ${stars.toFixed(0)})`} className={`relative rounded-full p-0.5 shrink-0 ${aura.ring} ${aura.glow} transition-transform group-hover:scale-105`}>
+              <PlayerHeadshot player={p} size="md" />
+            </div>
+            <div data-testid="roster-card-text-col" className="min-w-0 flex-1 space-y-0.5">
+              <div className="flex items-center gap-1.5 whitespace-nowrap overflow-hidden min-w-0">
+                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-200 border border-purple-500/40 shrink min-w-0 truncate">{slot.slot_name}</span>
+                <PositionalBadge position={p.position} size="sm" showGlow={false} className="shrink-0" />
+                {starterSwap && (() => {
+                  const gain = Number(starterSwap.oracleGain || 0).toFixed(1);
+                  const title = `Swap alert: bench ${starterSwap.playerIn.name} leads by +${gain} Oracle`;
+                  return (
+                    <span
+                      data-testid="lineup-swap-arrow"
+                      title={title}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[9px] font-mono font-bold shrink-0"
+                    >
+                      <ArrowUpDown className="w-3 h-3 text-amber-400 shrink-0" />
+                      <span className="hidden sm:inline" aria-hidden="true"><span className="hidden lg:inline">Swap </span><span>+{gain}</span></span>
+                      <span className="sr-only">Swap +{gain} Oracle</span>
+                    </span>
+                  );
+                })()}
+                {benchSwap && (() => {
+                  const gain = Number(benchSwap.oracleGain || 0).toFixed(1);
+                  const title = benchSwap.playerOut
+                    ? `Promote over ${benchSwap.playerOut.name} (+${gain} Oracle)`
+                    : `Promote to empty slot (+${gain} Oracle)`;
+                  return (
+                    <span
+                      title={title}
+                      className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 text-[9px] font-mono font-bold shrink-0"
+                    >
+                      <ArrowUpDown className="w-3 h-3 text-emerald-400 shrink-0" />
+                      <span className="hidden sm:inline" aria-hidden="true">Promote</span>
+                      <span className="sr-only">Promote (+{gain} Oracle)</span>
+                    </span>
+                  );
+                })()}
+              </div>
+              <div className="font-bold text-sm text-slate-100 truncate">{p.name}</div>
+              <div className="flex items-center gap-2 text-[10px] font-mono text-slate-400 whitespace-nowrap overflow-hidden min-w-0">
+                <span className="shrink-0">{p.team || 'FA'} · Bye {p.bye_week || '-'}</span>
+                <span className="flex items-center gap-0.5 min-w-0"><ElementIcon element={el} /><span className="truncate">{p.elemental_traits?.sun_sign || el}</span></span>
+              </div>
+              <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
+                <HealthTag player={p} />
+                {hasStack && <span className="px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[9px] font-mono font-bold whitespace-nowrap">☌ {p.team} Stack</span>}
+                {hasTrine && !isBench && <span className="px-1.5 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300 text-[9px] font-mono whitespace-nowrap">△ {el} Trine</span>}
+              </div>
+            </div>
+          </div>
+
+          {/* Strictly the 3 Canonical Player Judgment Metrics */}
+          <div className="flex items-center gap-1.5 shrink-0 font-mono text-right">
+            <div className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-white/5" title="Baseline projected points">
+              <span className="text-[8px] text-slate-500 block uppercase">Stats</span>
+              <span className="text-xs font-bold text-cyan-300 tabular-nums">{stats.toFixed(1)}</span>
+            </div>
+            <div className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-purple-500/30" title={`Combined Divinity / Oracle Score at λ ${lambda.toFixed(2)}`}>
+              <span className="text-[8px] text-purple-300/80 block uppercase">Oracle</span>
+              <span className="text-xs font-bold text-purple-200 tabular-nums">{oracle.toFixed(1)}</span>
+            </div>
+            <div className={`min-w-[42px] px-2 py-1 rounded-lg border ${TONE_PILL[tone]}`} title="Upcoming week astrological alignment (0 to 100)">
+              <span className="text-[8px] opacity-75 block uppercase">Stars</span>
+              <span className="text-xs font-bold tabular-nums">{stars.toFixed(0)}</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    );
+  };
 
   return (
-    <div
-      className={`flex flex-col gap-6 w-full max-w-5xl mx-auto ${className}`}>
-      {/* Screen title: plain name first, the Oneiromancy name as the eyebrow */}
-      <div className="space-y-1">
-        <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/80">
-          Ideal Team & League Telemetry
-        </span>
-        <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">
-          This Week
-        </h2>
-        <p className="text-xs text-slate-400 font-sans">
-          {weeklyMatchup?.week ? `Week ${weeklyMatchup.week}` : 'Your week'}
-          {weeklyMatchup?.date_range ? ` · ${weeklyMatchup.date_range}` : ''} · what to start, add, and plan for.
-        </p>
-      </div>
-
-      {/* This week's team comparison: head-to-head and celestial telemetry */}
-      {weeklyMatchup && <MatchupsScreen embedded part="comparison" />}
-
-      <WeeklyMoves />
-
-      {/* 4. Squad Harmony: one card; the header toggles the body open in place */}
-      <section className="rounded-xl bg-slate-900/70 border border-white/10 overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setIsHarmonyOpen((v) => !v)}
-          aria-expanded={isHarmonyOpen}
-          aria-controls="team-harmony-body"
-          className="w-full flex items-center justify-between gap-3 p-4 text-left hover:bg-white/5">
-          <span className="flex items-center gap-2">
-            <Trophy className="w-4 h-4 text-amber-400" />
-            <span className="font-serif text-base font-bold text-slate-100">Squad Harmony</span>
-            <span className="text-xs font-mono text-amber-300">{harmonyScore}%</span>
-          </span>
-          <span className="text-xs font-mono text-slate-400 flex items-center gap-1">
-            {isHarmonyOpen ? 'Hide' : 'Elements and stacks'}
-            {isHarmonyOpen ? <ChevronUp className="w-3.5 h-3.5" /> : <ChevronDown className="w-3.5 h-3.5" />}
-          </span>
-        </button>
-        {isHarmonyOpen && (
-          <div id="team-harmony-body" className="px-4 sm:px-6 pb-5 pt-4 space-y-5 border-t border-white/10">
-            <p className="text-[11px] font-sans text-slate-400">
-              How well your lineup works as a unit. Starts at 50%, plus the three bonuses below (max 100%).
-            </p>
-        {/* How Harmony is scored (computeRosterHarmonyBreakdown) */}
-        <details className="group rounded-xl bg-slate-950/60 border border-cyan-500/20 text-xs overflow-hidden transition-all">
-          <summary className="p-3 font-mono text-cyan-300 font-semibold cursor-pointer hover:bg-white/5 flex items-center justify-between select-none">
-            <span className="flex items-center gap-1.5">
-              <Info className="w-3.5 h-3.5 text-cyan-400" />
-              <span>How Squad Harmony is scored</span>
+    <div className={`flex flex-col gap-5 w-full max-w-5xl mx-auto ${className}`}>
+      {/* 1. Global Universe State Banner */}
+      <GlassCard
+        variant="gradient"
+        glowColor="purple"
+        data-testid="universe-state-banner"
+        className="p-4 sm:p-5 border border-purple-500/40"
+      >
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="space-y-0.5">
+            <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/90 flex items-center gap-1.5">
+              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+              Ideal Team &amp; League Telemetry · Week {universeState.activeWeek}
             </span>
-            <span className="text-[10px] text-slate-400 group-open:rotate-180 transition-transform">
-              ▼
-            </span>
-          </summary>
-          <div className="p-3.5 pt-0 border-t border-white/5">
-            <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 pt-3">
-              <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-1">
-                <div className="flex items-center gap-1 text-[11px] font-mono text-red-300 font-bold">
-                  <Flame className="w-3 h-3 text-red-400" />
-                  <span>1. Elemental Trine</span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400 leading-normal">
-                  Three starters of one element: +12%. Four or more: +18%.
-                </p>
-              </div>
-              <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-1">
-                <div className="flex items-center gap-1 text-[11px] font-mono text-amber-300 font-bold">
-                  <Zap className="w-3 h-3 text-amber-400" />
-                  <span>2. QB Stacks</span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400 leading-normal">
-                  A pass catcher with his own QB: +18% (+9% each when several share one QB). Up to +30%.
-                </p>
-              </div>
-              <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-1">
-                <div className="flex items-center gap-1 text-[11px] font-mono text-teal-300 font-bold">
-                  <CheckCircle2 className="w-3 h-3 text-teal-400" />
-                  <span>3. Four-Element Balance</span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400 leading-normal">
-                  Fire, Earth, Air and Water all present: +10%.
-                </p>
+            <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 flex flex-wrap items-center gap-2">
+              <span>{userTeam?.name?.replace(/\s*\(You\)$/, '') || 'My Roster'}</span>
+            </h2>
+          </div>
+
+          {/* Live Cosmic Sky Chips: Moon Phase, Planetary Hour & Squad Harmony */}
+          <div className="flex flex-wrap items-center gap-2 text-xs font-mono">
+            <div
+              className={`px-3 py-1.5 rounded-xl bg-slate-950/80 border flex items-center gap-2 ${
+                universeState.isPeakMoon
+                  ? 'border-amber-400/70 shadow-[0_0_12px_rgba(251,191,36,0.3)]'
+                  : 'border-cyan-500/30'
+              }`}
+            >
+              <Moon className={`w-4 h-4 shrink-0 ${universeState.isPeakMoon ? 'text-amber-300' : 'text-cyan-300'}`} />
+              <div>
+                <span className="text-[9px] text-slate-400 block uppercase">
+                  {universeState.isPeakMoon ? 'Peak Lunar Alignment' : 'Lunar Transit'}
+                </span>
+                <span className="text-cyan-200 font-bold">{universeState.moon}</span>
               </div>
             </div>
-          </div>
-        </details>
-
-        {/* Visual Team Synergy Radar Graph & Celestial Aspects Breakdown */}
-        <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-center">
-          {/* Radar Chart Visual */}
-          <div className="md:col-span-5 flex flex-col items-center justify-center bg-slate-950/70 p-4 rounded-xl border border-white/5 relative">
-            <div className="text-[11px] font-mono uppercase tracking-wider text-cyan-300 font-semibold mb-1">
-              Elemental & Celestial Aspect Radar
-            </div>
-            <svg viewBox="0 0 220 220" className="w-52 h-52 overflow-visible">
-              <defs>
-                <radialGradient id="radarFillGrad" cx="50%" cy="50%" r="50%">
-                  <stop offset="0%" stopColor="#06b6d4" stopOpacity="0.45" />
-                  <stop offset="70%" stopColor="#8b5cf6" stopOpacity="0.25" />
-                  <stop offset="100%" stopColor="#3b82f6" stopOpacity="0.05" />
-                </radialGradient>
-              </defs>
-
-              {/* Concentric Guide Rings */}
-              {[0.25, 0.5, 0.75, 1.0].map((level, i) => (
-                <circle
-                  key={i}
-                  cx={radarPoints.cx}
-                  cy={radarPoints.cy}
-                  r={radarPoints.maxR * level}
-                  fill="none"
-                  stroke="rgba(255, 255, 255, 0.1)"
-                  strokeDasharray={level === 1.0 ? 'none' : '2 2'}
-                  strokeWidth="1"
-                />
-              ))}
-
-              {/* Axis Spokes */}
-              {radarPoints.pts.map((pt, i) => (
-                <line
-                  key={i}
-                  x1={radarPoints.cx}
-                  y1={radarPoints.cy}
-                  x2={
-                    radarPoints.cx +
-                    radarPoints.maxR * Math.cos((pt.angle * Math.PI) / 180)
-                  }
-                  y2={
-                    radarPoints.cy +
-                    radarPoints.maxR * Math.sin((pt.angle * Math.PI) / 180)
-                  }
-                  stroke="rgba(6, 182, 212, 0.25)"
-                  strokeWidth="1"
-                />
-              ))}
-
-              {/* Synergistic Polygon Shape */}
-              <polygon
-                points={radarPoints.polygonString}
-                fill="url(#radarFillGrad)"
-                stroke="#06b6d4"
-                strokeWidth="2"
-                className="transition-all duration-700 ease-out drop-shadow-[0_0_8px_rgba(6,182,212,0.5)]"
-              />
-
-              {/* Vertex Nodes */}
-              {radarPoints.pts.map((pt, i) => (
-                <circle
-                  key={i}
-                  cx={pt.x}
-                  cy={pt.y}
-                  r="3.5"
-                  fill="#06b6d4"
-                  stroke="#ffffff"
-                  strokeWidth="1"
-                  className="animate-pulse"
-                />
-              ))}
-
-              {/* Axis Labels */}
-              <text
-                x="110"
-                y="24"
-                textAnchor="middle"
-                fill="#ef4444"
-                fontSize="9"
-                fontWeight="bold"
-                fontFamily="monospace">
-                Fire ({elementalDistribution.Fire || 0})
-              </text>
-              <text
-                x="194"
-                y="90"
-                textAnchor="start"
-                fill="#38bdf8"
-                fontSize="9"
-                fontWeight="bold"
-                fontFamily="monospace">
-                Air ({elementalDistribution.Air || 0})
-              </text>
-              <text
-                x="165"
-                y="195"
-                textAnchor="start"
-                fill="#818cf8"
-                fontSize="9"
-                fontWeight="bold"
-                fontFamily="monospace">
-                Water ({elementalDistribution.Water || 0})
-              </text>
-              <text
-                x="55"
-                y="195"
-                textAnchor="end"
-                fill="#14b8a6"
-                fontSize="9"
-                fontWeight="bold"
-                fontFamily="monospace">
-                Earth ({elementalDistribution.Earth || 0})
-              </text>
-              <text
-                x="26"
-                y="90"
-                textAnchor="end"
-                fill="#f59e0b"
-                fontSize="9"
-                fontWeight="bold"
-                fontFamily="monospace">
-                Aspects ({activeAspects.length})
-              </text>
-
-              {/* Center Harmony Node */}
-              <circle
-                cx={radarPoints.cx}
-                cy={radarPoints.cy}
-                r="16"
-                fill="#0f172a"
-                stroke="#06b6d4"
-                strokeWidth="1.5"
-              />
-              <text
-                x={radarPoints.cx}
-                y={radarPoints.cy + 3.5}
-                textAnchor="middle"
-                fill="#38bdf8"
-                fontSize="10"
-                fontWeight="bold"
-                fontFamily="monospace">
-                {harmonyScore}
-              </text>
-            </svg>
-            <span className="text-[10px] font-mono text-slate-400 mt-1">
-              Ascendant Resonance • {activeAspects.length} Celestial
-              Conjunctions
-            </span>
-          </div>
-
-          {/* Player Synergy Matrix */}
-          <div className="md:col-span-7 space-y-3">
-            <div className="text-xs font-mono text-cyan-300 font-semibold uppercase tracking-wider flex items-center gap-1.5">
-              <Zap className="w-3.5 h-3.5 text-amber-400" />
-              <span>Active Celestial Aspect Connections</span>
-            </div>
-
-            <div className="space-y-2">
-              {activeAspects.length === 0 && (
-                <p className="text-[11px] font-sans text-slate-400">
-                  No QB stacks among your starters (+0% Harmony).
-                </p>
-              )}
-              {activeAspects.map((aspect, idx) => (
-                <div
-                  key={idx}
-                  className="p-3 rounded-lg bg-slate-900/80 border border-amber-500/30 space-y-1">
-                  <div className="flex justify-between items-center text-xs font-mono">
-                    <span className="font-bold text-amber-300 flex items-center gap-1">
-                      <Flame className="w-3 h-3 text-red-400" />
-                      {aspect.team} Astral Synergy Conjunction
-                    </span>
-                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/40 text-amber-200">
-                      {/* computeRosterHarmonyBreakdown: +18 for a lone pass catcher, +9 each when several share the QB */}
-                      +{aspect.pass_catcher_names.length === 1 ? 18 : 9 * aspect.pass_catcher_names.length}% Harmony
-                    </span>
-                  </div>
-                  <div className="text-xs font-sans text-slate-200">
-                    <span className="font-semibold text-slate-100">
-                      {aspect.qb_name}
-                    </span>
-                    <span className="text-slate-400 mx-1.5">
-                      ☌ (Conjunction)
-                    </span>
-                    <span className="font-semibold text-slate-100">
-                      {aspect.pass_catcher_names.join(' & ')}
-                    </span>
-                  </div>
-                  <p className="text-[10px] font-sans text-slate-400 leading-normal">
-                    A QB and his own pass catchers rise and fall together.
-                  </p>
-                </div>
-              ))}
-
-              {/* Elemental callouts, read from your starters */}
-              <div className="p-3 rounded-lg bg-slate-900/60 border border-white/5 space-y-1 text-xs font-mono">
-                <div className="flex items-center justify-between text-cyan-300 font-semibold">
-                  <span className="flex items-center gap-1">
-                    <TrendingUp className="w-3 h-3 text-cyan-400" />
-                    {elementReadings.airTargets.length > 0
-                      ? 'Fire & Air Kinetic Combustion'
-                      : elementReadings.qb
-                        ? `${elementReadings.qbElement ?? ''} QB alignment`
-                        : 'QB alignment'}
-                  </span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400 leading-relaxed">
-                  {!elementReadings.qb
-                    ? 'No QB among your starters.'
-                    : elementReadings.airTargets.length > 0
-                      ? `Fire QB ${elementReadings.qb.name} with Air ${elementReadings.airTargets.map((c) => c.name).join(' & ')}: energetic leadership plus separation on deep routes.`
-                      : (['Complementary', 'Same element', 'Opposed'] as const)
-                          .filter((k) => elementReadings.groups[k].length > 0)
-                          .map((k) => `${k}: ${elementReadings.groups[k].join(', ')}`)
-                          .join(' · ') || `${elementReadings.qb.name} has no starting pass catchers to align with.`}
-                </p>
-              </div>
-
-              <div className="p-3 rounded-lg bg-slate-900/60 border border-white/5 space-y-1 text-xs font-mono">
-                <div className="flex items-center justify-between text-teal-300 font-semibold">
-                  <span className="flex items-center gap-1">
-                    <Shield className="w-3 h-3 text-teal-400" />
-                    Earth Bedrock Floor Anchoring
-                  </span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400 leading-relaxed">
-                  {elementReadings.earthBacks.length > 0
-                    ? `${elementReadings.earthBacks.map((p) => p.name).join(' & ')} (Earth RB${elementReadings.earthBacks.length > 1 ? 's) anchor' : ') anchors'} your weekly floor.`
-                    : 'No Earth RBs among your starters, so no floor anchor this week.'}
-                </p>
-              </div>
-
-              {/* Aspect between your starters' two leading elements */}
-              <div className="p-3 rounded-xl bg-slate-950/60 border border-white/10 space-y-2">
-                <div className="flex items-center justify-between text-xs font-mono">
-                  <span className="text-slate-300 font-semibold flex items-center gap-1.5">
-                    <Compass className="w-3.5 h-3.5 text-cyan-400" />
-                    <span>Linear Aspect Resonance Reader (0° to 180°)</span>
-                  </span>
-                  <span className="text-cyan-300 font-bold">
-                    {elementReadings.aspect.angle}° ({elementReadings.aspect.name})
-                  </span>
-                </div>
-                <p className="text-[10px] font-sans text-slate-400">
-                  {elementReadings.top.length >= 2
-                    ? `Your starters lean ${elementReadings.top.join(' & ')}: ${elementReadings.rel === 'Complementary' ? 'complementary elements' : 'elements in tension'}.`
-                    : elementReadings.top.length === 1
-                      ? `Your starters are all ${elementReadings.top[0]}.`
-                      : 'No element data for your starters.'}
-                </p>
-                <div className="relative w-full h-2.5 bg-slate-900 rounded-full overflow-hidden border border-white/10">
-                  <div
-                    className="h-full bg-gradient-to-r from-cyan-500 via-purple-500 to-amber-400 rounded-full transition-all duration-500"
-                    style={{
-                      width: `${Math.max(4, (elementReadings.aspect.angle / 180) * 100)}%`,
-                    }}
-                  />
-                </div>
-                <div className="flex justify-between text-[9px] font-mono text-slate-400 px-0.5">
-                  <span>0° (Conj)</span>
-                  <span>60° (Sextile)</span>
-                  <span>90° (Square)</span>
-                  <span>120° (Trine)</span>
-                  <span>180° (Opp)</span>
-                </div>
+            <div className="px-3 py-1.5 rounded-xl bg-slate-950/80 border border-purple-500/30 flex items-center gap-2">
+              <Orbit className="w-4 h-4 text-purple-300 shrink-0" />
+              <div>
+                <span className="text-[9px] text-slate-400 block uppercase">Planetary Hour</span>
+                <span className="text-purple-200 font-bold">{universeState.hour}</span>
               </div>
             </div>
-          </div>
-        </div>
-          </div>
-        )}
-      </section>
-
-      {/* 5. Your Team's Current State: Roster Slots */}
-      <GlassCard variant="panel" className="p-4 sm:p-6 space-y-4">
-        <div className="flex justify-between items-center border-b border-white/10 pb-3">
-          <div className="flex items-center gap-2">
-            <Shield className="w-4 h-4 text-cyan-400" />
-            <h3 className="font-serif text-lg font-bold text-slate-100">
-              Your Team&apos;s Active Roster Slots
-            </h3>
-          </div>
-          <span className="text-xs font-mono text-emerald-400 bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded">
-            {rosteredPlayers.length} / 15 Filled
-          </span>
-        </div>
-
-        {/* Starters Section */}
-        <div className="space-y-2">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono font-bold text-cyan-300 uppercase tracking-wider">
-              STARTERS (
-              {
-                myRoster.filter((s) => !s.slot_id.startsWith('BN') && s.player)
-                  .length
-              }{' '}
-              / {myRoster.filter((s) => !s.slot_id.startsWith('BN')).length})
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            {myRoster
-              .filter((s) => !s.slot_id.startsWith('BN'))
-              .map((slot) => {
-                const player = slot.player;
-                return (
-                  <div
-                    key={slot.slot_id}
-                    onClick={() => player && handleInspect(player)}
-                    className={`p-3 rounded-xl border transition-all ${
-                      player
-                        ? 'bg-slate-900/80 border-cyan-500/30 hover:border-cyan-400 cursor-pointer shadow-[0_0_12px_rgba(6,182,212,0.15)]'
-                        : 'bg-slate-950/40 border-dashed border-white/10 opacity-70'
-                    }`}>
-                    <div className="flex justify-between items-start">
-                      <span className="text-[10px] font-mono font-bold text-slate-300 uppercase">
-                        {slot.slot_name}
-                      </span>
-                      {player ? (
-                        <PositionalBadge position={player.position} size="sm" />
-                      ) : (
-                        <span className="text-[9px] font-mono text-slate-500">
-                          VACANT
-                        </span>
-                      )}
-                    </div>
-                    {player ? (
-                      <div className="mt-1.5 space-y-0.5">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-serif font-bold text-xs text-slate-100 truncate">
-                            {player.name}
-                          </span>
-                          {player.injury_status && (
-                            <span
-                              className={`text-[8px] font-mono font-bold px-1 py-0.2 rounded border shrink-0 ${
-                                ['Out', 'IR', 'Doubtful', 'NA'].includes(
-                                  player.injury_status,
-                                )
-                                  ? 'bg-rose-950/80 text-rose-300 border-rose-500/40'
-                                  : 'bg-amber-950/80 text-amber-300 border-amber-500/40'
-                              }`}>
-                              {player.injury_status.toUpperCase()}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex justify-between items-center text-[10px] font-mono text-slate-400">
-                          <span>
-                            {player.team} • Bye {player.bye_week || '—'}
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-cyan-300 font-bold" title="Stats: this week's projection">
-                              {statsPoints(player).toFixed(1)} pts
-                            </span>
-                            <span
-                              title="Stars: this week's favorability"
-                              className={`px-1 rounded border ${TONE_PILL[favorabilityTone(starsScore(player))]}`}>
-                              ★ {starsScore(player).toFixed(0)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[10px] font-mono text-slate-500 italic">
-                        Awaiting draft pick
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-          </div>
-        </div>
-
-        {/* Bench Section */}
-        <div className="space-y-2 pt-3 border-t border-white/10">
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-mono font-bold text-purple-300 uppercase tracking-wider">
-              BENCH (
-              {
-                myRoster.filter((s) => s.slot_id.startsWith('BN') && s.player)
-                  .length
-              }{' '}
-              / {myRoster.filter((s) => s.slot_id.startsWith('BN')).length})
-            </span>
-          </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
-            {myRoster
-              .filter((s) => s.slot_id.startsWith('BN'))
-              .map((slot) => {
-                const player = slot.player;
-                return (
-                  <div
-                    key={slot.slot_id}
-                    onClick={() => player && handleInspect(player)}
-                    className={`p-3 rounded-xl border transition-all ${
-                      player
-                        ? 'bg-slate-950/70 border-white/10 hover:border-purple-500/40 cursor-pointer opacity-85'
-                        : 'bg-slate-950/30 border-dashed border-white/5 opacity-50'
-                    }`}>
-                    <div className="flex justify-between items-start">
-                      <span className="text-[10px] font-mono font-medium text-slate-400 uppercase">
-                        {slot.slot_name}
-                      </span>
-                      {player ? (
-                        <PositionalBadge position={player.position} size="sm" />
-                      ) : (
-                        <span className="text-[9px] font-mono text-slate-500">
-                          VACANT
-                        </span>
-                      )}
-                    </div>
-                    {player ? (
-                      <div className="mt-1.5 space-y-0.5">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="font-serif font-medium text-xs text-slate-200 truncate">
-                            {player.name}
-                          </span>
-                          {player.injury_status && (
-                            <span
-                              className={`text-[8px] font-mono font-bold px-1 py-0.2 rounded border shrink-0 ${
-                                ['Out', 'IR', 'Doubtful', 'NA'].includes(
-                                  player.injury_status,
-                                )
-                                  ? 'bg-rose-950/80 text-rose-300 border-rose-500/40'
-                                  : 'bg-amber-950/80 text-amber-300 border-amber-500/40'
-                              }`}>
-                              {player.injury_status.toUpperCase()}
-                            </span>
-                          )}
-                        </div>
-                        <div className="flex justify-between items-center text-[10px] font-mono text-slate-400">
-                          <span>
-                            {player.team} • Bye {player.bye_week || '—'}
-                          </span>
-                          <div className="flex items-center gap-1.5">
-                            <span className="text-cyan-300 font-bold" title="Stats: this week's projection">
-                              {statsPoints(player).toFixed(1)} pts
-                            </span>
-                            <span
-                              title="Stars: this week's favorability"
-                              className={`px-1 rounded border ${TONE_PILL[favorabilityTone(starsScore(player))]}`}>
-                              ★ {starsScore(player).toFixed(0)}
-                            </span>
-                          </div>
-                        </div>
-                      </div>
-                    ) : (
-                      <div className="mt-2 text-[10px] font-mono text-slate-500 italic">
-                        Awaiting draft pick
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
+            <div className="px-3 py-1.5 rounded-xl bg-slate-950/80 border border-amber-500/30 flex items-center gap-2">
+              <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
+              <div>
+                <span className="text-[9px] text-slate-400 block uppercase">Squad Harmony</span>
+                <span className="text-amber-300 font-bold">{harmonyScore}%</span>
+              </div>
+            </div>
           </div>
         </div>
       </GlassCard>
 
-      {/* 6. Weekly Bye Week Coverage Matrix & Explanation */}
-      {weeklyCoverage.length > 0 && (
-        <GlassCard variant="panel" className="p-4 sm:p-6 space-y-4">
-          <div className="flex justify-between items-center border-b border-white/10 pb-3">
-            <div className="flex items-center gap-2">
-              <Calendar className="w-4 h-4 text-purple-400" />
-              <div>
-                <h3 className="font-serif text-lg font-bold text-slate-100">
-                  Bye outlook
-                </h3>
-                <p className="text-[11px] font-sans text-slate-400">
-                  Remaining weeks with real NFL byes. Points are this week&apos;s projections with
-                  bye players removed.
-                </p>
-              </div>
-            </div>
-            <span className="text-xs font-mono text-purple-300 bg-purple-950/60 border border-purple-500/30 px-2 py-0.5 rounded">
-              Weeks {remainingCoverage[0]?.week ?? 1}–{remainingCoverage[remainingCoverage.length - 1]?.week ?? 18}
-            </span>
+      {/* 2. Unified Interactive Visual Roster Constellation & Lineup Field */}
+      <GlassCard variant="panel" glowColor="cyan" className="p-4 sm:p-5 space-y-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-white/10 pb-3">
+          <div>
+            <h3 className="font-serif text-lg font-bold text-slate-100 flex items-center gap-2">
+              <Zap className="w-4 h-4 text-amber-400" />
+              Roster Aura &amp; Stack Constellation
+            </h3>
+            <p className="text-xs text-slate-400">
+              Shows how balanced your lineup is, how deep your bench is, and how many points each starter and bench player is projected to score.
+            </p>
           </div>
+          <div className="flex flex-wrap gap-1.5 text-[10px] font-mono">
+            {harmonyBreakdown.parts.map((part) => (
+              <span
+                key={part.label}
+                className="px-2 py-0.5 rounded-full bg-slate-900 border border-amber-500/30 text-amber-200"
+              >
+                {part.label}: +{part.points}%
+              </span>
+            ))}
+          </div>
+        </div>
 
-          {/* How bye coverage works */}
-          <details className="group rounded-xl bg-slate-950/70 border border-purple-500/20 text-xs overflow-hidden transition-all">
-            <summary className="p-3 font-mono text-purple-300 font-semibold cursor-pointer hover:bg-white/5 flex items-center justify-between select-none">
-              <span className="flex items-center gap-1.5">
-                <Info className="w-3.5 h-3.5 text-purple-400" />
-                <span>How bye coverage works</span>
+        {/* Interactive Constellation Map (5-Spoke Elemental & Aspect Balance Radar + Active Trine/Stack Summary) */}
+        <div className="bg-slate-950/70 rounded-xl p-3 border border-white/5 overflow-x-auto">
+          <svg
+            viewBox="0 0 760 190"
+            className="w-full min-w-[560px] h-44 overflow-visible"
+            data-testid="synergy-constellation-svg"
+            role="img"
+            aria-label="Team Alignment Radar and Stack Constellation Graph"
+          >
+            {/* Left: 5-Spoke Elemental & Aspect Balance Web */}
+            {[0.33, 0.66, 1.0].map((level, idx) => (
+              <circle
+                key={`grid-${idx}`}
+                cx={radarPoints.cx}
+                cy={radarPoints.cy}
+                r={radarPoints.maxR * level}
+                fill="none"
+                stroke="rgba(255,255,255,0.08)"
+                strokeDasharray="2,3"
+              />
+            ))}
+            <polygon
+              points={radarPoints.polygonString}
+              fill="rgba(168, 85, 247, 0.24)"
+              stroke="#06b6d4"
+              strokeWidth="2"
+            />
+            <text x="115" y="20" textAnchor="middle" fill="#f87171" fontSize="9" fontFamily="monospace">
+              Fire ({elementalDistribution.Fire})
+            </text>
+            <text x="200" y="76" textAnchor="start" fill="#38bdf8" fontSize="9" fontFamily="monospace">
+              Air ({elementalDistribution.Air})
+            </text>
+            <text x="170" y="176" textAnchor="middle" fill="#60a5fa" fontSize="9" fontFamily="monospace">
+              Water ({elementalDistribution.Water})
+            </text>
+            <text x="60" y="176" textAnchor="middle" fill="#2dd4bf" fontSize="9" fontFamily="monospace">
+              Earth ({elementalDistribution.Earth})
+            </text>
+            <text x="26" y="76" textAnchor="end" fill="#c084fc" fontSize="9" fontFamily="monospace">
+              Aspects ({activeAspects.length})
+            </text>
+
+            {/* Right: Active Elemental Harmony & Passing Stack Telemetry */}
+            <text x="270" y="24" fill="#c084fc" fontSize="9" fontFamily="monospace" fontWeight="bold">
+              ELEMENTAL HARMONY THRESHOLDS (3+ STARTERS = +12% STACK BONUS)
+            </text>
+            {(['Fire', 'Earth', 'Air', 'Water'] as const).map((el, i) => {
+              const count = elementalDistribution[el];
+              const isTrine = count >= 3;
+              const y = 44 + i * 22;
+              const stroke = ELEMENT_STROKE[el];
+              const barW = Math.min(220, (count / 8) * 220);
+              return (
+                <g key={el}>
+                  <text x="270" y={y + 9} fill={stroke} fontSize="8.5" fontFamily="monospace" fontWeight="bold">
+                    {el}
+                  </text>
+                  <rect x="315" y={y} width="220" height="10" rx="5" fill="#0f172a" stroke="rgba(255,255,255,0.08)" />
+                  <rect x="315" y={y} width={Math.max(6, barW)} height="10" rx="5" fill={stroke} fillOpacity={isTrine ? 0.85 : 0.45} />
+                  <text x="545" y={y + 8.5} fill={isTrine ? '#34d399' : '#94a3b8'} fontSize="8" fontFamily="monospace">
+                    {count}/8 {isTrine ? '★ TRINE ACTIVE' : `(need ${Math.max(0, 3 - count)} more)`}
+                  </text>
+                </g>
+              );
+            })}
+            <line x1="270" y1="138" x2="735" y2="138" stroke="rgba(255,255,255,0.08)" strokeDasharray="4,4" />
+            <text x="270" y="156" fill="#fbbf24" fontSize="8.5" fontFamily="monospace" fontWeight="bold">
+              CORRELATION STACKS:{' '}
+              {activeAspects.length > 0
+                ? activeAspects.map((a) => `${a.team} 3.0x (${a.qb.name.split(' ').slice(-1)[0]} ☌ ${a.passCatchers.map((pc) => pc.name.split(' ').slice(-1)[0]).join('/')})`).join(' · ')
+                : 'No active QB + WR/TE same-team starter stack'}
+            </text>
+            <text x="270" y="174" fill="#94a3b8" fontSize="8" fontFamily="monospace">
+              Squad Harmony: {harmonyScore}% · Click any starter or bench card below to compare roles
+            </text>
+          </svg>
+        </div>
+
+        {/* Active Starters & Bench Player Aura Field (Single Cohesive Roster View) */}
+        <div className="space-y-4">
+          <section className="space-y-2.5" aria-label="Active Starters">
+            <div className="flex items-center justify-between flex-wrap gap-2">
+              <h4 className="font-serif text-base font-bold text-slate-100 flex items-center gap-2">
+                <span className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_8px_#a855f7]" />
+                STARTERS ({starterSlots.length})
+              </h4>
+              <span className="text-[11px] font-mono text-purple-300">
+                {swaps.length > 0
+                  ? `${swaps.length} bench promotion${swaps.length === 1 ? '' : 's'} flagged`
+                  : 'Optimal Oracle lineup active'}
               </span>
-              <span className="text-[10px] text-slate-400 group-open:rotate-180 transition-transform">
-                ▼
+            </div>
+            {swaps.length > 0 && (
+              <div
+                data-testid="lineup-swap-banner"
+                className="p-2.5 rounded-xl border bg-amber-950/40 border-amber-500/40 text-amber-200 text-xs font-mono flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+              >
+                <div className="flex items-center gap-2">
+                  <ArrowUpDown className="w-4 h-4 text-amber-400 shrink-0" />
+                  <span>
+                    Swap alert: bench <strong>{swaps[0].playerIn.name}</strong>{' '}
+                    {swaps[0].playerOut ? (
+                      <>leads <strong>{swaps[0].playerOut.name}</strong> by +{Number(swaps[0].oracleGain || 0).toFixed(1)} Oracle</>
+                    ) : (
+                      <>can fill an empty slot (+{Number(swaps[0].oracleGain || 0).toFixed(1)} Oracle)</>
+                    )}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  data-testid="lineup-swap-banner-button"
+                  onClick={() => handleOpenPlayer(swaps[0].playerIn, swaps[0].playerOut ?? null)}
+                  className="text-[11px] underline text-amber-300 hover:text-amber-100 shrink-0 cursor-pointer"
+                >
+                  Compare lineup →
+                </button>
+              </div>
+            )}
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+              {starterSlots.map((slot) => renderPlayerCard(slot, false))}
+            </div>
+          </section>
+
+          <section className="space-y-2.5 pt-3 border-t border-white/10" aria-label="Bench Depth">
+            <div className="flex items-center justify-between">
+              <h4 className="font-serif text-base font-bold text-slate-200">
+                BENCH ({benchSlots.length})
+              </h4>
+              <span className="text-[11px] font-mono text-slate-400">
+                Scored as starters (no bench penalty)
               </span>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-2.5">
+              {benchSlots.map((slot) => renderPlayerCard(slot, true))}
+            </div>
+          </section>
+        </div>
+      </GlassCard>
+
+      {/* 3. Full-Width 18-Week Bye Coverage Strip & Compact Harmony/Bye Guide */}
+      <GlassCard
+        variant="panel"
+        data-testid="18-week-coverage-strip"
+        className="p-4 sm:p-5 space-y-3"
+      >
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="flex items-center gap-2">
+            <Calendar className="w-4 h-4 text-purple-400" />
+            <h3 className="font-serif text-base font-bold text-slate-100">
+              18-Week Bye Coverage
+            </h3>
+          </div>
+          <span className="text-[11px] font-mono text-slate-400">
+            Weeks 5-14 byes · Weeks 15-17 fantasy playoffs
+          </span>
+        </div>
+
+        <div className="grid grid-cols-6 sm:grid-cols-9 lg:grid-cols-[repeat(18,minmax(0,1fr))] gap-1.5 font-mono text-[10px] text-center">
+          {byeSchedule.map((w) => {
+            const cls =
+              w.severity === 'cluster'
+                ? 'bg-rose-950/80 border-rose-500/60 text-rose-200 font-bold'
+                : w.severity === 'normal'
+                  ? 'bg-amber-950/50 border-amber-500/40 text-amber-200'
+                  : 'bg-slate-900/60 border-white/5 text-slate-500';
+            const names = w.players.map((p) => `${p.name} (${p.position})`).join(', ');
+            return (
+              <div
+                key={w.week}
+                data-testid={`bye-week-cell-${w.week}`}
+                title={names ? `Week ${w.week} byes: ${names}` : `Week ${w.week}: No players on bye`}
+                className={`py-1.5 px-1 rounded-lg border ${cls} ${w.week === universeState.activeWeek ? 'ring-2 ring-purple-400' : ''}`}
+              >
+                <span className="block text-[9px] opacity-75">W{w.week}</span>
+                <span className="block text-xs font-bold">{w.players.length}</span>
+              </div>
+            );
+          })}
+        </div>
+
+        <div className="flex flex-wrap items-center gap-4 pt-1 text-xs">
+          <details className="group text-slate-300">
+            <summary className="font-mono text-[11px] text-cyan-300 cursor-pointer flex items-center gap-1">
+              <Info className="w-3.5 h-3.5 text-cyan-400" />
+              <span>How Squad Harmony is scored</span>
             </summary>
-            <div className="p-3.5 pt-0 space-y-2 border-t border-white/5">
-              <p className="font-sans text-slate-300 leading-relaxed pt-3">
-                Each week lists your players on bye and your best lineup without them. Byes fall in
-                Weeks 5–14; the fantasy playoffs (Weeks 15–17) have none.
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 text-[11px] font-mono pt-1">
-                <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-0.5">
-                  <span className="text-slate-300 font-bold">OK</span>
-                  <p className="text-[10px] font-sans text-slate-400">No one on bye.</p>
-                </div>
-                <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-0.5">
-                  <span className="text-amber-300 font-bold">BYE</span>
-                  <p className="text-[10px] font-sans text-slate-400">One or two players on bye.</p>
-                </div>
-                <div className="p-2 rounded bg-slate-900/60 border border-white/5 space-y-0.5">
-                  <span className="text-rose-300 font-bold">Conflict</span>
-                  <p className="text-[10px] font-sans text-slate-400">Three or more on bye; check waivers early.</p>
-                </div>
+            <div className="mt-1.5 p-2.5 rounded-lg bg-slate-950/80 border border-white/10 text-[11px] text-slate-300 space-y-1">
+              <div>
+                <Flame className="w-3 h-3 text-rose-400 inline mr-1" />
+                <strong>1. Elemental Trine:</strong> 3 starters of one element (+12%), 4+ (+18%) amplify ceiling and floor.
+              </div>
+              <div>
+                <Zap className="w-3 h-3 text-amber-400 inline mr-1" />
+                <strong>2. QB Stacks:</strong> Starting a pass catcher with his NFL QB (+18% to +27% Astral Stack Conjunction).
+              </div>
+              <div>
+                <CheckCircle2 className="w-3 h-3 text-teal-400 inline mr-1" />
+                <strong>3. Four-Element Balance:</strong> All 4 elements represented (+10%).
               </div>
             </div>
           </details>
 
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-            {remainingCoverage.map((node) => {
-              const isHighConflict = node.conflict_severity === 'high';
-              const isLowConflict = node.conflict_severity === 'low';
-
-              return (
-                <div
-                  key={node.week}
-                  className={`p-2.5 rounded-xl border font-mono text-xs space-y-1 ${
-                    isHighConflict
-                      ? 'bg-rose-950/40 border-rose-500/40 text-rose-300'
-                      : isLowConflict
-                        ? 'bg-amber-950/30 border-amber-500/30 text-amber-200'
-                        : 'bg-slate-900/60 border-white/5 text-slate-300'
-                  }`}>
-                  <div className="flex justify-between items-center">
-                    <span className="font-bold">WK {node.week}</span>
-                    {isHighConflict ? (
-                      <span className="text-[9px] font-bold text-rose-400 bg-rose-950/80 px-1 py-0.2 rounded border border-rose-500/40">
-                        CONFLICT
-                      </span>
-                    ) : isLowConflict ? (
-                      <span className="text-[9px] font-bold text-amber-300">BYE</span>
-                    ) : (
-                      <span className="text-[9px] text-slate-500">OK</span>
-                    )}
-                  </div>
-                  <div className="text-[11px] font-bold text-cyan-300">
-                    {node.projected_total.toFixed(1)} pts
-                  </div>
-                  {node.bye_players.length > 0 ? (
-                    <div className="text-[9px] text-slate-400 truncate">
-                      Bye: {node.bye_players.map((b) => b.position).join(', ')}
-                    </div>
-                  ) : (
-                    <div className="text-[9px] text-slate-500">Full roster</div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </GlassCard>
-      )}
-
-      {/* 8. Path of Ascension: a draft tool, hidden once the draft is complete */}
-      {!isDraftComplete && (!isAscensionExpanded ? (
-        <GlassCard
-          variant="panel"
-          className="p-4 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3">
-          <div className="flex items-center gap-3">
-            <div className="w-9 h-9 rounded-lg bg-cyan-950/80 border border-cyan-500/40 flex items-center justify-center text-cyan-400 shrink-0">
-              <Sparkles className="w-5 h-5" />
+          <details className="group text-slate-300">
+            <summary className="font-mono text-[11px] text-purple-300 cursor-pointer flex items-center gap-1">
+              <Info className="w-3.5 h-3.5 text-purple-400" />
+              <span>How bye coverage works</span>
+            </summary>
+            <div className="mt-1.5 p-2.5 rounded-lg bg-slate-950/80 border border-white/10 text-[11px] text-slate-300">
+              0 = No one on bye. · 1-2 = One or two players on bye. · ≥3 = Three or more on bye.
             </div>
-            <div>
-              <h4 className="font-serif font-bold text-slate-100 text-sm flex items-center gap-2">
-                <span>Path of Ascension</span>
-                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-emerald-950/80 border border-emerald-500/40 text-emerald-300 font-normal">
-                  Draft Complete
-                </span>
-              </h4>
-              <p className="text-[11px] font-mono text-slate-400">
-                15-round divination roadmap collapsed. Roster is fully ascended.
-              </p>
-            </div>
-          </div>
-          <button
-            type="button"
-            onClick={() => setIsAscensionExpanded(true)}
-            className="px-3 py-1.5 rounded-lg bg-cyan-950/80 border border-cyan-500/40 text-cyan-300 font-mono text-xs hover:bg-cyan-900/80 transition-all flex items-center gap-1.5 shrink-0 shadow-[0_0_10px_rgba(6,182,212,0.2)]">
-            <span>Show Completed Ascension Path</span>
-            <ChevronDown className="w-3.5 h-3.5" />
-          </button>
-        </GlassCard>
-      ) : (
-        <div className="space-y-2">
-          {isDraftComplete && (
-            <div className="flex justify-end px-1">
-              <button
-                type="button"
-                onClick={() => setIsAscensionExpanded(false)}
-                className="px-2.5 py-1 rounded-lg bg-slate-900/80 border border-white/10 text-slate-300 font-mono text-xs hover:text-white flex items-center gap-1.5 transition-all">
-                <span>Collapse Ascension Path</span>
-                <ChevronUp className="w-3.5 h-3.5" />
-              </button>
-            </div>
-          )}
-          <AscensionTimeline
-            steps={ascensionPath}
-            currentRound={currentPick?.round || 5}
-            cosmicBoard={cosmicBoard}
-            onInspectPlayerById={handleInspectById}
-          />
+          </details>
         </div>
-      ))}
+      </GlassCard>
 
-      {/* Detail Modal (Read-Only) */}
       <PlayerDetailModal
-        player={context.selectedPlayer}
-        isOpen={Boolean(context.selectedPlayer)}
-        onClose={() => context.selectPlayer(null)}
+        player={inspected?.player ?? null}
+        compareWith={inspected?.vs ?? null}
+        isOpen={inspected !== null}
+        onClose={() => setInspected(null)}
+        roster={myRoster}
       />
     </div>
   );

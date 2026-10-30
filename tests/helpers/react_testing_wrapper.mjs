@@ -16,11 +16,12 @@
 
 /**
  * Oneiromancy - React Testing Library (RTL) Execution Wrapper
- * 
- * Lightweight, hermetic React Component Testing Environment for Node.js 22.
+ *
+ * Lightweight, hermetic React Component Testing Environment for Node.js 22
+ * backed by real React 18 (`react`, `react/jsx-runtime`, `react-dom/server`).
  * Evaluates compiled React functional components, unwinds subtrees, resolves
  * JSX structures and OneiromancyContext, and builds an inspectable Virtual DOM tree.
- * 
+ *
  * Implements standard RTL & Jest testing primitives:
  * - render(ui, options)
  * - screen.getByTestId(id), screen.queryByTestId(id)
@@ -32,13 +33,257 @@
  */
 
 import assert from 'node:assert/strict';
+import React from 'react';
+import { jsx as realJsx, jsxs as realJsxs, Fragment as realFragment } from 'react/jsx-runtime';
 import {
-  cleanupEffects,
-  clearHookStores,
-  flushPendingEffects,
-  setReRenderListener,
-  withComponentInstance,
-} from './react_shim.mjs';
+  renderToStaticMarkup as realRenderToStaticMarkup,
+  renderToString as realRenderToString,
+} from 'react-dom/server';
+
+export const Fragment = realFragment;
+
+export function jsx(type, props, ...extra) {
+  const finalProps = { ...props };
+  if (finalProps.children === undefined && extra.length > 0) {
+    finalProps.children = extra.length === 1 ? extra[0] : extra;
+  }
+  const key =
+    finalProps.key !== undefined
+      ? finalProps.key
+      : extra.length === 1 &&
+          (typeof extra[0] === 'string' || typeof extra[0] === 'number') &&
+          props?.children !== undefined
+        ? extra[0]
+        : undefined;
+  delete finalProps.key;
+  return realJsx(type, finalProps, key);
+}
+
+export const jsxs = jsx;
+export const jsxDEV = jsx;
+export const createElement = React.createElement;
+export const renderToStaticMarkup = realRenderToStaticMarkup;
+export const renderToString = realRenderToString;
+
+// React Hook Store & Re-render Dispatcher for interactive VNode evaluation
+let currentInstance = null;
+let currentHookIndex = 0;
+let reRenderListener = null;
+let renderGeneration = 0;
+const hookStores = new Map();
+let activeCleanups = [];
+let activeTimers = [];
+let pendingEffects = [];
+
+function runWithUnrefTimers(fn) {
+  const origSetInterval = globalThis.setInterval;
+  const origSetTimeout = globalThis.setTimeout;
+  globalThis.setInterval = (...args) => {
+    const t = origSetInterval(...args);
+    if (t && typeof t.unref === 'function') t.unref();
+    activeTimers.push({ type: 'interval', id: t });
+    return t;
+  };
+  globalThis.setTimeout = (...args) => {
+    const t = origSetTimeout(...args);
+    if (t && typeof t.unref === 'function') t.unref();
+    activeTimers.push({ type: 'timeout', id: t });
+    return t;
+  };
+  try {
+    return fn();
+  } finally {
+    globalThis.setInterval = origSetInterval;
+    globalThis.setTimeout = origSetTimeout;
+  }
+}
+
+export function setReRenderListener(listener) {
+  reRenderListener = listener;
+}
+
+function getHookStore(instanceId) {
+  if (!hookStores.has(instanceId)) {
+    hookStores.set(instanceId, []);
+  }
+  return hookStores.get(instanceId);
+}
+
+export function clearHookStores() {
+  hookStores.clear();
+  pendingEffects = [];
+  cleanupEffects();
+}
+
+function depsEqual(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (!Object.is(a[i], b[i])) return false;
+  }
+  return true;
+}
+
+export function useContext(context) {
+  return context?._currentValue;
+}
+
+export function useState(initial) {
+  if (!currentInstance) {
+    let val = typeof initial === 'function' ? initial() : initial;
+    const setter = (next) => {
+      val = typeof next === 'function' ? next(val) : next;
+      if (reRenderListener) reRenderListener();
+    };
+    return [val, setter];
+  }
+  const store = getHookStore(currentInstance);
+  const hookIdx = currentHookIndex++;
+  if (!(hookIdx in store)) {
+    store[hookIdx] = typeof initial === 'function' ? initial() : initial;
+  }
+  const gen = renderGeneration;
+  const setter = (next) => {
+    if (gen !== renderGeneration) return;
+    store[hookIdx] = typeof next === 'function' ? next(store[hookIdx]) : next;
+    if (reRenderListener) reRenderListener();
+  };
+  return [store[hookIdx], setter];
+}
+
+export function useReducer(reducer, initialArg, init) {
+  const [state, setState] = useState(() => (typeof init === 'function' ? init(initialArg) : initialArg));
+  const dispatch = (action) => {
+    setState((prev) => reducer(prev, action));
+  };
+  return [state, dispatch];
+}
+
+export function useEffect(callback, deps) {
+  if (!currentInstance) {
+    const cleanup = callback();
+    if (typeof cleanup === 'function') activeCleanups.push(cleanup);
+    return;
+  }
+  const store = getHookStore(currentInstance);
+  const hookIdx = currentHookIndex++;
+  const prev = store[hookIdx];
+  if (!prev || !deps || !depsEqual(prev.deps, deps)) {
+    pendingEffects.push({
+      store,
+      hookIdx,
+      callback,
+      deps,
+      prevCleanup: prev?.cleanup,
+    });
+  }
+}
+
+export function flushPendingEffects() {
+  if (pendingEffects.length === 0) return false;
+  const effectsToRun = [...pendingEffects];
+  pendingEffects = [];
+  for (const eff of effectsToRun) {
+    if (eff.prevCleanup && typeof eff.prevCleanup === 'function') {
+      eff.prevCleanup();
+    }
+    const cleanup = runWithUnrefTimers(() => eff.callback());
+    eff.store[eff.hookIdx] = { cleanup, deps: eff.deps };
+    if (typeof cleanup === 'function') activeCleanups.push(cleanup);
+  }
+  return true;
+}
+
+export function cleanupEffects() {
+  const cleanups = [...activeCleanups];
+  activeCleanups = [];
+  for (const cleanup of cleanups) {
+    if (typeof cleanup === 'function') {
+      cleanup();
+    }
+  }
+  const timers = [...activeTimers];
+  activeTimers = [];
+  for (const t of timers) {
+    if (t.type === 'interval') clearInterval(t.id);
+    else clearTimeout(t.id);
+  }
+}
+
+export function useLayoutEffect(callback, deps) {
+  return useEffect(callback, deps);
+}
+
+export function useRef(initial) {
+  if (!currentInstance) {
+    return { current: initial };
+  }
+  const store = getHookStore(currentInstance);
+  const hookIdx = currentHookIndex++;
+  if (!(hookIdx in store)) {
+    store[hookIdx] = { current: initial };
+  }
+  return store[hookIdx];
+}
+
+export function useMemo(factory, deps) {
+  if (!currentInstance) {
+    return factory();
+  }
+  const store = getHookStore(currentInstance);
+  const hookIdx = currentHookIndex++;
+  const prev = store[hookIdx];
+  if (!prev || !deps || !depsEqual(prev.deps, deps)) {
+    const value = factory();
+    store[hookIdx] = { value, deps };
+    return value;
+  }
+  return prev.value;
+}
+
+export function useCallback(callback, deps) {
+  return useMemo(() => callback, deps);
+}
+
+const interactiveDispatcher = {
+  useState,
+  useReducer,
+  useEffect,
+  useLayoutEffect,
+  useInsertionEffect: useEffect,
+  useRef,
+  useMemo,
+  useCallback,
+  useContext,
+  useId: () => ':r0:',
+  useTransition: () => [false, (fn) => fn()],
+  useDeferredValue: (v) => v,
+  useSyncExternalStore: (_sub, getSnapshot) => getSnapshot(),
+  useImperativeHandle: () => {},
+  useDebugValue: () => {},
+};
+
+const reactSharedInternals =
+  React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
+
+export function withComponentInstance(instanceId, fn) {
+  const prevInstance = currentInstance;
+  const prevIndex = currentHookIndex;
+  const prevDispatcher = reactSharedInternals ? reactSharedInternals.current : null;
+  currentInstance = instanceId;
+  currentHookIndex = 0;
+  if (reactSharedInternals) {
+    reactSharedInternals.current = interactiveDispatcher;
+  }
+  try {
+    return fn();
+  } finally {
+    if (reactSharedInternals) {
+      reactSharedInternals.current = prevDispatcher;
+    }
+    currentInstance = prevInstance;
+    currentHookIndex = prevIndex;
+  }
+}
 
 // Global state tracking rendered trees
 let currentContainer = null;
@@ -227,15 +472,49 @@ export function evaluateElement(element, contextValue = null, depth = 0, pathKey
 
   // Functional Component: run within instance scope and fail immediately on render exception
   if (typeof type === 'function') {
-    const instanceKey = `${type.name || 'Component'}_${depth}_${props?.key || props?.['data-testid'] || pathKey}`;
+    const instanceKey = `${type.name || 'Component'}_${depth}_${element.key || props?.key || props?.['data-testid'] || pathKey}`;
     const componentOutput = withComponentInstance(instanceKey, () => type(mergedProps));
     return evaluateElement(componentOutput, contextValue, depth + 1, `${pathKey}.fn`);
   }
 
-  // Context Provider or Consumer
-  if (type && typeof type === 'object' && ('_context' in type || 'Provider' in type)) {
-    const nextContext = mergedProps.value !== undefined ? mergedProps.value : contextValue;
-    return evaluateElement(rawChildren, nextContext, depth, `${pathKey}.ctx`);
+  // React.forwardRef
+  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.forward_ref')) {
+    const instanceKey = `${type.displayName || type.render?.name || 'ForwardRef'}_${depth}_${element.key || props?.key || pathKey}`;
+    const componentOutput = withComponentInstance(instanceKey, () =>
+      type.render(mergedProps, element.ref || null)
+    );
+    return evaluateElement(componentOutput, contextValue, depth + 1, `${pathKey}.fwd`);
+  }
+
+  // React.memo
+  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.memo')) {
+    return evaluateElement({ ...element, type: type.type }, contextValue, depth, `${pathKey}.memo`);
+  }
+
+  // Context Provider
+  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.provider')) {
+    const ctx = type._context;
+    const prevValue = ctx._currentValue;
+    ctx._currentValue = mergedProps.value !== undefined ? mergedProps.value : prevValue;
+    try {
+      return evaluateElement(rawChildren, mergedProps.value, depth, `${pathKey}.ctx`);
+    } finally {
+      ctx._currentValue = prevValue;
+    }
+  }
+
+  // Context Consumer
+  if (
+    type &&
+    typeof type === 'object' &&
+    (type.$$typeof === Symbol.for('react.context') || type.$$typeof === Symbol.for('react.consumer'))
+  ) {
+    const ctx = type._context || type;
+    const renderFn = typeof rawChildren === 'function' ? rawChildren : null;
+    if (renderFn) {
+      return evaluateElement(renderFn(ctx._currentValue), contextValue, depth, `${pathKey}.cons`);
+    }
+    return evaluateElement(rawChildren, contextValue, depth, `${pathKey}.cons`);
   }
 
   // Intrinsic DOM elements (div, button, span, etc.)
@@ -287,16 +566,17 @@ function doReRender() {
  * Standard RTL render method with reactive stateful re-rendering
  */
 export function render(ui, options = {}) {
+  renderGeneration++;
   clearHookStores();
   currentRootUI = ui;
   currentRenderOptions = options;
   setReRenderListener(doReRender);
 
   doReRender();
-  const container = currentContainer;
-
   return {
-    container,
+    get container() {
+      return currentContainer;
+    },
     getByTestId: (id) => {
       const el = currentContainer.findByTestId(id);
       assert.ok(el, 'Unable to find element with data-testid="' + id + '"');
@@ -479,9 +759,27 @@ export async function waitFor(callback, { timeout = 2000, interval = 50 } = {}) 
  * Standard RTL cleanup method
  */
 export function cleanup() {
+  renderGeneration++;
+  setReRenderListener(null);
   cleanupEffects();
   clearHookStores();
   currentContainer = null;
   currentRootUI = null;
   currentRenderOptions = null;
 }
+
+export default {
+  Fragment,
+  jsx,
+  jsxs,
+  jsxDEV,
+  createElement,
+  renderToStaticMarkup,
+  renderToString,
+  render,
+  screen,
+  fireEvent,
+  act,
+  waitFor,
+  cleanup,
+};

@@ -1,4 +1,4 @@
-# Oneiromancy — Fantasy Football Draft Assistant
+# Oneiromancy - Fantasy Football Draft Assistant
 
 This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
 
@@ -77,9 +77,9 @@ This command automatically:
 
 ### 2. Inspecting the Production Output
 The compiled output is located in the `out/` folder:
-- `out/index.html` — Main entry point containing pre-rendered markup.
-- `out/_next/` — Minified JavaScript chunks, CSS stylesheets, and assets.
-- `out/404.html` — Custom 404 error page.
+- `out/index.html` - Main entry point containing pre-rendered markup.
+- `out/_next/` - Minified JavaScript chunks, CSS stylesheets, and assets.
+- `out/404.html` - Custom 404 error page.
 
 Because it is a pure static export, **the `out/` folder does not require a dynamic SSR server in production**. It can be served directly by `node server.js`, any static web server, CDN, or static host.
 

@@ -17,13 +17,13 @@
 
 /**
  * Tier 8: React Component RTL Iteration & UI Suite
- * 
- * Executes hermetic component unit and integration testing across all 17 React UI
+ *
+ * Executes hermetic component unit and integration testing across all React UI
  * components in oneiromancy using React Testing Library (RTL) primitives:
  * - GlassCard
  * - PositionalBadge
  * - UserAvatar
- * - NavigationShell
+ * - NavigationShell (4 consolidated sections: Roster, Matchup, Players, League)
  * - Astrolabe
  * - BoardControls
  * - PlayerCardRow
@@ -32,12 +32,14 @@
  * - TelemetryBar
  * - PlayerDetailModal
  * - SettingsDrawer
- * - OneiromancyDashboard
- * - MatchupsScreen
- * - CosmicBoard
+ * - OneiromancyDashboard (with visual synergy constellation SVG, divination aura, lineup swap arrows)
+ * - MatchupsScreen (with visual swap badges and bye callouts)
+ * - CosmicBoard (with Directory / Free Agents / Trades sub-views)
  * - PlayerMarketplace
- * - ChaosDial
- * 
+ * - TradesScreen
+ * - LeagueScreen
+ * - ChaosDial (with interactive pillar tooltips)
+ *
  * Verifies DOM presence, loading/error/success states, prop variations, and interactions.
  */
 
@@ -47,9 +49,8 @@ register(new URL('./loader.mjs', import.meta.url));
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { render, screen, fireEvent, cleanup } from './helpers/react_testing_wrapper.mjs';
-import { jsx } from './helpers/react_shim.mjs';
-import { setupServer } from './helpers/msw_network_interceptor.mjs';
+const { render, screen, fireEvent, cleanup, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+const { setupServer } = await import('./helpers/msw_network_interceptor.mjs');
 
 // Import UI components dynamically after loader registration
 const { GlassCard } = await import('../components/common/GlassCard.tsx');
@@ -68,10 +69,10 @@ const { OneiromancyDashboard } = await import('../components/screens/Oneiromancy
 const { MatchupsScreen } = await import('../components/screens/MatchupsScreen.tsx');
 const { CosmicBoard } = await import('../components/screens/CosmicBoard.tsx');
 const { PlayerMarketplace } = await import('../components/screens/PlayerMarketplace.tsx');
-const { ChaosDial } = await import('../components/screens/ChaosDial.tsx');
-const { LeagueScreen } = await import('../components/screens/LeagueScreen.tsx');
 const { TradesScreen } = await import('../components/screens/TradesScreen.tsx');
-const { OneiromancyProvider } = await import('../context/OneiromancyContext.tsx');
+const { LeagueScreen } = await import('../components/screens/LeagueScreen.tsx');
+const { ChaosDial } = await import('../components/screens/ChaosDial.tsx');
+const { OneiromancyProvider, useOneiromancy } = await import('../context/OneiromancyContext.tsx');
 
 const mockData = await import('../core/lib/mockData.ts');
 
@@ -168,7 +169,6 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
     });
 
     test('8.1.3 UserAvatar should render image when src is present and fallback initials', () => {
-      // With image URL
       render(
         jsx(UserAvatar, {
           fallbackText: 'Oneiro Oracle',
@@ -182,7 +182,6 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.equal(img.props.src, 'https://sleepercdn.com/avatars/thumbs/test_avatar');
       cleanup();
 
-      // With initials fallback
       render(
         jsx(UserAvatar, {
           fallbackText: 'AstralOracles',
@@ -195,7 +194,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(initials, 'Must render initial A when src is missing');
     });
 
-    test('8.1.4 NavigationShell should render the four weekly-call tabs and handle switching', () => {
+    test('8.1.4 NavigationShell should render all 4 consolidated tabs (Roster, Matchup, Players, League) and handle switching', () => {
       let selectedTab = 'oneiromancy';
       render(
         jsx(NavigationShell, {
@@ -211,14 +210,15 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(nav, 'Must render navigation container');
       assert.ok(screen.getByText('ONEIROMANCY'), 'Must render brand title');
 
-      // Tabs follow the manager's weekly calls: start, add, trade, standings
-      assert.ok(screen.getByText('This Week'), 'Must render This Week tab');
-      assert.ok(screen.getByText('Waivers'), 'Must render Waivers tab');
-      assert.ok(screen.getByText('Trades'), 'Must render Trades tab');
-      const leagueTab = screen.getByText('League');
+      const matchupsTab = screen.getByTestId('nav-tab-matchups');
+      assert.ok(matchupsTab, 'Must render Matchup tab');
+      fireEvent.click(matchupsTab);
+      assert.equal(selectedTab, 'matchups', 'Clicking Matchup tab must fire onTabChange');
+
+      const leagueTab = screen.getByTestId('nav-tab-league');
       assert.ok(leagueTab, 'Must render League tab');
       fireEvent.click(leagueTab);
-      assert.equal(selectedTab, 'league', 'Clicking League tab must fire onTabChange via bubbling');
+      assert.equal(selectedTab, 'league', 'Clicking League tab must fire onTabChange');
     });
 
     test('8.1.5 UserAvatar should render initial baseSrc deterministically to prevent hydration mismatch', () => {
@@ -241,7 +241,6 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         );
         const img = screen.getByRole('img');
         assert.ok(img, 'Must render img element');
-        // Initial render matches baseSrc deterministically (SSR match)
         assert.equal(img.props.src, 'https://sleepercdn.com/avatars/thumbs/initial_hash');
       } finally {
         globalThis.localStorage = origLocalStorage;
@@ -306,7 +305,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         })
       );
 
-      const searchInput = screen.getByPlaceholderText(/Search celestial player/i);
+      const searchInput = screen.getByPlaceholderText(/Search player/i);
       assert.ok(searchInput, 'Must render search input');
       fireEvent.change(searchInput, { target: { value: 'Mahomes' } });
       assert.equal(query, 'Mahomes', 'Changing search input must trigger onSearchChange');
@@ -348,7 +347,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         })
       );
 
-      assert.ok(screen.getByText("THE ORACLE'S DECREE"), 'Must render headline banner');
+      assert.ok(screen.getByText(/THE ORACLE'S DECREE/i), 'Must render headline banner');
       assert.ok(screen.getByText(spotlightPlayer.name), 'Must render spotlight player name');
       assert.ok(screen.getByTestId('spotlight-player-name'), 'Must have spotlight-player-name test id');
 
@@ -388,11 +387,10 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
   // Suite 8.3: Modals & Drawers
   // ==========================================================================
   describe('8.3 Modals & Settings Drawer', () => {
-    test('8.3.1 PlayerDetailModal should render dossier when isOpen is true and hide when false', () => {
+    test('8.3.1 PlayerDetailModal should render dossier with 3 canonical metrics when isOpen is true and hide when false', () => {
       let closed = false;
       const player = mockData.mockCosmicBoard[0];
 
-      // Closed state
       const closedView = render(
         jsx(PlayerDetailModal, {
           player,
@@ -405,7 +403,6 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.equal(closedView.container.querySelector('[role="dialog"]'), null, 'Must not render modal when closed');
       cleanup();
 
-      // Open state
       render(
         jsx(PlayerDetailModal, {
           player,
@@ -440,9 +437,8 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
 
       assert.ok(screen.getByRole('dialog'), 'Must render dialog container');
-      // Updated in the 2026-10-11 wording pass: the drawer title is now plain "Settings".
       assert.ok(screen.getByText('Settings'), 'Must render settings title');
-      assert.ok(screen.getByText('Sleeper Username'), 'Must render username label');
+      assert.ok(screen.getByText(/Sleeper username/i), 'Must render username label');
 
       const closeBtn = screen.getByRole('button', { name: 'Close Settings' });
       assert.ok(closeBtn, 'Must render close button');
@@ -502,52 +498,28 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
           'Must display placeholder option in league selector when no username is entered'
         );
       } finally {
+        cleanup();
         globalThis.window = origWindow;
         globalThis.localStorage = origLocalStorage;
-        cleanup();
       }
     });
   });
 
   // ==========================================================================
-  // Suite 8.4: Primary Application Screens
+  // Suite 8.4: Primary Application Screens (4 Consolidated Sections)
   // ==========================================================================
-  describe('8.4 Primary Application Screens', () => {
-    test('8.4.1 OneiromancyDashboard should render ideal team and league telemetry with Week 2 matchup', () => {
+  describe('8.4 Primary Application Screens (Roster, Matchup, Players, League & Weights)', () => {
+    test('8.4.1 OneiromancyDashboard (Roster) should render My Roster, Visual Stack Constellation SVG, and Lineup Swap Arrows', () => {
       render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(OneiromancyDashboard, {}))
       );
 
-      assert.ok(screen.getByText('Ideal Team & League Telemetry'), 'Must render screen title');
-      assert.ok(
-        screen.getByText('Team Celestial Telemetry & Astral Favorability Index'),
-        'Must lead with the team celestial telemetry'
-      );
-      assert.equal(screen.queryByText('Weekly Matchup & Start/Sit Oracle'), null, 'The redundant matchup card is gone');
-      assert.ok(screen.getByText(/SolarFlare/i), 'Must show Week 2 opponent SolarFlare');
-      assert.ok(screen.getByText('Your moves'), 'Must lead with the ranked weekly moves');
+      assert.ok(screen.getByText(/Roster Aura & Stack Constellation/i), 'Must render Roster Aura & Stack Constellation title');
+      assert.ok(screen.getByTestId('synergy-constellation-svg'), 'Must render visual Synergy Constellation SVG');
+      assert.ok(screen.getByTestId('18-week-coverage-strip'), 'Must render 18-Week Coverage strip');
     });
 
-    test('8.4.6 LeagueScreen should lead with the Celestial Leaderboard, not Sleeper standings', () => {
-      render(
-        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(LeagueScreen, {}))
-      );
-
-      assert.ok(screen.getByText('Celestial Leaderboard & Standings'), 'Must render the Celestial Leaderboard');
-      assert.ok(screen.getByTestId('leaderboard-toggle-overall'), 'Must offer the Overall ranking');
-      assert.equal(screen.queryByTestId('leaderboard-toggle-standings'), null, 'Must not offer a Sleeper standings view');
-      assert.ok(screen.getByText('Competitor Rosters · by Oracle'), 'Must render competitor rosters section');
-    });
-
-    test('8.4.7 TradesScreen should render the trades heading', () => {
-      render(
-        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(TradesScreen, {}))
-      );
-
-      assert.ok(screen.getByText('Trades'), 'Must render Trades heading');
-    });
-
-    test('8.4.2 MatchupsScreen should render starting lineup and bench partition', () => {
+    test('8.4.2 MatchupsScreen (Matchup) should render unified starting lineup without duplicate bench section and Your Team on Left with purple border', () => {
       render(
         jsx(
           OneiromancyProvider,
@@ -557,38 +529,140 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
 
       assert.ok(screen.getByText('YOUR STARTERS'), 'Must render YOUR STARTERS header');
-      assert.ok(screen.getByText('YOUR BENCH'), 'Must render YOUR BENCH header');
       assert.ok(screen.getByText('OPPONENT STARTERS'), 'Must render OPPONENT STARTERS header');
-      assert.ok(screen.getByText('OPPONENT BENCH'), 'Must render OPPONENT BENCH header');
+      assert.equal(screen.queryByText('YOUR BENCH'), null, 'Must not render duplicate YOUR BENCH section on MatchupsScreen');
+      assert.equal(screen.queryByText('OPPONENT BENCH'), null, 'Must not render duplicate OPPONENT BENCH section on MatchupsScreen');
+      assert.ok(screen.getByText(/SolarFlare/i), 'Must render Week 2 opponent SolarFlare');
+      cleanup();
+
+      // Regression test: live Sleeper matchup where players on bye or unmapped teams have null stadium coordinates
+      const nullStadiumMatchup = {
+        ...testDraftState.weekly_matchup,
+        player_favorabilities: testDraftState.weekly_matchup.player_favorabilities.map((pf, idx) =>
+          idx === 0
+            ? {
+                ...pf,
+                stadium: {
+                  ...pf.stadium,
+                  stadium_name: 'No game this week',
+                  roof_type: '-',
+                  latitude: null,
+                  longitude: null,
+                  coordinates: { lat: null, lon: null },
+                },
+              }
+            : pf,
+        ),
+      };
+      const { container } = render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: { ...testDraftState, weekly_matchup: nullStadiumMatchup } },
+          jsx(MatchupsScreen, { weeklyMatchup: nullStadiumMatchup })
+        )
+      );
+      assert.ok(screen.getByTestId('positional-matchup-grid'), 'Must render positional matchup grid when stadium latitude/longitude are null');
+      assert.ok(container.textContent.includes('No game this week (Bye)'), 'Must format bye stadium cleanly as No game this week (Bye)');
+      assert.ok(!container.textContent.includes('0°S, 0°W') && !container.textContent.includes('0.00°'), 'Must never render 0°S, 0°W for null coordinates');
     });
 
-    test('8.4.3 CosmicBoard should render valuation banner and player grid', () => {
+    test('8.4.3 CosmicBoard (Players) should render Directory / Free Agents / Trades sub-views and player grid', () => {
       render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(CosmicBoard, {}))
       );
 
-      assert.ok(screen.getByText('Celestial Player Directory'), 'Must render Cosmic Board heading');
-      assert.ok(screen.getByPlaceholderText(/Search celestial player/i), 'Must render search controls');
+      assert.ok(screen.getByText('Players'), 'Must render Players heading');
+      assert.ok(screen.getByTestId('board-mode-all'), 'Must render All Players sub-tab');
+      assert.ok(screen.getByTestId('board-mode-waivers'), 'Must render Waivers sub-tab');
+      assert.ok(screen.getByTestId('board-mode-trades'), 'Must render Trades sub-tab');
+      assert.ok(screen.getByPlaceholderText(/Search player/i), 'Must render search controls');
     });
 
-    test('8.4.4 PlayerMarketplace should render waivers, trades, and drop protection toggle', () => {
+    test('8.4.4 PlayerMarketplace & TradesScreen should render waivers and trade proposals', () => {
       render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(PlayerMarketplace, {}))
       );
 
-      assert.ok(screen.getByText('Alchemical Transmutations'), 'Must render Marketplace title');
-      assert.ok(screen.getByText('Waiver Upgrades'), 'Must render waiver section');
-      assert.ok(screen.getByText('Divine Swaps'), 'Must render trades section');
+      assert.ok(screen.getByText('Waiver Upgrades'), 'Must render Waiver Upgrades title');
+      assert.equal(screen.queryByTestId('allow-signed-drop-toggle'), null, 'Must not render redundant drop protection toggle');
+      cleanup();
+
+      render(
+        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(TradesScreen, {}))
+      );
+      assert.ok(screen.getByText('Trades'), 'Must render Trades title');
     });
 
-    test('8.4.5 ChaosDial should render lambda slider and esoteric guide', () => {
+    test('8.4.5 LeagueScreen (League) should render League Standings & Rosters and CelestialLeaderboardGraph', () => {
+      render(
+        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(LeagueScreen, {}))
+      );
+
+      assert.ok(screen.getByText('League'), 'Must render League Screen title');
+      assert.ok(screen.getByTestId('celestial-leaderboard'), 'Must render Celestial Leaderboard');
+      assert.ok(screen.getByTestId('user-competitor-card'), 'Must render user competitor card with purple highlight');
+    });
+
+    test('8.4.6 ChaosDial (Weights & Encyclopedia) should render lambda slider, interactive pillar tooltips, and field guide', () => {
       render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(ChaosDial, {}))
       );
 
-      assert.ok(screen.getByText('Divination Equilibrium'), 'Must render Chaos Dial title');
-      assert.ok(screen.getByText('Live Mathematical Formula'), 'Must render formula card');
-      assert.ok(screen.getByText('Esoteric & Astrological Reference Guide'), 'Must render reference guide');
+      assert.ok(screen.getByText('Divination Equilibrium'), 'Must render Divination Equilibrium title');
+      assert.ok(screen.getByTestId('pillar-tooltip-btn-celestial'), 'Must render interactive pillar tooltip trigger');
+      assert.ok(screen.getByTestId('encyclopedia-toggle'), 'Must render encyclopedia-toggle button');
+      assert.ok(screen.getByText(/Astrology & Divination Field Guide/i), 'Must render reference guide');
+    });
+
+    test('8.4.7 OneiromancyProvider + NavigationShell (SSR / Client Hydration Parity) should render deterministic LIVE statusText before hydration across timezones', () => {
+      const prevTz = process.env.TZ;
+      try {
+        const renderInTimezone = (tz) => {
+          process.env.TZ = tz;
+          const observedStatuses = [];
+          function StatusHarness() {
+            const { statusText, statusType, activeTab, setTab } = useOneiromancy();
+            observedStatuses.push(statusText);
+            return jsx(
+              NavigationShell,
+              {
+                activeTab,
+                onTabChange: setTab,
+                statusText,
+                statusType,
+              },
+              jsx('div', {}, 'Content')
+            );
+          }
+          render(jsx(OneiromancyProvider, {}, jsx(StatusHarness, {})));
+          cleanup();
+          return observedStatuses;
+        };
+
+        const utcStatuses = renderInTimezone('UTC');
+        const edtStatuses = renderInTimezone('America/New_York');
+
+        assert.equal(
+          utcStatuses[0],
+          'LIVE',
+          'Initial SSR render in UTC must display deterministic LIVE statusText'
+        );
+        assert.equal(
+          edtStatuses[0],
+          utcStatuses[0],
+          'Initial client hydration render in America/New_York must match UTC SSR statusText'
+        );
+        assert.ok(
+          [...utcStatuses, ...edtStatuses].every((s) => !/Synced \d{2}:\d{2}/.test(s)),
+          'Pre-sync renders must not format placeholder lastSyncTimestamp with local getHours()'
+        );
+      } finally {
+        if (prevTz === undefined) {
+          delete process.env.TZ;
+        } else {
+          process.env.TZ = prevTz;
+        }
+      }
     });
   });
 });

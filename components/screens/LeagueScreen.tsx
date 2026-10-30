@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -17,24 +18,22 @@
 'use client';
 
 import React, { useMemo, useState } from 'react';
+import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import UserAvatar from '@/components/common/UserAvatar';
+import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import CelestialLeaderboardGraph from '@/components/oneiromancy/CelestialLeaderboardGraph';
 import { TONE_LABEL, TONE_PILL, favorabilityTone, oracleScore, starsScore, statsPoints } from '@/lib/oracle';
-import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
-import type { CompetitorTeam, CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
+import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek } from '@/lib/scoring';
+import { getSeasonContext } from '@/lib/sleeper';
+import type { CompetitorTeam, CosmicPlayer } from '@/types/oneiromancy';
 
-// Stable empty defaults so memo dependencies don't change every render.
 const NO_COSMIC_BOARD: CosmicPlayer[] = [];
 const NO_COMPETITOR_TEAMS: CompetitorTeam[] = [];
 
 const SLOT_LABEL: Record<string, string> = { SUPER_FLEX: 'SF', FLEX: 'FLEX', REC_FLEX: 'FLEX', WRRB_FLEX: 'FLEX' };
 
-/**
- * League: the Celestial Leaderboard (Overall, Spirit, Draft, Harmony) first,
- * then any team's lineup. Sleeper already shows standings; this doesn't.
- */
 export const LeagueScreen: React.FC = () => {
   const { draftState } = useOneiromancy();
   const teams = draftState.competitor_teams ?? NO_COMPETITOR_TEAMS;
@@ -43,6 +42,7 @@ export const LeagueScreen: React.FC = () => {
   const byId = useMemo(() => new Map(board.map((p) => [String(p.id), p])), [board]);
   const me = teams.find((t) => t.is_user);
   const [selected, setSelected] = useState<number | undefined>(undefined);
+  const [inspectedPlayer, setInspectedPlayer] = useState<CosmicPlayer | null>(null);
   const team = teams.find((t) => t.roster_id === (selected ?? me?.roster_id)) ?? teams[0];
   const slots = (draftState.settings?.roster_positions || (draftState as any).roster_positions || []).filter(
     (s: string) => s !== 'BN' && s !== 'IR',
@@ -66,18 +66,30 @@ export const LeagueScreen: React.FC = () => {
     }
     const stars = starsScore(p);
     const tone = favorabilityTone(stars);
+    const onBye = isPlayerOnByeWeek(getSeasonContext()?.currentWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks);
     return (
-      <li key={key} className="flex items-center gap-2 py-1.5 text-xs">
+      <li
+        key={key}
+        onClick={() => setInspectedPlayer(p)}
+        className={`flex items-center gap-2 py-1.5 text-xs cursor-pointer hover:bg-slate-800/40 rounded px-1 transition-colors ${onBye ? 'opacity-50 grayscale' : ''}`}
+      >
         <span className="w-8 sm:w-10 shrink-0 font-mono text-slate-500">{label}</span>
+        <PlayerHeadshot player={p} size="sm" />
         <PositionalBadge position={p.position} size="sm" />
-        <span className="text-slate-100 min-w-0 truncate">{p.name}</span>
+        <span className="text-slate-100 min-w-0 truncate font-medium">{p.name}</span>
         <span className="hidden sm:inline font-mono text-slate-500 shrink-0">
-          {p.team} · Bye {p.bye_week || '—'}
+          {p.team} · Bye {p.bye_week || '-'}
         </span>
-        {p.injury_status && (
+        {p.injury_status && p.injury_status !== 'Healthy' && (
           <span className="text-[9px] font-mono px-1 rounded border border-amber-500/40 text-amber-300 shrink-0">
             {p.injury_status.toUpperCase()}
           </span>
+        )}
+        {onBye && (
+          <>
+            <span className="text-[9px] font-mono px-1 rounded border border-amber-500/40 text-amber-300 shrink-0">BYE WK {getSeasonContext()?.currentWeek}</span>
+            <span className="text-[10px] font-mono text-slate-500 shrink-0">On Bye</span>
+          </>
         )}
         <span
           title={`Oracle at λ ${lambda.toFixed(2)}`}
@@ -104,19 +116,17 @@ export const LeagueScreen: React.FC = () => {
         </span>
         <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">League</h2>
         <p className="text-xs text-slate-400 font-sans">
-          Every team ranked by your metrics, using your star weights and λ:{' '}
-          <button
-            type="button"
-            onClick={() => window.dispatchEvent(new Event('oneiromancy:open-oracle'))}
-            className="text-purple-300 underline hover:text-purple-200"
-          >
-            adjust them
-          </button>
-          .
+          Every team ranked by Oracle, Stars, Stats, and Harmony (λ {lambda.toFixed(2)}).
         </p>
       </div>
 
-      <CelestialLeaderboardGraph competitorTeams={teams} cosmicBoard={board} userSlot={me?.slot ?? 1} />
+      <CelestialLeaderboardGraph
+        competitorTeams={teams}
+        cosmicBoard={board}
+        userSlot={me?.slot ?? 1}
+        selectedRosterId={team?.roster_id}
+        onSelectTeam={(rid) => setSelected(rid)}
+      />
 
       <section aria-labelledby="league-rosters-heading" className="flex flex-col gap-3">
         <div className="flex flex-wrap items-baseline justify-between gap-2">
@@ -127,10 +137,6 @@ export const LeagueScreen: React.FC = () => {
             Competitor Rosters · by Oracle
           </span>
         </div>
-        <p className="text-[11px] text-slate-400 font-sans -mt-1">
-          <span className="text-purple-200 font-mono">Oracle</span> = (1 − λ) × Stats + λ × Stars, with λ{' '}
-          {lambda.toFixed(2)}. It drives every lineup, waiver and trade pick.
-        </p>
         <label className="flex items-center gap-2 text-xs font-mono text-slate-400">
           Team
           <select
@@ -149,9 +155,16 @@ export const LeagueScreen: React.FC = () => {
         </label>
 
         {team && (
-          <div className="p-4 rounded-xl bg-slate-900/70 border border-white/10 flex flex-col gap-3">
+          <div
+            data-testid={team.is_user ? 'user-competitor-card' : 'competitor-card'}
+            className={`p-4 rounded-xl flex flex-col gap-3 border ${
+              team.is_user
+                ? 'bg-purple-950/25 border-purple-500/60 ring-1 ring-purple-500/30'
+                : 'bg-slate-900/70 border-white/10'
+            }`}
+          >
             <div className="flex items-center gap-2.5">
-              <UserAvatar src={team.avatar_url || team.avatar} alt={`${team.name} avatar`} fallbackText={team.name} size="md" />
+              <UserAvatar src={team.avatar_url || team.avatar} alt={`${team.name} avatar`} fallbackText={team.name} size="md" isUser={team.is_user} />
               <div className="min-w-0">
                 <div className="font-semibold text-slate-100 truncate">{team.name}</div>
                 <div className="text-[11px] font-mono text-slate-400">
@@ -164,7 +177,7 @@ export const LeagueScreen: React.FC = () => {
               <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest mb-1">
                 <span className="text-cyan-300">Starters</span>
                 <span className="ml-auto w-10 text-right text-purple-200">Oracle</span>
-                <span className="w-9 sm:w-10 text-right text-slate-500">Pts</span>
+                <span className="w-9 sm:w-10 text-right text-slate-500">Stats</span>
                 <span className="w-9 text-center text-slate-500">Stars</span>
               </div>
               <ul className="divide-y divide-white/5">
@@ -186,6 +199,13 @@ export const LeagueScreen: React.FC = () => {
           </div>
         )}
       </section>
+
+      <PlayerDetailModal
+        player={inspectedPlayer}
+        isOpen={Boolean(inspectedPlayer)}
+        roster={draftState.my_roster}
+        onClose={() => setInspectedPlayer(null)}
+      />
     </div>
   );
 };

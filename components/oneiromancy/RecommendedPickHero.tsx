@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -19,9 +20,10 @@
 import React, { useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import { CosmicPlayer } from '@/types/oneiromancy';
-import { starsVerdictLabel } from '@/lib/scoring';
-import { starsScore } from '@/lib/oracle';
+import { DEFAULT_CHAOS_LAMBDA, DIVINATION_PILLARS, starsVerdictLabel } from '@/lib/scoring';
+import { oracleScore, starsScore, statsPoints } from '@/lib/oracle';
 import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 
 export interface RecommendedPickHeroProps {
@@ -35,12 +37,12 @@ export interface RecommendedPickHeroProps {
 
 export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
   player,
-  onDraft,
   onInspect,
   onSelectPlayer,
-  isDrafting = false,
   className = '',
 }) => {
+  const ctx = useOptionalOneiromancy();
+  const lambda = ctx?.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const [isDossierOpen, setIsDossierOpen] = useState(false);
 
   const handleSelectPlayer = () => {
@@ -58,14 +60,10 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
         <p className="text-sm font-serif text-slate-300">
           ✦ All celestial candidates have ascended ✦
         </p>
-        <p className="text-xs text-slate-500 font-mono">
-          Draft roster is complete or no available players match current divination criteria.
-        </p>
       </GlassCard>
     );
   }
 
-  // Divination breakdown values
   const breakdown = player.divination_breakdown || {
     celestial: 90,
     numeric: 92,
@@ -83,13 +81,14 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
       ? '💨'
       : '💧';
 
+  const stars = starsScore(player);
+
   return (
     <GlassCard
       variant="gradient"
       glowColor="cyan"
       className={`p-5 sm:p-6 relative overflow-hidden transition-all duration-300 ${className}`}
     >
-      {/* Top Banner: Position, Element & Oracle Decree */}
       <div className="flex justify-between items-center border-b border-white/10 pb-3">
         <div className="flex items-center gap-2">
           <PositionalBadge position={player.position} size="md" />
@@ -103,105 +102,59 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
         </div>
       </div>
 
-      {/* Player Identity */}
       <div className="mt-4 space-y-1">
         <h3
           onClick={handleSelectPlayer}
           data-testid="spotlight-player-name"
           className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide cursor-pointer hover:underline hover:text-cyan-300 transition-colors"
-          title={`Click to inspect ${player.name} dossier`}
+          title={`Click to open ${player.name} details`}
         >
           {player.name}
         </h3>
         <p className="font-mono text-xs text-slate-400 flex flex-wrap gap-2 items-center">
           <span>{player.team}</span>
           <span>•</span>
-          <span>Bye {player.bye_week || '—'}</span>
+          <span>Bye {player.bye_week || '-'}</span>
           <span>•</span>
           <span>#{player.jersey_number}</span>
-          <span>•</span>
-          <span>ADP {player.adp ? player.adp.toFixed(1) : '—'}</span>
         </p>
       </div>
 
-      {/* 5-Metric Telemetry Grid */}
-      <div className="mt-4 grid grid-cols-2 sm:grid-cols-5 gap-2.5 p-3 rounded-xl bg-slate-950/80 border border-white/10">
-        {/* DraftScore */}
+      {/* Strictly 3 Canonical Player Metrics: Stats, Oracle, Stars */}
+      <div className="mt-4 grid grid-cols-3 gap-2.5 p-3 rounded-xl bg-slate-950/80 border border-white/10">
+        <div className="flex flex-col">
+          <span className="text-[10px] font-mono text-slate-400 uppercase font-bold tracking-wider">
+            Stats
+          </span>
+          <span className="font-mono text-2xl font-bold text-slate-100 tabular-nums">
+            {statsPoints(player).toFixed(1)}
+          </span>
+          <span className="text-[9px] font-mono text-slate-500">Projected Points</span>
+        </div>
+
         <div className="flex flex-col">
           <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold tracking-wider">
-            DraftScore
+            Oracle
           </span>
-          <span className="font-mono text-2xl font-bold text-cyan-400 drop-shadow-[0_0_12px_rgba(6,182,212,0.6)]">
-            {player.draft_score.toFixed(1)}
+          <span className="font-mono text-2xl font-bold text-cyan-300 tabular-nums">
+            {oracleScore(player, lambda).toFixed(1)}
           </span>
-          <span className="text-[9px] font-mono text-slate-500">Blended Equilibrium</span>
+          <span className="text-[9px] font-mono text-slate-500">Blended Stats &amp; Stars</span>
         </div>
 
-        {/* Spirit Score */}
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono text-purple-300 uppercase font-bold tracking-wider">
-            Spirit Score
-          </span>
-          <span className="font-mono text-2xl font-bold text-purple-300">
-            {player.spirit_score.toFixed(1)}
-          </span>
-          <span className="text-[9px] font-mono text-slate-500">Divination Index</span>
-        </div>
-
-        {/* Market VOR */}
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono text-emerald-400 uppercase font-bold tracking-wider">
-            Market VOR
-          </span>
-          <span className="font-mono text-2xl font-bold text-emerald-400">
-            {player.market_vor >= 0 ? `+${player.market_vor.toFixed(1)}` : player.market_vor.toFixed(1)}
-          </span>
-          <span className="text-[9px] font-mono text-slate-500">Value Over Replacement</span>
-        </div>
-
-        {/* Squad Harmony */}
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono text-amber-300 uppercase font-bold tracking-wider">
-            Squad Harmony
-          </span>
-          <span className="font-mono text-2xl font-bold text-amber-300">
-            {Math.round(player.harmony_score)}%
-          </span>
-          <span className="text-[9px] font-mono text-slate-500">Synergy Resonance</span>
-        </div>
-
-        {/* Weekly Favorability */}
         <div className="flex flex-col">
           <span className="text-[10px] font-mono text-teal-300 uppercase font-bold tracking-wider">
             Stars
           </span>
-          <span className="font-mono text-2xl font-bold text-teal-300">
-            {starsScore(player).toFixed(0)}
+          <span className="font-mono text-2xl font-bold text-teal-300 tabular-nums">
+            {stars.toFixed(0)}
           </span>
           <span className="text-[9px] font-mono text-slate-500">
-            {starsVerdictLabel(starsScore(player))}
+            {starsVerdictLabel(stars)}
           </span>
         </div>
       </div>
 
-      {/* "Divine Portent" Arcane Rationale */}
-      <div className="mt-4 p-3 rounded-lg bg-purple-950/40 border border-purple-500/30 font-serif italic text-xs text-slate-200 space-y-1">
-        <div className="flex items-center gap-1.5 font-mono not-italic text-[10px] uppercase tracking-wider text-purple-300 font-bold">
-          <Sparkles className="w-3 h-3 text-purple-400" />
-          <span>Divine Portent & Arcane Rationale</span>
-        </div>
-        <p className="leading-relaxed">
-          {player.position === 'WR'
-            ? `"${player.elemental_traits?.element || 'Celestial'} Trine Receiver — High-ceiling alpha playmaker for ${player.team || 'the squad'}, providing the mystical foundation for elite stack correlation and explosive upside."`
-            : player.position === 'QB'
-            ? `"Solar Nexus Core — Field general for ${player.team || 'the offense'}, channeling astral momentum to catalyze 3.0x stack resonance across receiving conduits."`
-            : player.position === 'RB'
-            ? `"${player.elemental_traits?.element || 'Earth'} Grounding Anchor — Volume workhorse for ${player.team || 'the offense'}, fortifying roster foundation with elite replacement equity and baseline consistency."`
-            : `"${player.elemental_traits?.element || 'Celestial'} Vanguard — Endowed with auspicious ${player.elemental_traits?.sun_sign || 'planetary'} alignment, elevating squad harmony with dynamic positional value."`}
-        </p>
-      </div>
-
-      {/* Expandable Divination Dossier Accordion */}
       <div className="mt-3">
         <button
           type="button"
@@ -217,26 +170,23 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
 
         {isDossierOpen && (
           <div className="mt-2 p-3 rounded-lg bg-slate-950/90 border border-white/10 space-y-2.5 font-mono text-xs">
-            {[
-              { label: 'Celestial Transits (30%)', value: breakdown.celestial, color: 'bg-cyan-400' },
-              { label: 'Stadium Feng Shui (25%)', value: breakdown.geomantic, color: 'bg-emerald-400' },
-              { label: 'Jersey Gematria (20%)', value: breakdown.numeric, color: 'bg-purple-400' },
-              { label: 'Squad Alchemy (15%)', value: breakdown.harmony, color: 'bg-amber-400' },
-              { label: 'Tarot & Oracular (10%)', value: breakdown.oracular, color: 'bg-rose-400' },
-            ].map((tier) => (
-              <div key={tier.label} className="space-y-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-400">{tier.label}</span>
-                  <span className="text-slate-200 font-bold">{tier.value.toFixed(1)}%</span>
+            {DIVINATION_PILLARS.map((tier) => {
+              const value = Number(breakdown[tier.key] ?? 85);
+              return (
+                <div key={tier.key} className="space-y-1">
+                  <div className="flex justify-between text-[11px]">
+                    <span className="text-slate-400">{tier.label}</span>
+                    <span className="text-slate-200 font-bold">{value.toFixed(1)}%</span>
+                  </div>
+                  <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                    <div
+                      className={`h-full ${tier.color} transition-all duration-300`}
+                      style={{ width: `${Math.min(100, Math.max(0, value))}%` }}
+                    />
+                  </div>
                 </div>
-                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${tier.color} transition-all duration-300`}
-                    style={{ width: `${Math.min(100, Math.max(0, tier.value))}%` }}
-                  />
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>

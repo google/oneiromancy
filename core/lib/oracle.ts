@@ -37,17 +37,26 @@ import type {
 import {
   classifyWeeklyFavorability,
   computeWeeklyPlayerFavorability,
+  DEFAULT_CHAOS_LAMBDA,
+  DEFAULT_ORACLE_WEIGHTS,
+  isNFLByeWeek,
+  isPlayerOnByeWeek,
+  isPlayerSigned,
   type WeeklyFavorabilityVerdict,
 } from './scoring';
+import { getSeasonContext } from './seasonContext';
+
+export { DEFAULT_CHAOS_LAMBDA, DEFAULT_ORACLE_WEIGHTS };
 
 /** Projection that maps to a Stats score of 100. */
 const STATS_FULL_SCALE = 25;
 
 export function statsPoints(p: Partial<CosmicPlayer> | null | undefined): number {
   if (!p) return 0;
-  return Number(
+  const n = Number(
     p.sleeper_projected_points ?? p.weekly_projected_points ?? p.projected_points ?? 0,
   );
+  return Number.isFinite(n) ? n : 0;
 }
 
 export function statsScore(p: Partial<CosmicPlayer> | null | undefined): number {
@@ -62,16 +71,18 @@ export function starsScore(p: Partial<CosmicPlayer> | null | undefined): number 
     injuryStatus: p.injury_status,
     isStarter: true,
     geomantic: p.divination_breakdown?.geomantic ?? 78,
-  } as any);
-  return Math.round(calc.score * 10) / 10;
+  });
+  const s = Math.round(calc.score * 10) / 10;
+  return Number.isFinite(s) ? s : 0;
 }
 
 export function oracleScore(
   p: Partial<CosmicPlayer> | null | undefined,
-  lambda: number,
+  lambda?: number,
 ): number {
-  const l = Math.max(0, Math.min(1, lambda));
-  return Math.round(((1 - l) * statsScore(p) + l * starsScore(p)) * 10) / 10;
+  const l = Math.max(0, Math.min(1, Number.isFinite(lambda) ? (lambda as number) : DEFAULT_CHAOS_LAMBDA));
+  const o = Math.round(((1 - l) * statsScore(p) + l * starsScore(p)) * 10) / 10;
+  return Number.isFinite(o) ? o : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -346,12 +357,18 @@ export function computeWaiverMoves(
   const depth = minimumDepth(roster);
   const counts = countByPosition(rosterPlayers);
 
-  const droppable = rosterPlayers
+  const rawDroppable = rosterPlayers
     .filter((p) => !starterIds.has(String(p.id)) && !isLocked(p))
-    .filter((p) => !(currentWeek && p.bye_week === currentWeek && !isUnavailable(p)))
-    .filter((p) => (counts[p.position] ?? 0) > (depth[p.position] ?? 1))
-    .sort((a, b) => oracleScore(a, lambda) - oracleScore(b, lambda));
-  if (droppable.length === 0) return [];
+    .filter((p) => !(currentWeek && isPlayerOnByeWeek(currentWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks) && !isUnavailable(p)))
+    .filter((p) => (counts[p.position] ?? 0) > (depth[p.position] ?? 1));
+  if (rawDroppable.length === 0) return [];
+
+  const dropScores = new Map(rawDroppable.map((d) => [String(d.id), oracleScore(d, lambda)]));
+  const droppable = [...rawDroppable].sort(
+    (a, b) => (dropScores.get(String(a.id)) ?? 0) - (dropScores.get(String(b.id)) ?? 0),
+  );
+  const unsignedDrops = droppable.filter((d) => !isPlayerSigned(d));
+  const hasUnsignedDrop = unsignedDrops.length > 0;
 
   // Weakest starter each position could replace in the best lineup (after
   // the lineup check's swaps), for "would start".
@@ -366,26 +383,33 @@ export function computeWaiverMoves(
     return scores.length ? Math.min(...scores) : Infinity;
   };
 
-  const candidates = board
+  const available = board
     .filter((p) => p.draft_status === 'available' && !rosterIds.has(String(p.id)))
     .filter((p) => eligible.has(p.position) && !isUnavailable(p) && !isLocked(p))
     .map((p) => ({ p, o: oracleScore(p, lambda) }))
-    .sort((a, b) => b.o - a.o)
-    .slice(0, 40);
+    .sort((a, b) => b.o - a.o);
+
+  const signedCandidates = available.filter((c) => isPlayerSigned(c.p)).slice(0, 40);
+  const unsignedCandidates = hasUnsignedDrop
+    ? available.filter((c) => !isPlayerSigned(c.p)).slice(0, unsignedDrops.length)
+    : [];
+  const candidates = [...signedCandidates, ...unsignedCandidates].sort((a, b) => b.o - a.o);
 
   const moves: WaiverMove[] = [];
   const usedDrops = new Set<string>();
-  for (const { p, o } of candidates) {
-    const drop = droppable.find((d) => !usedDrops.has(String(d.id)));
-    if (!drop) break;
-    const gain = o - oracleScore(drop, lambda);
-    if (gain <= 1) continue;
+
+  const buildMove = (p: CosmicPlayer, o: number, drop: CosmicPlayer): WaiverMove => {
+    const dScore = dropScores.get(String(drop.id)) ?? oracleScore(drop, lambda);
+    const gain = o - dScore;
     const wouldStart = o > weakestStarterFor(p.position);
+    const isWeakest = String(drop.id) === String(droppable[0]?.id);
     const dropWhy =
       isUnavailable(drop) ? `${drop.name} is ${injuryStatusText(drop.injury_status)}` :
       statsPoints(drop) <= 0 ? `${drop.name} has no projection` :
-      `${drop.name} is your weakest bench player`;
-    moves.push({
+      isWeakest ? `${drop.name} is your weakest bench player` :
+      !isPlayerSigned(drop) ? `${drop.name} is unsigned` :
+      `${drop.name} is a droppable bench player`;
+    return {
       add: p,
       drop,
       statsGain: Math.round((statsPoints(p) - statsPoints(drop)) * 10) / 10,
@@ -394,9 +418,27 @@ export function computeWaiverMoves(
       oracleGain: Math.round(gain * 10) / 10,
       wouldStart,
       reason: `${dropWhy}. ${p.name} ${wouldStart ? 'would start for you' : 'adds bench depth'} at ${p.position}.`,
-    });
-    usedDrops.add(String(drop.id));
+    };
+  };
+
+  // Pass 1: Greedy drop assignment.
+  // - Signed candidates claim the weakest available bench player.
+  // - Unsigned candidates can ONLY claim an unused unsigned bench player.
+  for (const { p, o } of candidates) {
+    if (usedDrops.size >= droppable.length) break;
+
+    const chosenDrop = isPlayerSigned(p)
+      ? droppable.find((d) => !usedDrops.has(String(d.id)))
+      : unsignedDrops.find((d) => !usedDrops.has(String(d.id)));
+
+    if (!chosenDrop) continue;
+    const dScore = dropScores.get(String(chosenDrop.id)) ?? oracleScore(chosenDrop, lambda);
+    if (o - dScore <= 1) continue;
+
+    moves.push(buildMove(p, o, chosenDrop));
+    usedDrops.add(String(chosenDrop.id));
   }
+
   // Rank before limiting so "top move" means the same thing everywhere.
   return moves
     .sort((a, b) => Number(b.wouldStart) - Number(a.wouldStart) || b.oracleGain - a.oracleGain)
@@ -404,7 +446,7 @@ export function computeWaiverMoves(
 }
 
 // ---------------------------------------------------------------------------
-// Bye outlook
+// Bye outlook & 18-Week Bye Coverage
 // ---------------------------------------------------------------------------
 
 export interface ByeWeekAlert {
@@ -419,12 +461,44 @@ export function computeByeOutlook(
   weeksAhead = 3,
 ): ByeWeekAlert[] {
   const alerts: ByeWeekAlert[] = [];
+  const season = getSeasonContext();
   for (let w = fromWeek + 1; w <= fromWeek + weeksAhead; w++) {
-    const starters = roster.filter(isStarterSlot).map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p && p.bye_week === w));
-    const bench = roster.filter((s) => !isStarterSlot(s)).map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p && p.bye_week === w));
+    if (!isNFLByeWeek(w)) continue;
+    const starters = roster.filter(isStarterSlot).map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p && isPlayerOnByeWeek(w, p.bye_week, p.team, season?.byeWeeks)));
+    const bench = roster.filter((s) => !isStarterSlot(s)).map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p && isPlayerOnByeWeek(w, p.bye_week, p.team, season?.byeWeeks)));
     if (starters.length > 0) alerts.push({ week: w, starters, bench });
   }
   return alerts;
+}
+
+export interface ByeWeekSlot {
+  week: number;
+  players: CosmicPlayer[];
+  starters: CosmicPlayer[];
+  bench: CosmicPlayer[];
+  severity: 'none' | 'normal' | 'cluster';
+}
+
+export function compute18WeekByeCoverage(roster: RosterSlot[]): ByeWeekSlot[] {
+  const starterPlayers = roster
+    .filter(isStarterSlot)
+    .map((s) => s.player)
+    .filter((p): p is CosmicPlayer => Boolean(p));
+  const benchPlayers = roster
+    .filter((s) => String(s.slot_id).startsWith('BN'))
+    .map((s) => s.player)
+    .filter((p): p is CosmicPlayer => Boolean(p));
+  const season = getSeasonContext();
+  const out: ByeWeekSlot[] = [];
+  for (let week = 1; week <= 18; week++) {
+    const isByeWk = isNFLByeWeek(week);
+    const starters = isByeWk ? starterPlayers.filter((p) => isPlayerOnByeWeek(week, p.bye_week, p.team, season?.byeWeeks)) : [];
+    const bench = isByeWk ? benchPlayers.filter((p) => isPlayerOnByeWeek(week, p.bye_week, p.team, season?.byeWeeks)) : [];
+    const players = [...starters, ...bench];
+    const severity = players.length >= 3 ? 'cluster' : players.length >= 1 ? 'normal' : 'none';
+    out.push({ week, players, starters, bench, severity });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -599,12 +673,12 @@ export function dominantElements(players: CosmicPlayer[]): string {
     .sort((a, b) => b[1] - a[1])
     .slice(0, 2)
     .map(([el]) => el);
-  return top.length ? top.join(' & ') : '—';
+  return top.length ? top.join(' & ') : '-';
 }
 
 /** Complementary pairs in classical astrology: Fire/Air and Earth/Water. */
-export function elementRelation(a?: ElementType, b?: ElementType): 'Same element' | 'Complementary' | 'Opposed' | '—' {
-  if (!a || !b) return '—';
+export function elementRelation(a?: ElementType, b?: ElementType): 'Same element' | 'Complementary' | 'Opposed' | '-' {
+  if (!a || !b) return '-';
   if (a === b) return 'Same element';
   const pair = [a, b].sort().join('/');
   if (pair === 'Air/Fire' || pair === 'Earth/Water') return 'Complementary';

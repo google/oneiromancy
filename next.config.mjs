@@ -29,6 +29,15 @@ const nextConfig = {
   images: {
     unoptimized: true,
   },
+  allowedDevOrigins: [
+    '*.proxy.googlers.com',
+    '*.c.googlers.com',
+    '*.googlers.com',
+    '*.corp.google.com',
+    '*.googleplex.com',
+    'localhost',
+    '127.0.0.1',
+  ],
 };
 
 export default nextConfig;

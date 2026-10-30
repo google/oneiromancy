@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -122,6 +123,7 @@ export const IDLE_INTERVAL_MS = 10000;
 export const BACKGROUND_INTERVAL_MS = 30000;
 // Once the draft is complete only in-season data (scores, rosters) changes.
 export const COMPLETE_INTERVAL_MS = 60000;
+const INITIAL_SYNC_TIMESTAMP = 1725256200000;
 
 export const POLLING_CONFIG = {
   ACTIVE_INTERVAL_MS,
@@ -150,10 +152,11 @@ export function normalizeTab(
   tab: string,
 ): 'oneiromancy' | 'matchups' | 'board' | 'market' | 'chaos' | 'trades' | 'league' {
   if (tab === 'trades' || tab === 'league') return tab;
+  if (tab === 'players' || tab === 'board') return 'board';
+  if (tab === 'roster' || tab === 'oneiromancy') return 'oneiromancy';
   if (tab === 'marketplace' || tab === 'market') return 'market';
   if (tab === 'matchups' || tab === 'matchup') return 'matchups';
   if (tab === 'dial' || tab === 'chaos') return 'chaos';
-  if (tab === 'oneiromancy' || tab === 'board') return tab;
   return 'oneiromancy';
 }
 
@@ -286,19 +289,44 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   const [isAutoUpdate, setIsAutoUpdate] = useState<boolean>(
     initialDraftState.settings?.auto_update ?? true
   );
-  const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(1725256200000);
+  const [lastSyncTimestamp, setLastSyncTimestamp] = useState<number>(INITIAL_SYNC_TIMESTAMP);
   const [statusType, setStatusType] = useState<SyncStatusType>('live');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [mode, setModeState] = useState<'live' | 'mock'>('live');
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
+  const [hasHydrated, setHasHydrated] = useState<boolean>(false);
+
+  useEffect(() => {
+    setHasHydrated(true);
+  }, []);
 
   // Mutable ref to capture latest draftState inside timers and callbacks
   const draftStateRef = useRef<DraftState>(draftState);
   useEffect(() => {
     draftStateRef.current = draftState;
   }, [draftState]);
+
+  const modeRef = useRef<'live' | 'mock'>(mode);
+  const syncEpochRef = useRef<number>(0);
+  const inFlightSyncRef = useRef<Promise<void> | null>(null);
+  const inFlightSyncKeyRef = useRef<string>('');
+  useEffect(() => {
+    modeRef.current = mode;
+  }, [mode]);
+
+  const applyMode = useCallback((newMode: 'live' | 'mock') => {
+    setModeState(newMode);
+    modeRef.current = newMode;
+    syncEpochRef.current++;
+    inFlightSyncRef.current = null;
+    inFlightSyncKeyRef.current = '';
+    if (newMode === 'mock') {
+      nflPlayerDictRef.current = null;
+      setSeasonContext(null);
+    }
+  }, []);
 
   // Persistent active user slot and username refs to anchor identity across background poll cycles and syncs
   const activeSlotRef = useRef<number | undefined>(undefined);
@@ -310,22 +338,30 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       ? initialDraftState.settings?.sleeper_username ?? 'OneiroVanguard'
       : getSavedSleeperUsername() ?? ''
   );
+  const nflPlayerDictRef = useRef<Record<string, any> | null>(null);
 
-  // Runtime background enrichment for NFL players on initialization
+  // Runtime background enrichment for NFL players on initialization (Live Mode only)
   useEffect(() => {
-    fetchNFLPlayers()
-      .then((playerDict) => {
-        if (playerDict && Object.keys(playerDict).length > 0) {
-          setDraftState((prev) => ({
-            ...prev,
-            cosmic_board: enrichCosmicBoardWithNFLPlayers(prev.cosmic_board, playerDict),
-          }));
-        }
-      })
-      .catch(() => {
-        // Offline fallback: continue with pre-compiled in-memory mock dataset
-      });
-  }, []);
+    if (mode === 'live') {
+      fetchNFLPlayers()
+        .then((playerDict) => {
+          if (playerDict && Object.keys(playerDict).length > 0) {
+            nflPlayerDictRef.current = playerDict;
+            setDraftState((prev) => {
+              if (prev.settings.mode === 'mock') return prev;
+              return {
+                ...prev,
+                cosmic_board: enrichCosmicBoardWithNFLPlayers(prev.cosmic_board, playerDict),
+              };
+            });
+          }
+        })
+        .catch(() => {
+          // Offline live mode: surface offline status
+          setSyncWarning('Sleeper NFL player directory offline');
+        });
+    }
+  }, [mode]);
 
   // --------------------------------------------------------------------------
   // Action: setTab (normalizes 'market' and 'marketplace')
@@ -549,14 +585,17 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
         (prev.weekly_matchup?.week && prev.weekly_matchup.week >= 2 ? prev.weekly_matchup.week : 2);
       const userTeam = updatedTeams.find((t) => t.is_user);
       const userRosterId = userTeam ? (userTeam.roster_id || userTeam.slot) : validSlot;
-      const updatedMatchup = deriveWeeklyMatchup(
-        userRosterId,
-        updatedTeams,
-        null,
-        prev.cosmic_board,
-        prev.my_roster,
-        activeWeek
-      );
+      const updatedMatchup =
+        updatedTeams.length > 0
+          ? deriveWeeklyMatchup(
+              userRosterId,
+              updatedTeams,
+              null,
+              prev.cosmic_board,
+              prev.my_roster,
+              activeWeek
+            )
+          : (prev.isLive || prev.settings?.mode === 'live' ? undefined : prev.weekly_matchup);
       return {
         ...prev,
         settings: { ...prev.settings, user_slot: validSlot },
@@ -579,10 +618,6 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     if (typeof window === 'undefined') return;
     try {
       const savedSlot = localStorage.getItem('oneiromancy_active_slot');
-      // Older builds saved the mock persona as the user's own account.
-      if (localStorage.getItem('oneiromancy_active_username') === 'OneiroVanguard') {
-        localStorage.removeItem('oneiromancy_active_username');
-      }
       const savedUsername = localStorage.getItem('oneiromancy_active_username');
       if (savedSlot) {
         const parsed = parseInt(savedSlot, 10);
@@ -613,6 +648,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           sleeper_username: '',
           league_id: '',
         };
+        applyMode('mock');
         setDraftState((prev) => ({
           ...prev,
           available_leagues: [],
@@ -621,15 +657,16 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             sleeper_username: '',
             league_id: '',
             available_leagues: [],
+            mode: 'mock',
           },
         }));
         setStatusType('offline');
-        setIsSettingsOpen(true);
+        setIsSettingsOpen(false);
       }
     } catch {
       // Ignore localStorage access failures
     }
-  }, [setUserSlot]);
+  }, [setUserSlot, applyMode]);
 
   // --------------------------------------------------------------------------
   // Action: setUserId
@@ -688,14 +725,17 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
         (prev.weekly_matchup?.week && prev.weekly_matchup.week >= 2 ? prev.weekly_matchup.week : 2);
       const userTeam = updatedTeams.find((t) => t.is_user);
       const userRosterId = userTeam ? (userTeam.roster_id || userTeam.slot) : (targetSlot === 7 ? 2 : targetSlot);
-      const updatedMatchup = deriveWeeklyMatchup(
-        userRosterId,
-        updatedTeams,
-        null,
-        prev.cosmic_board,
-        prev.my_roster,
-        activeWeek
-      );
+      const updatedMatchup =
+        updatedTeams.length > 0
+          ? deriveWeeklyMatchup(
+              userRosterId,
+              updatedTeams,
+              null,
+              prev.cosmic_board,
+              prev.my_roster,
+              activeWeek
+            )
+          : (prev.isLive || prev.settings?.mode === 'live' ? undefined : prev.weekly_matchup);
 
       return {
         ...prev,
@@ -731,8 +771,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   // Action: loadMockData (Instantly restores canonical mock data parameters)
   // --------------------------------------------------------------------------
   const loadMockData = useCallback(() => {
-    setModeState('mock');
-    setSeasonContext(null);
+    applyMode('mock');
     // Sample data never adopts, saves or syncs a username: the owner's real
     // account (if any) stays as it was, and nothing looks connected.
     const realUsername = activeUsernameRef.current || '';
@@ -749,11 +788,12 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     });
     const userTeam = updatedTeams.find((t) => t.is_user);
     const userRosterId = userTeam ? (userTeam.roster_id || userTeam.slot) : (targetSlot === 7 ? 2 : targetSlot);
+    const cleanBoard = mockCosmicBoard;
     const updatedMatchup = deriveWeeklyMatchup(
       userRosterId,
       updatedTeams,
       null,
-      mockCosmicBoard,
+      cleanBoard,
       mockMyRoster,
       2
     );
@@ -764,6 +804,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     };
     setDraftState({
       ...mock_oneiromancy_draft_2025,
+      cosmic_board: cleanBoard,
       competitor_teams: updatedTeams,
       weekly_matchup: updatedMatchup,
       settings: {
@@ -780,7 +821,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     setSyncError(null);
     setSyncWarning(null);
     setLastSyncTimestamp(Date.now());
-  }, []);
+  }, [applyMode]);
 
   // --------------------------------------------------------------------------
   // Action: setPollInterval
@@ -827,9 +868,6 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     },
     []
   );
-
-  const inFlightSyncRef = useRef<Promise<void> | null>(null);
-  const inFlightSyncKeyRef = useRef<string>('');
 
   // --------------------------------------------------------------------------
   // Action: performLiveSync (Dynamic Sleeper League Resolution & Ingestion)
@@ -893,6 +931,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           getSavedSleeperUsername() ||
           draftStateRef.current.settings?.sleeper_username ||
           'OneiroVanguard';
+        const currentEpoch = ++syncEpochRef.current;
+        const isStale = () => currentEpoch !== syncEpochRef.current || modeRef.current === 'mock';
         try {
           const targetDraftId =
             forcedDraftId ||
@@ -903,7 +943,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
               ? draftStateRef.current.draft_id
               : undefined);
 
-          const isMockMode = targetDraftId === 'mock' || targetDraftId === 'mock_oneiromancy_draft_2025' || targetDraftId === undefined;
+          const isMockMode = modeRef.current === 'mock' || targetDraftId === 'mock' || targetDraftId === 'mock_oneiromancy_draft_2025';
 
           const currentActiveSlot = activeSlotRef.current !== undefined
             ? activeSlotRef.current
@@ -913,6 +953,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             targetDraftId,
             {
               ...draftStateRef.current.settings,
+              mode: 'live',
               league_id: leagueId,
               sleeper_username: username,
               user_slot: currentActiveSlot,
@@ -921,24 +962,41 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             { throwOnError: true }
           );
 
-          // In-browser runtime enrichment for NFL master players & daily changes
-          try {
-            const playerDict = await fetchNFLPlayers();
-            if (playerDict && Object.keys(playerDict).length > 0) {
-              freshData.cosmic_board = enrichCosmicBoardWithNFLPlayers(
-                freshData.cosmic_board,
-                playerDict
-              );
+          if (isStale()) {
+            return;
+          }
+
+          // In-browser runtime enrichment for NFL master players & daily changes (live mode only)
+          if (!isMockMode && (modeRef.current as string) === 'live') {
+            try {
+              const playerDict = await fetchNFLPlayers();
+              if (isStale()) {
+                return;
+              }
+              if (playerDict && Object.keys(playerDict).length > 0) {
+                nflPlayerDictRef.current = playerDict;
+                freshData.cosmic_board = enrichCosmicBoardWithNFLPlayers(
+                  freshData.cosmic_board,
+                  playerDict
+                );
+              }
+            } catch (nflErr) {
+              if (!isRateLimitError(nflErr)) {
+                console.warn('[OneiromancyContext] NFL players live update notice:', nflErr);
+              }
             }
-          } catch (nflErr) {
-            if (!isRateLimitError(nflErr)) {
-              console.warn('[OneiromancyContext] NFL players live update notice:', nflErr);
-            }
+          }
+
+          if (isStale()) {
+            return;
           }
 
           let didDataDiff = true;
 
           setDraftState((prev) => {
+            if (isStale()) {
+              return prev;
+            }
             const prevPickCount = prev.current_pick?.pick_no ?? 0;
             const newPickCount = freshData.current_pick?.pick_no ?? 0;
             const prevBoardLen = prev.cosmic_board?.length ?? 0;
@@ -990,6 +1048,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                   ...slot,
                   player: {
                     ...slot.player,
+                    team: fresh.team || slot.player.team,
+                    bye_week: fresh.bye_week || slot.player.bye_week,
                     harmony_score: fresh.harmony_score,
                     divination_breakdown: fresh.divination_breakdown,
                     spirit_score: fresh.spirit_score,
@@ -1133,14 +1193,16 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                       }
                     : freshData.weekly_matchup.team_comparison,
                 }
-              : deriveWeeklyMatchup(
-                  userRosterId,
-                  reconciledTeams,
-                  null,
-                  recomputedBoard,
-                  syncedRoster,
-                  freshData.weekly_matchup?.week || prev.weekly_matchup?.week || 1
-                );
+              : reconciledTeams.length > 0
+                ? deriveWeeklyMatchup(
+                    userRosterId,
+                    reconciledTeams,
+                    null,
+                    recomputedBoard,
+                    syncedRoster,
+                    freshData.weekly_matchup?.week || prev.weekly_matchup?.week || 1
+                  )
+                : undefined;
 
           return {
             ...freshData,
@@ -1163,6 +1225,10 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           };
           });
 
+          if (isStale()) {
+            return;
+          }
+
           setModeState('live');
           if (didDataDiff || !hasExistingLiveData) {
             setLastSyncTimestamp(Date.now());
@@ -1171,6 +1237,9 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           setSyncError(null);
           setSyncWarning(null);
         } catch (err: any) {
+          if (isStale()) {
+            return;
+          }
           const errMsg = err?.message || String(err);
           if (!isRateLimitError(err)) {
             console.warn('[OneiromancyContext] Live Sleeper sync failure:', errMsg);
@@ -1195,6 +1264,9 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           setError(errMsg);
 
           setDraftState((prev) => {
+            if (isStale()) {
+              return prev;
+            }
             const retainedLeagues =
               prev.available_leagues && prev.available_leagues.length > 0
                 ? prev.available_leagues
@@ -1281,8 +1353,11 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             };
           });
         } finally {
-          setIsLoading(false);
-          inFlightSyncRef.current = null;
+          if (currentEpoch === syncEpochRef.current || modeRef.current === 'mock') {
+            setIsLoading(false);
+            inFlightSyncRef.current = null;
+            inFlightSyncKeyRef.current = '';
+          }
         }
       })();
 
@@ -1300,18 +1375,21 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     async (forcedUsername?: string, forcedLeagueId?: string) => {
       if (forcedUsername) {
         resetRateLimit();
-        setModeState('live');
+        applyMode('live');
         await performLiveSync(undefined, forcedLeagueId, forcedUsername);
         return;
       }
 
-      if (mode === 'mock') {
+      if (modeRef.current === 'mock') {
         setIsLoading(true);
         setStatusType('syncing');
         try {
+          const realUsername = activeUsernameRef.current || '';
           const targetSlot = activeSlotRef.current || 7;
           setDraftState((prev) => {
             const cleanMock = structuredClone(mock_oneiromancy_draft_2025);
+            const rawBoard = cleanMock.cosmic_board || mockCosmicBoard;
+            const cleanBoard = rawBoard;
             const fallbackTeams = cleanMock.competitor_teams || [];
             const updatedTeams = fallbackTeams.map((t) => {
               const isUser = t.slot === targetSlot;
@@ -1329,21 +1407,29 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
               userRosterId,
               updatedTeams,
               null,
-              cleanMock.cosmic_board || mockCosmicBoard,
+              cleanBoard,
               cleanMock.my_roster || mockMyRoster,
               activeMatchupWeek
             );
+            prevConfigRef.current = {
+              draft_id: cleanMock.draft_id,
+              sleeper_username: realUsername,
+              league_id: mockSettings.league_id ?? '',
+            };
             const cleanSettings: OneiromancySettings = {
               ...mockSettings,
               chaos_lambda: prev.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA,
               oracle_weights: prev.settings?.oracle_weights ?? DEFAULT_ORACLE_WEIGHTS,
               user_slot: targetSlot,
+              sleeper_username: realUsername,
+              available_leagues: [],
               mode: 'mock',
               offline_mode_active: false,
             };
             return recomputeDraftState(
               {
                 ...cleanMock,
+                cosmic_board: cleanBoard,
                 competitor_teams: updatedTeams,
                 weekly_matchup: updatedMatchup,
                 settings: cleanSettings,
@@ -1363,7 +1449,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
 
       await performLiveSync(undefined, forcedLeagueId, forcedUsername);
     },
-    [mode, performLiveSync]
+    [applyMode, performLiveSync]
   );
 
   // --------------------------------------------------------------------------
@@ -1405,15 +1491,17 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   // --------------------------------------------------------------------------
   const setMode = useCallback(
     (newMode: 'live' | 'mock') => {
-      setModeState(newMode);
+      applyMode(newMode);
       if (newMode === 'mock') {
-        setSeasonContext(null);
         setSyncError(null);
         setSyncWarning(null);
         setStatusType('offline');
+        const realUsername = activeUsernameRef.current || '';
         const targetSlot = activeSlotRef.current || 7;
         setDraftState((prev) => {
           const cleanMock = structuredClone(mock_oneiromancy_draft_2025);
+          const rawBoard = cleanMock.cosmic_board || mockCosmicBoard;
+          const cleanBoard = rawBoard;
           const fallbackTeams = cleanMock.competitor_teams || [];
           const updatedTeams = fallbackTeams.map((t) => {
             const isUser = t.slot === targetSlot;
@@ -1431,13 +1519,13 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             userRosterId,
             updatedTeams,
             null,
-            cleanMock.cosmic_board || mockCosmicBoard,
+            cleanBoard,
             cleanMock.my_roster || mockMyRoster,
             activeMatchupWeek
           );
           prevConfigRef.current = {
             draft_id: cleanMock.draft_id,
-            sleeper_username: mockSettings.sleeper_username ?? 'OneiroVanguard',
+            sleeper_username: realUsername,
             league_id: mockSettings.league_id ?? '',
           };
           const cleanSettings: OneiromancySettings = {
@@ -1445,12 +1533,15 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             chaos_lambda: prev.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA,
             oracle_weights: prev.settings?.oracle_weights ?? DEFAULT_ORACLE_WEIGHTS,
             user_slot: targetSlot,
+            sleeper_username: realUsername,
+            available_leagues: [],
             mode: 'mock',
             offline_mode_active: false,
           };
           return recomputeDraftState(
             {
               ...cleanMock,
+              cosmic_board: cleanBoard,
               competitor_teams: updatedTeams,
               weekly_matchup: updatedMatchup,
               settings: cleanSettings,
@@ -1463,7 +1554,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
         performLiveSync();
       }
     },
-    [performLiveSync]
+    [applyMode, performLiveSync]
   );
 
   // Dynamic Sleeper League Resolution on Initial Boot
@@ -1483,6 +1574,17 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     const draftParam = params.get('draft_id') || params.get('draft');
     const slotParam = params.get('slot') || params.get('user_slot');
     const userParam = params.get('user') || params.get('username');
+    const tabParam = params.get('tab')?.trim();
+
+    if (
+      tabParam &&
+      tabParam !== 'weights' &&
+      tabParam !== 'oracle' &&
+      tabParam !== 'chaos' &&
+      tabParam !== 'dial'
+    ) {
+      setActiveTabState(normalizeTab(tabParam));
+    }
 
     let shouldRefresh = false;
     let newDraftId: string | undefined;
@@ -1652,6 +1754,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       return 'OFFLINE / CACHED';
     }
     if (draftState.status === 'complete' || !draftState.current_pick) {
+      if (!hasHydrated || lastSyncTimestamp === INITIAL_SYNC_TIMESTAMP) return 'LIVE';
       const t = new Date(lastSyncTimestamp);
       const hh = String(t.getHours()).padStart(2, '0');
       const mm = String(t.getMinutes()).padStart(2, '0');
@@ -1659,7 +1762,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     }
     const currentPick = draftState.current_pick;
     return `LIVE • RD ${currentPick.round} PK ${currentPick.pick_no}`;
-  }, [effectiveStatusType, mode, isAutoUpdate, draftState.current_pick, draftState.status, lastSyncTimestamp]);
+  }, [effectiveStatusType, mode, isAutoUpdate, draftState.current_pick, draftState.status, lastSyncTimestamp, hasHydrated]);
 
   // --------------------------------------------------------------------------
   // Centralized Active User Team Resolution

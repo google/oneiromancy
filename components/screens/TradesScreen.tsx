@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -18,8 +19,8 @@
 
 import React, { useMemo, useState } from 'react';
 import UserAvatar from '@/components/common/UserAvatar';
+import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import PositionalBadge from '@/components/common/PositionalBadge';
-import PlayerMarketplace from '@/components/screens/PlayerMarketplace';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
 import GlassCard from '@/components/common/GlassCard';
@@ -35,10 +36,9 @@ import {
   starsScore,
   statsPoints,
 } from '@/lib/oracle';
-import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, isPlayerSigned } from '@/lib/scoring';
 import type { CompetitorTeam, CosmicPlayer, ElementType, RosterSlot } from '@/types/oneiromancy';
 
-/** Oracle, Stats and Stars together; a player's value is never projection alone. */
 const ValueLine: React.FC<{ p: CosmicPlayer; lambda: number }> = ({ p, lambda }) => {
   const stars = starsScore(p);
   return (
@@ -50,16 +50,19 @@ const ValueLine: React.FC<{ p: CosmicPlayer; lambda: number }> = ({ p, lambda })
   );
 };
 
-// Stable empty defaults so memo dependencies don't change every render.
 const NO_MY_ROSTER: RosterSlot[] = [];
 const NO_COSMIC_BOARD: CosmicPlayer[] = [];
 const NO_COMPETITOR_TEAMS: CompetitorTeam[] = [];
 
-/**
- * Trades: who is short where you are deep. Partners are ranked by positional
- * need against your surplus; the celestial angle is each lineup's element mix.
- */
-export const TradesScreen: React.FC = () => {
+export interface TradesScreenProps {
+  positionFilter?: string;
+  searchQuery?: string;
+}
+
+export const TradesScreen: React.FC<TradesScreenProps> = ({
+  positionFilter = 'ALL',
+  searchQuery = '',
+}) => {
   const { draftState } = useOneiromancy();
   const teams = draftState.competitor_teams ?? NO_COMPETITOR_TEAMS;
   const board = draftState.cosmic_board ?? NO_COSMIC_BOARD;
@@ -68,29 +71,53 @@ export const TradesScreen: React.FC = () => {
   const [openTeam, setOpenTeam] = useState<number | null>(null);
   const [inspected, setInspected] = useState<InspectTarget | null>(null);
 
-  const partners = useMemo(() => computeTradePartners(teams, board, roster, lambda), [teams, board, roster, lambda]);
+  const partners = useMemo(
+    () =>
+      computeTradePartners(teams, board, roster, lambda).filter((p) => {
+        const givesSigned = p.give?.player ? isPlayerSigned(p.give.player) : false;
+        const receivesUnsigned = p.get?.player ? !isPlayerSigned(p.get.player) : false;
+        if (givesSigned && receivesUnsigned) return false;
+        if (positionFilter && positionFilter !== 'ALL') {
+          const givePos = p.give?.player?.position;
+          const getPos = p.get?.player?.position;
+          const matchPos = (pos?: string) =>
+            positionFilter === 'FLEX'
+              ? Boolean(pos && ['RB', 'WR', 'TE'].includes(pos))
+              : pos === positionFilter;
+          if (!matchPos(givePos) && !matchPos(getPos)) return false;
+        }
+        const q = (searchQuery || '').trim().toLowerCase();
+        if (q) {
+          const teamName = (p.team.name || '').toLowerCase();
+          const giveName = (p.give?.player?.name || '').toLowerCase();
+          const getName = (p.get?.player?.name || '').toLowerCase();
+          if (!teamName.includes(q) && !giveName.includes(q) && !getName.includes(q)) return false;
+        }
+        return true;
+      }),
+    [teams, board, roster, lambda, positionFilter, searchQuery],
+  );
   const byId = useMemo(() => new Map(board.map((p) => [String(p.id), p])), [board]);
   const me = teams.find((t) => t.is_user);
   const myStarters = (me?.starters ?? []).map((id) => byId.get(String(id))).filter((p): p is CosmicPlayer => Boolean(p));
   const myMix = dominantElements(myStarters);
 
   return (
-    <div className="flex flex-col gap-5 w-full max-w-5xl mx-auto">
+    <div className="flex flex-col gap-4 w-full max-w-5xl mx-auto">
       <div className="space-y-1">
         <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/80">Divine Swaps</span>
-        <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide">Trades</h2>
+        <h2 className="font-serif text-xl sm:text-2xl font-bold text-slate-100 tracking-wide">Trades</h2>
         <p className="text-xs text-slate-400 font-sans">
-          Trades that help both lineups: your bench player would start for them, and theirs for you. Ranked by
-          Oracle (λ {lambda.toFixed(2)}). Your lineup leans {myMix}.
+          Mutual lineup upgrades where your bench player starts for them, and theirs starts for you (λ {lambda.toFixed(2)}).
         </p>
       </div>
 
       {partners.length === 0 ? (
         <p className="p-4 rounded-xl bg-slate-900/70 border border-white/10 text-sm text-slate-300">
-          No trade improves both lineups this week. Check back after waivers clear.
+          No trade improves both lineups this week.
         </p>
       ) : (
-        <ol className="flex flex-col gap-4" data-testid="trade-partners">
+        <ol className="flex flex-col gap-3" data-testid="trade-partners">
           {partners.map((p) => {
             const name = p.team.name.replace(/\s*\(You\)$/, '');
             const starters = (p.team.starters ?? [])
@@ -112,25 +139,33 @@ export const TradesScreen: React.FC = () => {
               piece: NonNullable<typeof p.give>,
             ) => (
               <div
-                className={`p-3 rounded-xl space-y-2.5 ${
-                  kind === 'send' ? 'bg-rose-950/20 border border-rose-500/25' : 'bg-cyan-950/20 border border-cyan-500/25'
+                className={`p-3 rounded-xl space-y-2 ${
+                  kind === 'send'
+                    ? 'bg-purple-950/25 border border-purple-500/50'
+                    : 'bg-cyan-950/20 border border-cyan-500/30'
                 }`}
               >
-                <span
-                  className={`text-[9px] uppercase tracking-wider font-bold block ${
-                    kind === 'send' ? 'text-rose-400' : 'text-cyan-400'
-                  }`}
-                >
-                  {kind === 'send' ? 'You send' : 'You receive'}
-                </span>
-                <div className="flex items-center gap-1.5 flex-wrap">
-                  <PositionalBadge position={piece.player.position} size="sm" />
-                  <span className="font-serif font-bold text-slate-100 text-sm">
-                    <PlayerLink player={piece.player} vs={piece.replaces} onOpen={setInspected} />
+                <div className="flex justify-between items-center">
+                  <span className={`text-[9px] uppercase tracking-wider font-bold ${kind === 'send' ? 'text-purple-300' : 'text-cyan-400'}`}>
+                    {kind === 'send' ? 'You send' : 'You receive'}
                   </span>
-                  <span className="text-[10px] font-mono text-slate-400">{piece.player.team}</span>
                   <HealthTag player={piece.player} />
-                  <Tag tone="purple">{kind === 'send' ? 'Your bench' : 'Their bench'}</Tag>
+                </div>
+                <div className="flex items-center gap-2 min-w-0">
+                  <PlayerHeadshot player={piece.player} size="sm" />
+                  <div className="min-w-0 flex-1 space-y-0.5">
+                    <div className="flex items-center gap-1.5 min-w-0">
+                      <PositionalBadge position={piece.player.position} size="sm" />
+                      <span className="font-serif font-bold text-slate-100 text-sm truncate">
+                        <PlayerLink player={piece.player} vs={piece.replaces} onOpen={setInspected} />
+                      </span>
+                    </div>
+                    <div className="text-[10px] font-mono text-slate-400 flex items-center gap-1 whitespace-nowrap">
+                      <TeamLogo team={piece.player.team} />
+                      <span>{piece.player.team} · Bye {piece.player.bye_week || '-'}</span>
+                      <Tag tone="purple">{kind === 'send' ? 'Your bench' : 'Their bench'}</Tag>
+                    </div>
+                  </div>
                 </div>
                 <StatTiles player={piece.player} lambda={lambda} />
                 <div className="text-[11px] font-mono text-slate-400">
@@ -142,9 +177,8 @@ export const TradesScreen: React.FC = () => {
             );
             return (
               <li key={p.team.roster_id}>
-                <GlassCard variant="panel" glowColor="purple" className="p-4 space-y-3.5">
-                  {/* Partner and combined gain */}
-                  <div className="flex flex-wrap justify-between items-center gap-2 border-b border-white/5 pb-2.5">
+                <GlassCard variant="panel" glowColor="purple" className="p-4 space-y-3">
+                  <div className="flex flex-wrap justify-between items-center gap-2 border-b border-white/5 pb-2">
                     <div className="flex items-center gap-2.5 min-w-0">
                       <UserAvatar
                         src={p.team.avatar_url || p.team.avatar}
@@ -157,12 +191,6 @@ export const TradesScreen: React.FC = () => {
                           Trade partner
                         </span>
                         <span className="font-serif font-bold text-slate-100 text-base">{name}</span>
-                        {typeof p.team.wins === 'number' && (
-                          <span className="ml-2 text-xs font-mono text-slate-400">
-                            {p.team.wins}-{p.team.losses}
-                            {p.team.ties ? `-${p.team.ties}` : ''}
-                          </span>
-                        )}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-1.5">
@@ -180,34 +208,20 @@ export const TradesScreen: React.FC = () => {
 
                   {!(p.give && p.get) && <p className="text-sm text-slate-300">{p.summary}</p>}
 
-                  {/* Alchemy telemetry */}
                   <div className="flex flex-wrap justify-between items-center gap-2 font-mono text-[11px] px-1">
                     <span className="text-slate-400">
-                      Their lineup leans <span className="text-purple-300">{theirMix}</span>
+                      Their lineup leans <span className="text-purple-300">{theirMix}</span> ({relation})
                     </span>
-                    <span
-                      className={
-                        relation === 'Complementary'
-                          ? 'text-emerald-400'
-                          : relation === 'Opposed'
-                            ? 'text-rose-300'
-                            : 'text-amber-300'
-                      }
-                    >
-                      {relation === 'Same element' ? 'Same element as yours' : `${relation} to yours`}
-                    </span>
-                  </div>
-
-                  <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => setOpenTeam(isOpen ? null : p.team.roster_id)}
                       aria-expanded={isOpen}
-                      className="px-3 py-1.5 rounded-lg border border-white/15 text-xs text-slate-200 hover:border-cyan-400/60"
+                      className="px-2.5 py-1 rounded-lg border border-white/15 text-xs text-slate-200 hover:border-cyan-400/60"
                     >
-                      {isOpen ? 'Hide their roster' : 'See their roster'}
+                      {isOpen ? 'Hide roster' : 'See roster'}
                     </button>
                   </div>
+
                   {isOpen && (
                     <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-2 border-t border-white/10">
                       {rosterPlayers.map((pl) => (
@@ -235,13 +249,6 @@ export const TradesScreen: React.FC = () => {
         onClose={() => setInspected(null)}
         roster={roster}
       />
-
-      {!draftState.isLive && (
-        <section className="flex flex-col gap-2">
-          <h3 className="font-serif text-lg font-bold text-slate-100">Sample Divine Swaps</h3>
-          <PlayerMarketplace section="trades" />
-        </section>
-      )}
     </div>
   );
 };

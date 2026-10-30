@@ -272,21 +272,30 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
   // Category 3: CelestialLeaderboardGraph Component Identity Verification
   // --------------------------------------------------------------------------
   describe('3. CelestialLeaderboardGraph Component Identity Verification', () => {
-    it('3.1 should verify CelestialLeaderboardGraph.tsx evaluates isUser strictly without slot fallback collision', () => {
-      const componentPath = path.resolve(__dirname, '../components/oneiromancy/CelestialLeaderboardGraph.tsx');
-      assert.ok(fs.existsSync(componentPath), 'CelestialLeaderboardGraph.tsx must exist');
-      const source = fs.readFileSync(componentPath, 'utf8');
-
-      // Verify the simplified, strict isUser check
-      assert.ok(
-        source.includes("const isUser = team.is_user === true || team.name.includes('(You)');"),
-        'CelestialLeaderboardGraph must use strict isUser check without slot fallback'
+    it('3.1 should verify CelestialLeaderboardGraph renders exactly 1 user team row without slot fallback collision', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { default: OneiromancyContext } = await import('./dist/context/OneiromancyContext.js');
+      const { CelestialLeaderboardGraph } = await import('./dist/components/oneiromancy/CelestialLeaderboardGraph.js');
+      const state = sleeper.transformToDraftState(
+        draftMeta,
+        draftPicks,
+        { sleeper_username: 'OneiroVanguard' },
+        undefined,
+        leagueUsers,
+        leagueRosters,
+        leagueMatchups,
+        leagueInfo
       );
-      // Ensure the old bug with slotNum === userSlot fallback is removed
-      assert.ok(
-        !source.includes('userSlot !== undefined ? slotNum === userSlot : false'),
-        'CelestialLeaderboardGraph must NOT contain the buggy slotNum === userSlot fallback'
+      const view = render(
+        jsx(OneiromancyContext.Provider, {
+          value: { draftState: state, userSlot: 7, userRosterId: 2, isUserTeam: (t) => Boolean(t?.is_user) },
+          children: jsx(CelestialLeaderboardGraph, { competitorTeams: state.competitor_teams }),
+        })
       );
+      const userRows = view.getAllByTestId('leaderboard-user-team');
+      assert.equal(userRows.length, 1, 'CelestialLeaderboardGraph renders exactly 1 leaderboard-user-team row');
+      assert.ok(userRows[0].textContent.includes('YOU'), 'CelestialLeaderboardGraph renders YOU marker for user team');
+      view.unmount();
     });
 
     it('3.2 should verify that evaluating CelestialLeaderboardGraph isUser logic against live competitor teams flags exactly 1 team', () => {
@@ -431,14 +440,28 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       assert.equal(state.weekly_matchup.opponent_team.projected_points, expectedOppSum);
     });
 
-    it('4.2 should verify MatchupsScreen.tsx source utilizes centralized OneiromancyContext identity', () => {
-      const screenPath = path.resolve(__dirname, '../components/screens/MatchupsScreen.tsx');
-      assert.ok(fs.existsSync(screenPath), 'MatchupsScreen.tsx must exist');
-      const source = fs.readFileSync(screenPath, 'utf8');
-
-      // Verify context usage for user identity
-      assert.ok(source.includes('context.userSlot') || source.includes('userSlot'));
-      assert.ok(source.includes('deriveWeeklyMatchup'));
+    it('4.2 should verify MatchupsScreen renders centralized OneiromancyContext identity with Your Team on the left', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { default: OneiromancyContext } = await import('./dist/context/OneiromancyContext.js');
+      const { MatchupsScreen } = await import('./dist/components/screens/MatchupsScreen.js');
+      const state = sleeper.transformToDraftState(
+        draftMeta,
+        draftPicks,
+        { sleeper_username: 'OneiroVanguard' },
+        undefined,
+        leagueUsers,
+        leagueRosters,
+        leagueMatchups,
+        leagueInfo
+      );
+      const view = render(
+        jsx(OneiromancyContext.Provider, {
+          value: { draftState: state, userSlot: 7, userRosterId: 2, userTeamName: 'AstralOracles (You)' },
+          children: jsx(MatchupsScreen, { weeklyMatchup: state.weekly_matchup }),
+        })
+      );
+      assert.ok(view.container.textContent.includes('AstralOracles'), 'MatchupsScreen displays user team from context');
+      view.unmount();
     });
   });
 
@@ -446,45 +469,54 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
   // Category 5: OneiromancyContext Centralized Identity Resolution
   // --------------------------------------------------------------------------
   describe('5. OneiromancyContext Centralized Identity Resolution', () => {
-    it('5.1 should verify OneiromancyContext exports userRosterId, userSlot, userTeamName, and isUserTeam', () => {
-      const contextPath = path.resolve(__dirname, '../context/OneiromancyContext.tsx');
-      assert.ok(fs.existsSync(contextPath), 'context/OneiromancyContext.tsx must exist');
-      const source = fs.readFileSync(contextPath, 'utf8');
-
-      assert.ok(source.includes('userRosterId?: number'), 'OneiromancyContextState must declare userRosterId');
-      assert.ok(source.includes('userSlot: number'), 'OneiromancyContextState must declare userSlot');
-      assert.ok(source.includes('userTeamName: string'), 'OneiromancyContextState must declare userTeamName');
-      assert.ok(source.includes('isUserTeam:'), 'OneiromancyContextActions must declare isUserTeam helper');
-      assert.ok(source.includes('const isUserTeam = useCallback('), 'OneiromancyContext must implement isUserTeam callback');
+    it('5.1 should verify OneiromancyProvider exposes userRosterId, userSlot, userTeamName, and isUserTeam', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      let captured = null;
+      function Probe() {
+        captured = useOneiromancy();
+        return jsx('div', {}, 'probe');
+      }
+      const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+      assert.ok(captured, 'useOneiromancy returns context value');
+      assert.equal(typeof captured.userSlot, 'number', 'OneiromancyContext exposes numeric userSlot');
+      assert.equal(typeof captured.userTeamName, 'string', 'OneiromancyContext exposes string userTeamName');
+      assert.equal(typeof captured.isUserTeam, 'function', 'OneiromancyContext exposes isUserTeam helper function');
+      view.unmount();
     });
 
-    it('5.2 should verify OneiromancyContext eliminated slot/roster collisions across line search loops', () => {
-      const contextPath = path.resolve(__dirname, '../context/OneiromancyContext.tsx');
-      const source = fs.readFileSync(contextPath, 'utf8');
-
-      // Ensure that t.slot === targetSlot is strictly checked without || t.roster_id === targetSlot
-      assert.ok(
-        !source.includes('t.slot === targetSlot || t.roster_id === targetSlot'),
-        'OneiromancyContext must NOT mix slot and roster_id in targetSlot searches'
-      );
+    it('5.2 should verify OneiromancyContext isUserTeam distinguishes slot vs roster_id without collision', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      let captured = null;
+      function Probe() {
+        captured = useOneiromancy();
+        return jsx('div', {}, 'probe');
+      }
+      const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+      captured.loadMockData();
+      // Slot 7 has roster_id 2; Slot 2 has roster_id 12 (CrimsonPhoenix) and is NOT user team
+      const crimson = captured.draftState.competitor_teams.find((t) => t.slot === 2);
+      const astral = captured.draftState.competitor_teams.find((t) => t.slot === 7);
+      assert.equal(captured.isUserTeam(astral), true, 'Slot 7 (AstralOracles) is identified as user team');
+      assert.equal(captured.isUserTeam(crimson), false, 'Slot 2 (CrimsonPhoenix) is not mistaken for user team');
+      view.unmount();
     });
 
-    it('5.3 should verify OneiromancyContext.tsx loadMockData preserves AstralOracles (You) in Slot 7 / Roster 2 and Matchup 3', () => {
-      const contextPath = path.resolve(__dirname, '../context/OneiromancyContext.tsx');
-      const source = fs.readFileSync(contextPath, 'utf8');
-
-      assert.ok(
-        source.includes('const targetSlot = activeSlotRef.current || 7;'),
-        'loadMockData must fallback to Slot 7'
-      );
-      assert.ok(
-        source.includes('deriveWeeklyMatchup('),
-        'loadMockData must derive weekly matchup'
-      );
-      assert.ok(
-        !source.includes('targetSlot = activeSlotRef.current || 5;'),
-        'loadMockData must NOT fallback to Slot 5'
-      );
+    it('5.3 should verify OneiromancyContext loadMockData preserves AstralOracles (You) in Slot 7 / Roster 2 and Matchup 3', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      let captured = null;
+      function Probe() {
+        captured = useOneiromancy();
+        return jsx('div', {}, 'probe');
+      }
+      const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+      captured.loadMockData();
+      assert.equal(captured.userSlot, 7, 'loadMockData sets userSlot to 7');
+      assert.equal(captured.userRosterId, 2, 'loadMockData sets userRosterId to 2');
+      assert.equal(captured.draftState.weekly_matchup.matchup_id, 3, 'loadMockData preserves Matchup 3');
+      view.unmount();
     });
 
     it('5.4 should verify simulated loadMockData state keeps AstralOracles (You) in Slot 7 / Roster 2 and preserves Matchup 3', () => {
@@ -520,6 +552,100 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       assert.ok(matchup.user_team.team_name.includes('AstralOracles'));
       assert.equal(matchup.opponent_team.slot, 5);
       assert.ok(matchup.opponent_team.team_name.includes('lunareclipse'));
+    });
+
+    it('5.5 should verify mock-to-live transition commits fresh live state and sets mode: live', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      const originalFetch = globalThis.fetch;
+      const J = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      globalThis.fetch = async (u) => {
+        const url = String(u);
+        if (/\/user\/[^/]+$/.test(url)) return J({ user_id: '9000000000000000101', username: 'OneiroVanguard' });
+        if (/\/leagues\/nfl\//.test(url)) return J([leagueInfo]);
+        if (/\/league\/[^/]+\/drafts$/.test(url)) return J([{ draft_id: '9000000000000000002', status: 'complete' }]);
+        if (/\/league\/[^/]+\/users$/.test(url)) return J(leagueUsers);
+        if (/\/league\/[^/]+\/rosters$/.test(url)) return J(leagueRosters);
+        if (/\/league\/[^/]+\/matchups\//.test(url)) return J(leagueMatchups);
+        if (/\/league\/[^/]+$/.test(url)) return J(leagueInfo);
+        if (/\/draft\/[^/]+\/picks$/.test(url)) return J(draftPicks);
+        if (/\/draft\/[^/]+$/.test(url)) return J(draftMeta);
+        if (/\/state\/nfl$/.test(url)) return J({ week: 1, season: '2025', display_week: 1 });
+        if (/\/players\/nfl$/.test(url)) return J({});
+        return J([]);
+      };
+
+      let captured = null;
+      function Probe() {
+        captured = useOneiromancy();
+        return jsx('div', {}, 'probe');
+      }
+
+      try {
+        const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        // Put in mock mode first
+        captured.loadMockData();
+        assert.equal(captured.mode, 'mock');
+        assert.equal(captured.draftState.settings?.mode, 'mock');
+
+        // Transition to live mode with username
+        captured.setMode('live');
+        await captured.refreshDraft('OneiroVanguard');
+
+        assert.equal(captured.mode, 'live', 'Mode must become live');
+        assert.equal(captured.draftState.isLive, true, 'isLive must be true');
+        assert.equal(captured.draftState.settings?.mode, 'live', 'settings.mode must be live');
+        assert.equal(captured.statusType, 'live', 'statusType must be live');
+        assert.equal(captured.syncError, null, 'syncError must be null');
+        view.unmount();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    });
+
+    it('5.6 should verify rejected in-flight live sync does not corrupt mock state when switched to mock', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      const originalFetch = globalThis.fetch;
+      let rejectSync = false;
+      globalThis.fetch = async (u) => {
+        if (rejectSync) {
+          await new Promise((r) => setTimeout(r, 60));
+          throw new Error('Network error: connection refused');
+        }
+        return new Response(JSON.stringify({}), { status: 200, headers: { 'Content-Type': 'application/json' } });
+      };
+
+      let captured = null;
+      function Probe() {
+        captured = useOneiromancy();
+        return jsx('div', {}, 'probe');
+      }
+
+      try {
+        const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        rejectSync = true;
+        // Start live sync
+        const liveSyncPromise = captured.refreshDraft('TestUser99');
+        // Immediately switch mode to mock before live sync rejects
+        captured.setMode('mock');
+        assert.equal(captured.mode, 'mock');
+        assert.equal(captured.draftState.settings?.mode, 'mock');
+        const mockBoardLen = captured.draftState.cosmic_board?.length;
+
+        // Wait for rejected live sync to complete
+        await liveSyncPromise;
+
+        // Ensure mock state was NOT overwritten by the rejected live sync
+        assert.equal(captured.mode, 'mock', 'Mode must remain mock');
+        assert.equal(captured.draftState.settings?.mode, 'mock', 'settings.mode must remain mock');
+        assert.equal(captured.draftState.cosmic_board?.length, mockBoardLen, 'Mock board length must be preserved');
+        assert.equal(captured.syncError, null, 'Mock mode must not inherit live sync error');
+        assert.equal(captured.statusType, 'offline', 'Status must remain offline');
+        view.unmount();
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 });

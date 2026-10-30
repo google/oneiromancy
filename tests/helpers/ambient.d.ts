@@ -26,7 +26,79 @@ declare namespace JSX {
     props: any;
     key: any;
   }
+  interface ElementChildrenAttribute {
+    children: {};
+  }
   interface IntrinsicElements {
+    input: {
+      type?: string;
+      value?: any;
+      defaultValue?: any;
+      placeholder?: string;
+      checked?: boolean;
+      disabled?: boolean;
+      className?: string;
+      id?: string;
+      name?: string;
+      min?: any;
+      max?: any;
+      step?: any;
+      onChange?: (e: any) => any;
+      onKeyDown?: (e: any) => any;
+      onKeyUp?: (e: any) => any;
+      onFocus?: (e: any) => any;
+      onBlur?: (e: any) => any;
+      [prop: string]: any;
+    };
+    select: {
+      value?: any;
+      defaultValue?: any;
+      disabled?: boolean;
+      className?: string;
+      id?: string;
+      name?: string;
+      onChange?: (e: any) => any;
+      [prop: string]: any;
+    };
+    textarea: {
+      value?: any;
+      defaultValue?: any;
+      placeholder?: string;
+      disabled?: boolean;
+      className?: string;
+      id?: string;
+      name?: string;
+      rows?: number;
+      onChange?: (e: any) => any;
+      onKeyDown?: (e: any) => any;
+      [prop: string]: any;
+    };
+    button: {
+      type?: 'button' | 'submit' | 'reset';
+      disabled?: boolean;
+      className?: string;
+      id?: string;
+      onClick?: (e: any) => any;
+      [prop: string]: any;
+    };
+    div: {
+      className?: string;
+      id?: string;
+      role?: string;
+      tabIndex?: number;
+      title?: string;
+      onClick?: (e: any) => any;
+      onKeyDown?: (e: any) => any;
+      onKeyUp?: (e: any) => any;
+      [prop: string]: any;
+    };
+    span: {
+      className?: string;
+      id?: string;
+      title?: string;
+      onClick?: (e: any) => any;
+      [prop: string]: any;
+    };
     [elemName: string]: any;
   }
   interface IntrinsicAttributes {
@@ -118,6 +190,7 @@ declare module 'lucide-react' {
   export const Mountain: any;
   export const Orbit: any;
   export const RefreshCw: any;
+  export const RotateCcw: any;
   export const Scale: any;
   export const Search: any;
   export const Settings: any;
@@ -147,6 +220,15 @@ declare module 'clsx' {
 
 declare module 'tailwind-merge' {
   export function twMerge(...args: any[]): string;
+}
+
+declare module 'tailwindcss' {
+  export interface Config {
+    content?: string[];
+    theme?: Record<string, any>;
+    plugins?: any[];
+    [key: string]: any;
+  }
 }
 
 declare namespace NodeJS {

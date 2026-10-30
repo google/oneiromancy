@@ -1,4 +1,5 @@
 /**
+ * @license
  * Copyright 2026 Google LLC
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,6 +30,8 @@ export interface CelestialLeaderboardGraphProps {
   competitorTeams: CompetitorTeam[];
   cosmicBoard?: CosmicPlayer[];
   userSlot?: number;
+  selectedRosterId?: number;
+  onSelectTeam?: (rosterId: number) => void;
   className?: string;
 }
 
@@ -36,12 +39,13 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
   competitorTeams,
   cosmicBoard = [],
   userSlot,
+  selectedRosterId,
+  onSelectTeam,
   className = '',
 }) => {
   const [metric, setMetric] = useState<LeaderboardMetric>('overall');
   const [showAllTeams, setShowAllTeams] = useState<boolean>(true);
 
-  // Compute deterministic metrics for every team (strictly invariant to active user)
   const rankedTeams = useMemo(() => {
     const teamsWithMetrics = competitorTeams.map((team, idx) => {
       const slotNum = team.slot || team.roster_id || idx + 1;
@@ -70,7 +74,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
         metricUnit = 'COMPOSITE';
       }
 
-      // Base team name without "(You)" for clean rendering
       const cleanName = team.name.replace(/\s*\(You\)\s*/g, '').trim();
 
       return {
@@ -85,7 +88,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
       };
     });
 
-    // Sort descending by selected metric value
     return teamsWithMetrics.sort((a, b) => b.value - a.value);
   }, [competitorTeams, cosmicBoard, userSlot, metric]);
 
@@ -129,7 +131,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
       data-testid="celestial-leaderboard"
       className={`p-4 sm:p-6 space-y-4 border-amber-500/20 shadow-[0_0_20px_rgba(245,158,11,0.05)] ${className}`}
     >
-      {/* Header: Title, Subtitle, and Metric Toggles */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-3 border-b border-white/10 pb-3">
         <div className="flex items-center gap-2">
           <div className="w-8 h-8 rounded-lg bg-amber-950/60 border border-amber-500/40 flex items-center justify-center text-amber-400 shrink-0 shadow-[0_0_10px_rgba(245,158,11,0.2)]">
@@ -143,12 +144,11 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
               </span>
             </h3>
             <p className="text-[11px] font-sans text-slate-400">
-              Comparative astrological rankings across Spirit, Draft, and Harmony metrics.
+              Comparative rankings across Oracle, Stars, Stats, and Harmony metrics. Click any team to inspect their lineup.
             </p>
           </div>
         </div>
 
-        {/* Metric Selector Pills */}
         <div className="flex items-center gap-1 p-1 rounded-lg bg-slate-950/80 border border-white/10 text-xs font-mono self-stretch sm:self-auto justify-between sm:justify-start">
           <button
             type="button"
@@ -160,7 +160,7 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            Overall
+            Oracle
           </button>
           <button
             type="button"
@@ -172,7 +172,7 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            Spirit
+            Stars
           </button>
           <button
             type="button"
@@ -184,7 +184,7 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            Draft
+            Stats
           </button>
           <button
             type="button"
@@ -201,39 +201,38 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
         </div>
       </div>
 
-      {/* Leaderboard Stacked Rows with Horizontal Comparison Bars */}
       <div className="space-y-2">
         {displayedTeams.map((item, index) => {
           const rank = index + 1;
           const isRankOne = rank === 1;
-
-          // Bar width clamped between 15% and 100%
           const barWidth = Math.min(100, Math.max(15, ((item.value - 50) / 50) * 100));
 
           return (
             <div
               key={item.slotNum}
+              onClick={() => onSelectTeam?.(item.team.roster_id)}
               data-testid={
                 item.isUser
-                  ? 'leaderboard-user-team' // data-testid="leaderboard-user-team"
+                  ? 'leaderboard-user-team'
                   : isRankOne
                   ? 'leaderboard-row-rank-1'
                   : `leaderboard-row-slot-${item.slotNum}`
               }
               className={`p-2.5 rounded-xl border text-xs font-mono transition-all relative overflow-hidden ${
+                onSelectTeam ? 'cursor-pointer' : ''
+              } ${
                 item.isUser
                   ? 'bg-purple-950/40 border-purple-400 ring-2 ring-purple-500/70 shadow-lg shadow-purple-500/20'
+                  : selectedRosterId === item.team.roster_id
+                  ? 'bg-cyan-950/30 border-cyan-400/60 ring-1 ring-cyan-400/40'
                   : isRankOne
                   ? 'bg-amber-950/20 border-amber-500/30'
                   : 'bg-slate-900/60 border-white/5 hover:border-white/10'
               }`}
             >
-              {/* Subtle bar track background */}
               <div className="flex items-center justify-between gap-2 relative z-10">
                 <div className="flex items-center gap-2 min-w-0 flex-1">
                   {getRankBadge(rank)}
-
-                  {/* Circular avatar thumbnail */}
                   <UserAvatar
                     src={item.team.avatar_url || item.team.avatar}
                     alt={`${item.cleanName} avatar`}
@@ -243,7 +242,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                     testId={`leaderboard-avatar-slot-${item.slotNum}`}
                     data-testid={`leaderboard-avatar-slot-${item.slotNum}`}
                   />
-
                   <div className="truncate flex items-center gap-1.5 min-w-0">
                     <span className="text-[10px] text-slate-500 font-mono shrink-0">
                       Slot {item.slotNum}
@@ -269,7 +267,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                   </div>
                 </div>
 
-                {/* Score & Verdict Badges */}
                 <div className="flex items-center gap-2 shrink-0">
                   <span
                     className={`text-[9px] px-1.5 py-0.5 rounded-full border whitespace-nowrap hidden sm:inline ${
@@ -299,8 +296,10 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                 </div>
               </div>
 
-              {/* Visual Relative Progress / Bar Gauge */}
-              <div className="w-full h-1.5 bg-slate-950/80 rounded-full overflow-hidden mt-2 border border-white/5">
+              <div
+                title="75.0 Equilibrium Baseline"
+                className="w-full h-1.5 bg-slate-950/80 rounded-full overflow-hidden mt-2 border border-white/5"
+              >
                 <div
                   className={`h-full rounded-full transition-all duration-500 ${
                     item.isUser
@@ -321,7 +320,6 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
         })}
       </div>
 
-      {/* Collapse / Expand Toggle Button */}
       <div className="text-center pt-1 border-t border-white/5">
         <button
           type="button"

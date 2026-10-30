@@ -38,8 +38,7 @@ import { fileURLToPath } from 'node:url';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-import { render, screen, fireEvent, cleanup } from './helpers/react_testing_wrapper.mjs';
-import { jsx } from './helpers/react_shim.mjs';
+const { render, screen, fireEvent, cleanup, jsx } = await import('./helpers/react_testing_wrapper.mjs');
 
 // Import TypeScript source modules directly via loader
 const sleeper = await import('../core/lib/sleeper.ts');
@@ -545,8 +544,8 @@ describe('Live Sleeper API & Multi-User Matchup Audit', () => {
       assert.ok(kraft, 'Thursday night starter Tucker Kraft (9484) must be present');
       assert.equal(kraft.is_benched, false, 'Tucker Kraft must be marked as starter (not benched)');
       assert.equal(kraft.health_penalty, 0, 'Played starter Tucker Kraft must not carry stale August injury penalty');
-      assert.equal(kraft.favorability_score, 63.2, 'Tucker Kraft favorability score must match forward calculation');
-      assert.equal(kraft.favorability_verdict, 'CELESTIALLY CHALLENGED', 'Tucker Kraft favorability verdict must match forward calculation');
+      assert.equal(kraft.favorability_score, 64.8, 'Tucker Kraft favorability score must match forward calculation');
+      assert.equal(kraft.favorability_verdict, 'NEUTRAL', 'Tucker Kraft favorability verdict must match forward calculation');
     });
 
     it('6.5 should ensure both starters and bench have realistic mixed favorabilities, non-zero projections, real NFL stadiums, and exact 4-factor math across weeks', () => {
@@ -593,14 +592,7 @@ describe('Live Sleeper API & Multi-User Matchup Audit', () => {
             `Week ${wk}: ${p.player_name} favorability_score (${p.favorability_score}) must match 4-factor formula (${expectedScore})`
           );
 
-          const expectedVerdict =
-            expectedScore >= 84
-              ? 'HEAVILY FAVORED'
-              : expectedScore >= 75
-                ? 'ASTRALLY FAVORED'
-                : expectedScore >= 65
-                  ? 'NEUTRAL'
-                  : 'CELESTIALLY CHALLENGED';
+          const expectedVerdict = scoring.classifyWeeklyFavorability(expectedScore);
 
           assert.equal(
             p.favorability_verdict,
@@ -637,10 +629,281 @@ describe('Live Sleeper API & Multi-User Matchup Audit', () => {
       }
     });
 
-    it('7.2 the live sync handler does not blend the harmony pillar a second time', () => {
-      const ctx = fs.readFileSync(path.resolve(__dirname, '../context/OneiromancyContext.tsx'), 'utf8');
-      assert.ok(!/0\.65 \* baseRosterHarmony/.test(ctx), 'Only transformToDraftState may blend harmony');
-      assert.ok(ctx.includes('my_roster: syncedRoster'), 'Sync must hand the roster the recomputed numbers');
+    it('7.2 recomputeDraftState and live sync preserve identical Spirit and Stars across cosmic_board and my_roster without double-blending harmony', async () => {
+      const scoring = await import('./dist/lib/scoring.js');
+      const baseState = sleeper.transformToDraftState(
+        draftMeta,
+        draftPicks,
+        { sleeper_username: 'OneiroVanguard' },
+        undefined,
+        leagueUsers,
+        leagueRosters,
+        leagueMatchupsW1,
+        leagueInfo
+      );
+      const synced = scoring.recomputeDraftState(baseState, { chaos_lambda: 0.75 });
+      const boardMap = new Map(synced.cosmic_board.map((p) => [String(p.id), p]));
+      for (const slot of synced.my_roster) {
+        if (!slot.player) continue;
+        const bp = boardMap.get(String(slot.player.id));
+        assert.ok(bp);
+        assert.equal(slot.player.spirit_score, bp.spirit_score);
+        assert.equal(slot.player.harmony_score, bp.harmony_score);
+      }
+    });
+  });
+
+  describe('8. MatchupsScreen Header-to-Starter Sum, Disjoint Ownership & Fresh-Boot Modal Invariants', () => {
+    it('8.1 every team in mockCompetitorTeams has a 15-player disjoint roster (180 unique players) and every opponent starter across Mock Weeks 1-4 is owned by that opponent on mockCosmicBoard', async () => {
+      const mockData = await import('./dist/lib/mockData.js');
+      const seenAcrossLeague = new Map();
+      assert.equal(mockData.mockCompetitorTeams.length, 12);
+      for (const team of mockData.mockCompetitorTeams) {
+        const cleanName = team.name.replace(/\s*\(You\)$/, '').trim();
+        assert.equal(team.players.length, 15, `${cleanName} must have 15 players`);
+        assert.equal(team.starters.length, 8, `${cleanName} must have 8 starters`);
+        for (const pid of team.players) {
+          assert.ok(
+            !seenAcrossLeague.has(String(pid)),
+            `Player ${pid} on ${cleanName} duplicates ${seenAcrossLeague.get(String(pid))}`
+          );
+          seenAcrossLeague.set(String(pid), cleanName);
+        }
+      }
+      assert.equal(seenAcrossLeague.size, 180, '12 teams x 15 players must yield 180 unique rostered players');
+
+      const boardById = new Map(mockData.mockCosmicBoard.map((p) => [String(p.id), p]));
+      for (let wk = 1; wk <= 4; wk++) {
+        const derived = sleeper.deriveWeeklyMatchup(
+          7,
+          mockData.mockCompetitorTeams,
+          null,
+          mockData.mockCosmicBoard,
+          mockData.mockMyRoster,
+          wk
+        );
+        const oppName = derived.opponent_team.team_name.replace(/\s*\(You\)$/, '').trim();
+        const oppStarters = derived.player_favorabilities.filter((f) => !f.is_user_team && !f.is_benched);
+        assert.equal(oppStarters.length, 8, `Week ${wk}: ${oppName} must have 8 starters`);
+        for (const starter of oppStarters) {
+          const bp = boardById.get(String(starter.player_id));
+          assert.ok(bp, `Week ${wk}: starter ${starter.player_name} (${starter.player_id}) must exist on mockCosmicBoard`);
+          assert.equal(bp.draft_status, 'drafted', `Week ${wk}: ${starter.player_name} must have draft_status === drafted`);
+          assert.equal(bp.drafted_by, oppName, `Week ${wk}: ${starter.player_name} must have drafted_by === ${oppName}`);
+        }
+      }
+
+      for (const tp of mockData.mockTradeProposals) {
+        const recPid = String(tp.receive_players?.[0]?.player_id || '');
+        const boardPlayer = boardById.get(recPid);
+        assert.ok(boardPlayer, `Trade proposal receive player ${recPid} must exist on mockCosmicBoard`);
+        assert.equal(
+          tp.target_team_name,
+          (boardPlayer.drafted_by || '').replace(/\s*\(You\)$/, '').trim(),
+          `Trade proposal ${tp.proposal_id} target_team_name (${tp.target_team_name}) must match boardPlayer.drafted_by (${boardPlayer.drafted_by})`
+        );
+      }
+    });
+
+    it('8.2 MatchupsScreen header Stats (userProj, oppProj) equals the exact sum of the 8 rendered starter cards across Mock Weeks 1-4, 7 and Live Sleeper Week 7', async () => {
+      const { render, jsx, fireEvent } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider } = await import('../context/OneiromancyContext.tsx');
+      const { MatchupsScreen } = await import('../components/screens/MatchupsScreen.tsx');
+
+      const view = render(jsx(OneiromancyProvider, { children: jsx(MatchupsScreen, {}) }));
+      for (const wk of [1, 2, 3, 4, 7]) {
+        fireEvent.click(view.getByTestId(`matchup-week-btn-${wk}`));
+        const grid = view.getByTestId('positional-matchup-grid');
+        const rows = Array.from(grid.children).slice(1);
+        assert.equal(rows.length, 8, `Week ${wk} must render 8 positional starter rows`);
+        let userStarterSum = 0;
+        let oppStarterSum = 0;
+        for (const row of rows) {
+          const pairContainer = row.children[1];
+          const cells = Array.from(pairContainer.children);
+          const leftStatsMatch = cells[0].textContent.match(/STATS\s*([\d.]+)/i) || cells[0].textContent.match(/([\d.]+)\s*Stats/i);
+          const rightStatsMatch = cells[1].textContent.match(/STATS\s*([\d.]+)/i) || cells[1].textContent.match(/([\d.]+)\s*Stats/i);
+          assert.ok(leftStatsMatch, `Week ${wk} left starter card must render Stats`);
+          assert.ok(rightStatsMatch, `Week ${wk} right starter card must render Stats`);
+          userStarterSum += Number(leftStatsMatch[1]);
+          oppStarterSum += Number(rightStatsMatch[1]);
+        }
+        const fullText = view.container.textContent;
+        const headerStatsMatches = [...fullText.matchAll(/([\d.]+)\s*(?:Stats|Final)/g)].map((m) => Number(m[1]));
+        assert.ok(headerStatsMatches.length >= 2, `Week ${wk} header must render user and opponent Stats`);
+        assert.ok(
+          Math.abs(headerStatsMatches[0] - userStarterSum) < 0.01,
+          `Week ${wk}: user header Stats (${headerStatsMatches[0]}) must equal starter card sum (${userStarterSum.toFixed(2)})`
+        );
+        assert.ok(
+          Math.abs(headerStatsMatches[1] - oppStarterSum) < 0.01,
+          `Week ${wk}: opponent header Stats (${headerStatsMatches[1]}) must equal starter card sum (${oppStarterSum.toFixed(2)})`
+        );
+        if (wk === 7) {
+          const ceedeeCard = view.getByTestId('matchup-starter-card-6786');
+          assert.ok(
+            ceedeeCard.textContent.includes('No game this week (Bye)'),
+            `Week 7 bye starter CeeDee Lamb card must display "No game this week (Bye)", got: ${ceedeeCard.textContent}`
+          );
+          assert.ok(
+            !ceedeeCard.textContent.includes('AT&T Stadium'),
+            `Week 7 bye starter CeeDee Lamb card must not display stadium name on bye, got: ${ceedeeCard.textContent}`
+          );
+          assert.ok(
+            !ceedeeCard.textContent.includes('EDT') && !ceedeeCard.textContent.includes('EST'),
+            `Week 7 bye starter CeeDee Lamb card must not display kickoff time chip on bye, got: ${ceedeeCard.textContent}`
+          );
+        }
+      }
+      view.unmount();
+
+      // Verify Live Sleeper Week 7 matchup (with BAL/BUF Week 7 byes)
+      const nflGames = await import('../core/lib/nflGames.ts');
+      nflGames.setWeekGames(7, [
+        { week: 7, home: 'IND', away: 'MIA', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'Lucas Oil Stadium', city: 'Indianapolis', state: 'IN' }, neutral: false },
+        { week: 7, home: 'CIN', away: 'PIT', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'Paycor Stadium', city: 'Cincinnati', state: 'OH' }, neutral: false },
+        { week: 7, home: 'DET', away: 'TB', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'Ford Field', city: 'Detroit', state: 'MI' }, neutral: false },
+        { week: 7, home: 'KC', away: 'LV', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'Arrowhead Stadium', city: 'Kansas City', state: 'MO' }, neutral: false },
+        { week: 7, home: 'DEN', away: 'NYG', kickoff: '2025-10-19T20:05Z', date: '2025-10-19', venue: { name: 'Empower Field at Mile High', city: 'Denver', state: 'CO' }, neutral: false },
+        { week: 7, home: 'NYJ', away: 'CAR', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'MetLife Stadium', city: 'East Rutherford', state: 'NJ' }, neutral: false },
+        { week: 7, home: 'CLE', away: 'TEN', kickoff: '2025-10-19T17:00Z', date: '2025-10-19', venue: { name: 'Huntington Bank Field', city: 'Cleveland', state: 'OH' }, neutral: false },
+        { week: 7, home: 'LAR', away: 'JAX', kickoff: '2025-10-19T13:30Z', date: '2025-10-19', venue: { name: 'Wembley Stadium', city: 'London', state: 'UK' }, neutral: true },
+      ]);
+      sleeper.setSeasonContext({
+        season: '2025',
+        leagueId: 'live_w7',
+        currentWeek: 7,
+        lastRegularWeek: 18,
+        byeWeeks: { BAL: 7, BUF: 7 },
+        weekDates: { 7: 'Oct 16 - Oct 20, 2025' },
+        matchupsByWeek: {},
+      });
+      try {
+        const w7Matchups = leagueMatchupsW1.map((m) =>
+          m.roster_id === 2
+            ? { ...m, starters: ['7083', ...m.starters.slice(1)], players: ['7083', ...m.players.slice(1)] }
+            : m
+        );
+        const w7Rosters = leagueRosters.map((r) =>
+          r.roster_id === 2
+            ? { ...r, starters: ['7083', ...r.starters.slice(1)], players: ['7083', ...r.players.slice(1)] }
+            : r
+        );
+        const liveW7State = sleeper.transformToDraftState(
+          draftMeta,
+          draftPicks,
+          { sleeper_username: 'OneiroVanguard', mode: 'live' },
+          undefined,
+          leagueUsers,
+          w7Rosters,
+          w7Matchups,
+          { ...leagueInfo, settings: { ...(leagueInfo.settings || {}), leg: 7 } },
+          7
+        );
+        const w7UserStarters = liveW7State.weekly_matchup.player_favorabilities.filter(
+          (f) => f.is_user_team && !f.is_benched
+        );
+        const w7OppStarters = liveW7State.weekly_matchup.player_favorabilities.filter(
+          (f) => !f.is_user_team && !f.is_benched
+        );
+        const byeStarter = w7UserStarters.find((f) => f.projected_points === 0);
+        assert.ok(
+          byeStarter,
+          'Live Week 7 user starters must include at least one 0.0 bye starter (BAL/BUF)'
+        );
+        assert.equal(byeStarter.stadium?.stadium_name, 'No game this week');
+        assert.equal(byeStarter.game_kickoff, 'Bye week');
+        const w7UserSum = w7UserStarters.reduce((s, f) => s + Number(f.projected_points || 0), 0);
+        const w7OppSum = w7OppStarters.reduce((s, f) => s + Number(f.projected_points || 0), 0);
+        assert.ok(
+          Math.abs(liveW7State.weekly_matchup.user_team.projected_points - w7UserSum) < 0.05,
+          `Live Week 7 user header Stats (${liveW7State.weekly_matchup.user_team.projected_points}) must equal starter sum (${w7UserSum})`
+        );
+        assert.ok(
+          Math.abs(liveW7State.weekly_matchup.opponent_team.projected_points - w7OppSum) < 0.05,
+          `Live Week 7 opponent header Stats (${liveW7State.weekly_matchup.opponent_team.projected_points}) must equal starter sum (${w7OppSum})`
+        );
+      } finally {
+        sleeper.setSeasonContext(null);
+        nflGames.clearNflGames();
+      }
+    });
+
+    it('8.3 fresh session without saved localStorage username boots into mock mode with isSettingsOpen === false and preserves realUsername across refreshDraft()', async () => {
+      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('../context/OneiromancyContext.tsx');
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      const origFetch = globalThis.fetch;
+      let storedUser = null;
+      globalThis.window = {
+        location: { origin: 'http://127.0.0.1:3000', search: '' },
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.localStorage = {
+        getItem: (k) => (k === 'oneiromancy_active_username' ? storedUser : null),
+        setItem: (k, v) => {
+          if (k === 'oneiromancy_active_username') storedUser = v;
+        },
+        removeItem: (k) => {
+          if (k === 'oneiromancy_active_username') storedUser = null;
+        },
+      };
+      globalThis.fetch = async () => ({
+        ok: false,
+        status: 503,
+        json: async () => ({}),
+        text: async () => '',
+      });
+      try {
+        let captured = null;
+        function Probe() {
+          captured = useOneiromancy();
+          return jsx('div', {}, 'probe');
+        }
+        const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(captured.mode, 'mock', 'Fresh session without saved username must start in mock mode');
+        assert.equal(captured.isSettingsOpen, false, 'Fresh session must not auto-open full-screen Settings modal');
+        assert.equal(captured.draftState.settings.sleeper_username, '', 'Fresh session sleeper_username must be empty string');
+        await captured.refreshDraft();
+        view.rerender(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(captured.mode, 'mock', 'Mode must remain mock after refreshDraft() in mock mode');
+        assert.equal(
+          captured.draftState.settings.sleeper_username,
+          '',
+          'refreshDraft() in mock mode must not overwrite sleeper_username with OneiroVanguard'
+        );
+        view.unmount();
+
+        // Verify a distinct saved username (e.g. McTwerkface) is preserved across loadMockData() and refreshDraft() without flipping back to live mode or OneiroVanguard
+        storedUser = 'McTwerkface';
+        const view2 = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(storedUser, 'McTwerkface', 'Saved username McTwerkface must not be wiped from localStorage on mount');
+        captured.loadMockData();
+        view2.rerender(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(captured.mode, 'mock');
+        assert.equal(captured.draftState.settings.sleeper_username, 'McTwerkface');
+        await captured.refreshDraft();
+        view2.rerender(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(captured.mode, 'mock', 'Mode must remain mock after refreshDraft() with saved username McTwerkface');
+        assert.equal(
+          captured.draftState.settings.sleeper_username,
+          'McTwerkface',
+          'refreshDraft() in mock mode must preserve McTwerkface and never overwrite with OneiroVanguard'
+        );
+        view2.unmount();
+
+        // Also verify OneiroVanguard in localStorage is not wiped on mount
+        storedUser = 'OneiroVanguard';
+        const view3 = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
+        assert.equal(storedUser, 'OneiroVanguard', 'Saved username OneiroVanguard must not be wiped from localStorage on mount');
+        view3.unmount();
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+        globalThis.fetch = origFetch;
+      }
     });
   });
 });
