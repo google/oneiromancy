@@ -9,32 +9,29 @@
     "build": "rm -rf .next out && next build && node scripts/copy_standalone_assets.mjs",
     "start": "node server.js",
     "start:standalone": "node server.js",
-    "lint": "next lint",
+    "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "node tests/e2e_runner.mjs",
     "verify": "node scripts/verify_launch.js"
   },
   "dependencies": {
     "clsx": "^2.1.1",
-    "lucide-react": "0.453.0",
+    "lucide-react": "1.54.0",
     "next": "16.4.0",
-    "react": "18.3.1",
-    "react-dom": "18.3.1",
-    "tailwind-merge": "^2.5.4"
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "tailwind-merge": "^3.7.0"
   },
   "devDependencies": {
-    "@types/node": "^20.17.0",
-    "@types/react": "^18.3.12",
-    "@types/react-dom": "^18.3.1",
-    "autoprefixer": "^10.4.20",
-    "eslint": "^8.57.1",
+    "@tailwindcss/postcss": "4.3.3",
+    "@types/node": "^26.6.4",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "eslint": "^9.39.5",
     "eslint-config-next": "16.4.0",
-    "postcss": "^8.5.23",
-    "tailwindcss": "3.4.14",
-    "typescript": "5.6.3"
-  },
-  "eslintConfig": {
-    "extends": "next/core-web-vitals"
+    "postcss": "^8.5.29",
+    "tailwindcss": "4.3.3",
+    "typescript": "6.0.3"
   },
   "license": "Apache-2.0"
 }

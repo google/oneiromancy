@@ -843,12 +843,49 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(fs.statSync(scriptPath).size > 100);
     });
 
-    it('18.5 should verify package.json dependency matrix adheres to React 18 and Next.js 14', () => {
+    it('18.5 should verify package.json and package-lock.json dependency matrix adheres to React 19 and Next.js 16', () => {
       const pkgPath = path.resolve('package.json');
+      const lockPath = path.resolve('package-lock.json');
       assert.ok(fs.existsSync(pkgPath), 'package.json must exist');
+      assert.ok(fs.existsSync(lockPath), 'package-lock.json must exist');
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
-      assert.ok(pkg.dependencies.next, 'Next.js dependency must exist');
-      assert.ok(pkg.dependencies.react, 'React dependency must exist');
+      const lockRaw = fs.readFileSync(lockPath, 'utf8');
+      const lock = JSON.parse(lockRaw);
+      assert.equal(pkg.dependencies.next, '16.4.0', 'Next.js dependency must be 16.4.0');
+      assert.equal(pkg.dependencies.react, '19.3.0', 'React dependency must be 19.3.0');
+      assert.equal(pkg.dependencies['react-dom'], '19.3.0', 'React DOM dependency must be 19.3.0');
+      assert.deepEqual(
+        lock.packages?.['']?.dependencies,
+        pkg.dependencies,
+        'package-lock.json root dependencies must match package.json'
+      );
+      assert.deepEqual(
+        lock.packages?.['']?.devDependencies,
+        pkg.devDependencies,
+        'package-lock.json root devDependencies must match package.json'
+      );
+      for (const [pkgKey, pkgMeta] of Object.entries(lock.packages || {})) {
+        const allDeps = {
+          ...(pkgMeta.dependencies || {}),
+          ...(pkgMeta.optionalDependencies || {}),
+        };
+        for (const depName of Object.keys(allDeps)) {
+          const nestedKey = pkgKey ? `${pkgKey}/node_modules/${depName}` : `node_modules/${depName}`;
+          const hoistedKey = `node_modules/${depName}`;
+          assert.ok(
+            lock.packages?.[nestedKey] || lock.packages?.[hoistedKey],
+            `package-lock.json entry ${pkgKey || '<root>'} is missing dependency ${depName}`
+          );
+        }
+      }
+      assert.ok(
+        !/pkg\.dev|artifact-foundry/.test(lockRaw),
+        'package-lock.json must not contain internal Artifact Registry URLs'
+      );
+      assert.ok(
+        !/registry\.npmjs\.org\/@[^/]+\/[^/]+\/-\/@/.test(lockRaw),
+        'package-lock.json scoped tarball URLs must use standard registry.npmjs.org format'
+      );
     });
   });
 

@@ -18,7 +18,7 @@
  * Oneiromancy - React Testing Library (RTL) Execution Wrapper
  *
  * Lightweight, hermetic React Component Testing Environment for Node.js 22
- * backed by real React 18 (`react`, `react/jsx-runtime`, `react-dom/server`).
+ * backed by real React 19 (`react`, `react/jsx-runtime`, `react-dom/server`).
  * Evaluates compiled React functional components, unwinds subtrees, resolves
  * JSX structures and OneiromancyContext, and builds an inspectable Virtual DOM tree.
  *
@@ -262,24 +262,34 @@ const interactiveDispatcher = {
   useDebugValue: () => {},
 };
 
-const reactSharedInternals =
-  React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
+function getReactDispatcherHolder() {
+  const clientInternals =
+    React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
+  if (clientInternals && 'H' in clientInternals) {
+    return { holder: clientInternals, key: 'H' };
+  }
+  const secretInternals =
+    React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
+  if (secretInternals && 'current' in secretInternals) {
+    return { holder: secretInternals, key: 'current' };
+  }
+  throw new Error(
+    'Unable to locate React internal hook dispatcher (neither React 19 __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE.H nor React 18 __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher.current found).'
+  );
+}
 
 export function withComponentInstance(instanceId, fn) {
   const prevInstance = currentInstance;
   const prevIndex = currentHookIndex;
-  const prevDispatcher = reactSharedInternals ? reactSharedInternals.current : null;
+  const { holder, key } = getReactDispatcherHolder();
+  const prevDispatcher = holder[key];
   currentInstance = instanceId;
   currentHookIndex = 0;
-  if (reactSharedInternals) {
-    reactSharedInternals.current = interactiveDispatcher;
-  }
+  holder[key] = interactiveDispatcher;
   try {
     return fn();
   } finally {
-    if (reactSharedInternals) {
-      reactSharedInternals.current = prevDispatcher;
-    }
+    holder[key] = prevDispatcher;
     currentInstance = prevInstance;
     currentHookIndex = prevIndex;
   }
@@ -480,8 +490,9 @@ export function evaluateElement(element, contextValue = null, depth = 0, pathKey
   // React.forwardRef
   if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.forward_ref')) {
     const instanceKey = `${type.displayName || type.render?.name || 'ForwardRef'}_${depth}_${element.key || props?.key || pathKey}`;
+    const ref = mergedProps?.ref ?? null;
     const componentOutput = withComponentInstance(instanceKey, () =>
-      type.render(mergedProps, element.ref || null)
+      type.render(mergedProps, ref)
     );
     return evaluateElement(componentOutput, contextValue, depth + 1, `${pathKey}.fwd`);
   }
@@ -491,9 +502,14 @@ export function evaluateElement(element, contextValue = null, depth = 0, pathKey
     return evaluateElement({ ...element, type: type.type }, contextValue, depth, `${pathKey}.memo`);
   }
 
-  // Context Provider
-  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.provider')) {
-    const ctx = type._context;
+  // Context Provider (React 18 react.provider or React 19 react.context with non-function children)
+  if (
+    type &&
+    typeof type === 'object' &&
+    (type.$$typeof === Symbol.for('react.provider') ||
+      (type.$$typeof === Symbol.for('react.context') && typeof rawChildren !== 'function'))
+  ) {
+    const ctx = type._context || type;
     const prevValue = ctx._currentValue;
     ctx._currentValue = mergedProps.value !== undefined ? mergedProps.value : prevValue;
     try {
@@ -503,11 +519,12 @@ export function evaluateElement(element, contextValue = null, depth = 0, pathKey
     }
   }
 
-  // Context Consumer
+  // Context Consumer (React 18/19 react.consumer or react.context with function children)
   if (
     type &&
     typeof type === 'object' &&
-    (type.$$typeof === Symbol.for('react.context') || type.$$typeof === Symbol.for('react.consumer'))
+    (type.$$typeof === Symbol.for('react.consumer') ||
+      (type.$$typeof === Symbol.for('react.context') && typeof rawChildren === 'function'))
   ) {
     const ctx = type._context || type;
     const renderFn = typeof rawChildren === 'function' ? rawChildren : null;

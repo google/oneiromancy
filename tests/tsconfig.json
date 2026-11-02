@@ -3,6 +3,7 @@
     "noEmit": false,
     "outDir": "./dist",
     "target": "es2022",
+    "module": "esnext",
     "moduleResolution": "bundler",
     "skipLibCheck": true,
     "rootDir": "..",
