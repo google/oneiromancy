@@ -43,6 +43,7 @@ import { fileURLToPath } from 'node:url';
 // Import compiled dist modules
 const sleeper = await import('./dist/lib/sleeper.js');
 const mockData = await import('./dist/lib/mockData.js');
+const oracle = await import('./dist/lib/oracle.js');
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -929,6 +930,671 @@ describe('Tier 5: Real-World Sleeper API Mocks & Ingestion', () => {
         state.weekly_matchup,
         undefined,
         'weekly_matchup must be undefined in live mode with empty competitor teams, not mockWeeklyMatchup'
+      );
+    });
+
+    test('5.38 should verify live synthesized players without synthetic fields receive average projections and placeholder when on bye or NA', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_88888',
+        status: 'drafting',
+        season: '2024',
+      };
+      // Realistic Sleeper player dict without baseline_projected_points or average_projected_points
+      const realSleeperDict = {
+        '10001': {
+          player_id: '10001',
+          full_name: 'Josh Prototype',
+          first_name: 'Josh',
+          last_name: 'Prototype',
+          position: 'QB',
+          team: 'BUF',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          search_rank: 5,
+        },
+        '10002': {
+          player_id: '10002',
+          full_name: 'Breece Standard',
+          first_name: 'Breece',
+          last_name: 'Standard',
+          position: 'RB',
+          team: 'NYJ',
+          active: true,
+          status: 'Active',
+          bye_week: 12,
+          search_rank: 12,
+        },
+        '10003': {
+          player_id: '10003',
+          full_name: 'Inactive Veteran',
+          first_name: 'Inactive',
+          last_name: 'Veteran',
+          position: 'WR',
+          team: 'KC',
+          active: false,
+          status: 'NA',
+          bye_week: 6,
+          search_rank: 45,
+        },
+      };
+
+      const picks = [
+        {
+          player_id: '10001',
+          picked_by: 'owner_1',
+          pick_no: 1,
+          draft_slot: 1,
+          metadata: {
+            first_name: 'Josh',
+            last_name: 'Prototype',
+            position: 'QB',
+            team: 'BUF',
+            number: '17',
+          },
+        },
+        {
+          player_id: '10002',
+          picked_by: 'owner_2',
+          pick_no: 2,
+          draft_slot: 2,
+          metadata: {
+            first_name: 'Breece',
+            last_name: 'Standard',
+            position: 'RB',
+            team: 'NYJ',
+            number: '20',
+          },
+        },
+        {
+          player_id: '10003',
+          picked_by: 'owner_1',
+          pick_no: 3,
+          draft_slot: 1,
+          metadata: {
+            first_name: 'Inactive',
+            last_name: 'Veteran',
+            position: 'WR',
+            team: 'KC',
+            number: '88',
+          },
+        },
+      ];
+
+      // Week 7 projections: Week 7 is bye for BUF (10001), so no entry in weeklyProjections
+      const weeklyProjections = {
+        '10002': { pts_ppr: 16.5 },
+      };
+
+      // Grounded next-week projections for Week 8
+      const nextWeekProjections = {
+        8: { '10001': { pts_ppr: 21.3 } },
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        picks,
+        { mode: 'live', draft_id: 'live_draft_88888', user_id: 'owner_1', user_slot: 1 },
+        realSleeperDict,
+        [],
+        [],
+        null,
+        null,
+        7, // activeWeek = 7
+        weeklyProjections,
+        nextWeekProjections,
+      );
+
+      assert.equal(state.isLive, true);
+      const byeQb = state.cosmic_board.find((p) => p.id === '10001');
+      assert.ok(byeQb, 'Bye QB must exist in cosmic board');
+      assert.equal(byeQb.projected_points, 0, 'Current week projected points must be 0 for bye player');
+      assert.equal(
+        byeQb.average_projected_points,
+        21.3,
+        'Live bye player must adopt grounded next-week projected points as average_projected_points',
+      );
+      assert.equal(
+        oracle.hasOraclePlaceholder(byeQb, 7),
+        true,
+        'hasOraclePlaceholder must be true for live bye player',
+      );
+      assert.equal(
+        oracle.oracleEffectivePoints(byeQb, 7),
+        21.3,
+        'oracleEffectivePoints must return grounded 21.3 pts from next-week projection placeholder',
+      );
+      const withPlaceholder = oracle.oracleScore(byeQb, 0.75, { currentWeek: 7 });
+      const withoutPlaceholder = oracle.currentWeekOracleScore(byeQb, 0.75, 7);
+      assert.ok(
+        withPlaceholder > withoutPlaceholder,
+        'oracleScore with placeholder must exceed raw currentWeekOracleScore for bye player',
+      );
+
+      // Verify NA inactive status player with no verified projections
+      const inactiveWr = state.cosmic_board.find((p) => p.id === '10003');
+      assert.ok(inactiveWr, 'Inactive WR must exist in cosmic board');
+      assert.equal(
+        inactiveWr.average_projected_points,
+        undefined,
+        'Inactive WR with no verified projections must not have fabricated average_projected_points',
+      );
+      assert.equal(
+        oracle.hasOraclePlaceholder(inactiveWr, 7),
+        false,
+        'hasOraclePlaceholder must be false when player has 0 verified average projections',
+      );
+      assert.equal(
+        oracle.oracleEffectivePoints(inactiveWr, 7),
+        0,
+        'oracleEffectivePoints must return 0 for unprojected inactive WR',
+      );
+    });
+
+    test('5.39 should preserve real explicit average or season projections on live synthesized players without baseline, even on bye with next-week projections', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_99999',
+        status: 'drafting',
+        season: '2024',
+      };
+      const realSleeperDict = {
+        '20001': {
+          player_id: '20001',
+          full_name: 'Explicit Avg QB',
+          first_name: 'Explicit',
+          last_name: 'Avg QB',
+          position: 'QB',
+          team: 'BUF',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          average_projected_points: 22.4,
+          search_rank: 2,
+        },
+        '20002': {
+          player_id: '20002',
+          full_name: 'Season Proj RB',
+          first_name: 'Season',
+          last_name: 'Proj RB',
+          position: 'RB',
+          team: 'NYJ',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          season_projected_points: 255, // 255 / 17 = 15.0
+          search_rank: 4,
+        },
+        '20003': {
+          player_id: '20003',
+          full_name: 'Unprojected Deep FA',
+          first_name: 'Deep',
+          last_name: 'FA',
+          position: 'WR',
+          team: 'MIA',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          search_rank: 450,
+        },
+        '20004': {
+          player_id: '20004',
+          full_name: 'Unsigned Free Agent',
+          first_name: 'Unsigned',
+          last_name: 'FA',
+          position: 'WR',
+          team: 'FA',
+          active: false,
+          status: 'Inactive',
+          injury_status: 'IR',
+          search_rank: 999,
+        },
+      };
+
+      const picks = [
+        {
+          player_id: '20001',
+          picked_by: 'owner_1',
+          pick_no: 1,
+          draft_slot: 1,
+          metadata: {
+            first_name: 'Explicit',
+            last_name: 'Avg QB',
+            position: 'QB',
+            team: 'BUF',
+          },
+        },
+        {
+          player_id: '20002',
+          picked_by: 'owner_2',
+          pick_no: 2,
+          draft_slot: 2,
+          metadata: {
+            first_name: 'Season',
+            last_name: 'Proj RB',
+            position: 'RB',
+            team: 'NYJ',
+          },
+        },
+      ];
+
+      // Next-week projections for Week 8: 18.0 pts
+      const nextWeekProjections = {
+        8: {
+          '20001': { pts_ppr: 18.0 },
+          '20002': { pts_ppr: 10.0 },
+        },
+      };
+
+      // Week 7 live projections: Active players have projections; 20001 & 20002 on bye have 0
+      const weeklyProjections = {
+        '10002': { pts_ppr: 16.5 },
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        picks,
+        { mode: 'live', draft_id: 'live_draft_99999', user_id: 'owner_1', user_slot: 1 },
+        realSleeperDict,
+        [],
+        [],
+        null,
+        null,
+        7, // activeWeek = 7 (both 20001 and 20002 on bye)
+        weeklyProjections,
+        nextWeekProjections,
+      );
+
+      // 20001: Explicit average 22.4 must be preserved and NOT overwritten by next-week projection 18.0
+      const qb = state.cosmic_board.find((p) => p.id === '20001');
+      assert.ok(qb, 'QB with explicit average must exist');
+      assert.equal(qb.average_projected_points, 22.4, 'Must preserve real explicit average (22.4)');
+      assert.equal(oracle.oracleEffectivePoints(qb, 7), 22.4, 'Oracle effective points must use explicit average');
+
+      // 20002: Season projection / 17 (15.0) must be preserved
+      const rb = state.cosmic_board.find((p) => p.id === '20002');
+      assert.ok(rb, 'RB with season projection must exist');
+      assert.equal(rb.season_projected_points, 255, 'Must preserve real season_projected_points (255)');
+      assert.equal(rb.average_projected_points, 15.0, 'Must derive average from season_projected_points / 17 (15.0)');
+      assert.equal(oracle.oracleEffectivePoints(rb, 7), 15.0, 'Oracle effective points must derive from season / 17');
+
+      // 20003: Signed deep FA without projections must exist on board but receive NO fabricated average or placeholder
+      const deepFa = state.cosmic_board.find((p) => p.id === '20003');
+      assert.ok(deepFa, 'Active unprojected deep FA must exist on cosmic board');
+      assert.equal(deepFa.average_projected_points, undefined, 'Deep FA without projections must not fabricate average');
+      assert.equal(deepFa.next_week_projected_points, undefined, 'Deep FA without next-week projections must have undefined next_week_projected_points');
+      assert.equal(oracle.hasOraclePlaceholder(deepFa, 7), false, 'Deep FA without average must not have placeholder');
+      assert.equal(oracle.oracleEffectivePoints(deepFa, 7), 0, 'oracleEffectivePoints must return 0 for unprojected deep FA');
+
+      // 20004: Unsigned/inactive free agent must be excluded from board entirely
+      assert.equal(state.cosmic_board.find((p) => p.id === '20004'), undefined, 'Unsigned inactive free agent is excluded from board');
+    });
+
+    test('5.40 authentic live Sleeper injured players (Out, IR, PUP, Doubtful) receive grounded baseline projection fallback so hasOraclePlaceholder activates accurately in live mode', () => {
+      const liveMeta = {
+        draft_id: 'live_draft_injury_test',
+        season: '2025',
+        settings: {
+          teams: 12,
+          rounds: 15,
+          chaos_lambda: 0.75,
+        },
+      };
+
+      const realSleeperDict = {
+        '30001': {
+          player_id: '30001',
+          full_name: 'Injured Star RB',
+          first_name: 'Star',
+          last_name: 'RB',
+          position: 'RB',
+          team: 'SF',
+          active: true,
+          status: 'Active',
+          injury_status: 'IR',
+          search_rank: 5,
+        },
+        '30002': {
+          player_id: '30002',
+          full_name: 'Out Starting QB',
+          first_name: 'Out',
+          last_name: 'QB',
+          position: 'QB',
+          team: 'KC',
+          active: true,
+          status: 'Active',
+          injury_status: 'Out',
+          search_rank: 12,
+        },
+        '30003': {
+          player_id: '30003',
+          full_name: 'Healthy Deep FA',
+          first_name: 'Healthy',
+          last_name: 'FA',
+          position: 'WR',
+          team: 'MIA',
+          active: true,
+          status: 'Active',
+          search_rank: 450,
+        },
+        '30004': {
+          player_id: '30004',
+          full_name: 'PUP Tight End',
+          first_name: 'PUP',
+          last_name: 'TE',
+          position: 'TE',
+          team: 'DET',
+          active: true,
+          status: 'Active',
+          injury_status: 'PUP',
+          search_rank: 80,
+        },
+        '30005': {
+          player_id: '30005',
+          full_name: 'Doubtful Wideout',
+          first_name: 'Doubtful',
+          last_name: 'WR',
+          position: 'WR',
+          team: 'MIN',
+          active: true,
+          status: 'Active',
+          injury_status: 'Doubtful',
+          search_rank: 60,
+        },
+        '30006': {
+          player_id: '30006',
+          full_name: 'Suspended Wideout',
+          first_name: 'Suspended',
+          last_name: 'WR',
+          position: 'WR',
+          team: 'DAL',
+          active: true,
+          status: 'Active',
+          injury_status: 'Sus',
+          search_rank: 70,
+        },
+        '30007': {
+          player_id: '30007',
+          full_name: 'Inactive Practice Squad WR',
+          first_name: 'Inactive',
+          last_name: 'WR',
+          position: 'WR',
+          team: 'FA',
+          active: false,
+          status: 'NA',
+          injury_status: 'NA',
+          search_rank: 999,
+        },
+        '30008': {
+          player_id: '30008',
+          full_name: 'Practice Squad Injured QB',
+          first_name: 'Practice',
+          last_name: 'QB',
+          position: 'QB',
+          team: 'KC',
+          active: true,
+          status: 'Practice Squad',
+          injury_status: 'IR',
+          search_rank: 550,
+          depth_chart_order: 4,
+        },
+        '30009': {
+          player_id: '30009',
+          full_name: 'Deep Injured MyTeam RB',
+          first_name: 'Deep',
+          last_name: 'RB',
+          position: 'RB',
+          team: 'SF',
+          active: true,
+          status: 'Active',
+          injury_status: 'IR',
+          search_rank: 350,
+        },
+        '30010': {
+          player_id: '30010',
+          full_name: 'Deep Injured FreeAgent RB',
+          first_name: 'FA',
+          last_name: 'RB',
+          position: 'RB',
+          team: 'SF',
+          active: true,
+          status: 'Active',
+          injury_status: 'IR',
+          search_rank: 350,
+        },
+      };
+
+      // Test direct synthesizeCosmicPlayerFromId
+      const synthIr = sleeper.synthesizeCosmicPlayerFromId('30001', realSleeperDict['30001']);
+      assert.equal(synthIr.average_projected_points, 10.0, 'Direct synthesize must assign grounded baseline for IR RB');
+      assert.equal(oracle.hasOraclePlaceholder(synthIr, 7), true, 'Direct synthesize IR RB must qualify for placeholder');
+
+      const synthOut = sleeper.synthesizeCosmicPlayerFromId('30002', realSleeperDict['30002']);
+      assert.equal(synthOut.average_projected_points, 15.3, 'Direct synthesize must assign grounded baseline for Out QB');
+
+      const synthPup = sleeper.synthesizeCosmicPlayerFromId('30004', realSleeperDict['30004']);
+      assert.equal(synthPup.average_projected_points, 7.1, 'Direct synthesize must assign grounded baseline for PUP TE');
+
+      const synthDoubtful = sleeper.synthesizeCosmicPlayerFromId('30005', realSleeperDict['30005']);
+      assert.equal(synthDoubtful.average_projected_points, 10.6, 'Direct synthesize must assign grounded baseline for Doubtful WR');
+
+      const synthSus = sleeper.synthesizeCosmicPlayerFromId('30006', realSleeperDict['30006']);
+      assert.equal(synthSus.average_projected_points, 10.6, 'Direct synthesize must assign grounded baseline for Sus WR');
+
+      const synthNa = sleeper.synthesizeCosmicPlayerFromId('30007', realSleeperDict['30007']);
+      assert.equal(synthNa.average_projected_points, undefined, 'Direct synthesize must keep NA practice squad player undefined');
+      assert.equal(oracle.hasOraclePlaceholder(synthNa, 7), false, 'Direct synthesize NA player must not have placeholder');
+
+      const synthPsQb = sleeper.synthesizeCosmicPlayerFromId('30008', realSleeperDict['30008']);
+      assert.equal(synthPsQb.average_projected_points, 5.0, 'Practice squad QB must receive calibrated baseline (5.0) rather than 15.3');
+
+      // Test direct enrichCosmicBoardWithNFLPlayers
+      const initialBoard = [
+        { id: '30001', name: 'Star RB', position: 'RB', team: 'SF' },
+        { id: '30002', name: 'Out QB', position: 'QB', team: 'KC' },
+        { id: '30004', name: 'PUP TE', position: 'TE', team: 'DET' },
+        { id: '30005', name: 'Doubtful WR', position: 'WR', team: 'MIN' },
+        { id: '30006', name: 'Sus WR', position: 'WR', team: 'DAL' },
+        { id: '30007', name: 'NA WR', position: 'WR', team: 'FA' },
+        { id: '30008', name: 'Practice QB', position: 'QB', team: 'KC' },
+        { id: '30009', name: 'Deep MyTeam RB', position: 'RB', team: 'SF', draft_status: 'my_team' },
+        { id: '30010', name: 'Deep FreeAgent RB', position: 'RB', team: 'SF', draft_status: 'available' },
+      ];
+      const enriched = sleeper.enrichCosmicBoardWithNFLPlayers(initialBoard, realSleeperDict);
+      const enrichedIr = enriched.find((p) => p.id === '30001');
+      assert.equal(enrichedIr.baseline_projected_points, 10.0, 'Enriched IR RB must get 10.0 baseline');
+      const enrichedNa = enriched.find((p) => p.id === '30007');
+      assert.equal(enrichedNa.average_projected_points, undefined, 'Enriched NA WR must not fabricate baseline');
+      const enrichedPsQb = enriched.find((p) => p.id === '30008');
+      assert.equal(enrichedPsQb.baseline_projected_points, 5.0, 'Enriched practice squad QB must receive calibrated baseline (5.0)');
+      const enrichedMyTeam = enriched.find((p) => p.id === '30009');
+      assert.equal(enrichedMyTeam.baseline_projected_points, 10.0, 'Enriched my_team injured RB with search_rank > 250 must receive full 10.0 baseline');
+      const enrichedFA = enriched.find((p) => p.id === '30010');
+      assert.equal(enrichedFA.baseline_projected_points, 4.0, 'Enriched available deep-reserve injured RB with search_rank > 250 must be capped at 4.0');
+
+      const picks = [
+        {
+          player_id: '30001',
+          picked_by: 'owner_1',
+          pick_no: 1,
+          draft_slot: 1,
+          metadata: {
+            first_name: 'Star',
+            last_name: 'RB',
+            position: 'RB',
+            team: 'SF',
+          },
+        },
+        {
+          player_id: '30002',
+          picked_by: 'owner_2',
+          pick_no: 2,
+          draft_slot: 2,
+          metadata: {
+            first_name: 'Out',
+            last_name: 'QB',
+            position: 'QB',
+            team: 'KC',
+          },
+        },
+        {
+          player_id: '30004',
+          picked_by: 'owner_1',
+          pick_no: 3,
+          draft_slot: 1,
+          metadata: {
+            first_name: 'PUP',
+            last_name: 'TE',
+            position: 'TE',
+            team: 'DET',
+          },
+        },
+        {
+          player_id: '30005',
+          picked_by: 'owner_2',
+          pick_no: 4,
+          draft_slot: 2,
+          metadata: {
+            first_name: 'Doubtful',
+            last_name: 'WR',
+            position: 'WR',
+            team: 'MIN',
+          },
+        },
+      ];
+
+      const weeklyProjections = {
+        '30001': { pts_ppr: 0 },
+        '30002': { pts_ppr: 0 },
+        '30004': { pts_ppr: 0 },
+        '30005': { pts_ppr: 0 },
+      };
+
+      const state = sleeper.transformToDraftState(
+        liveMeta,
+        picks,
+        { mode: 'live', draft_id: 'live_draft_injury_test', user_id: 'owner_1', user_slot: 1 },
+        realSleeperDict,
+        [],
+        [],
+        null,
+        null,
+        7,
+        weeklyProjections,
+      );
+
+      const irRb = state.cosmic_board.find((p) => p.id === '30001');
+      assert.ok(irRb, 'IR player must exist on cosmic board');
+      assert.ok(irRb.average_projected_points && irRb.average_projected_points > 0, 'IR player must receive grounded baseline projection fallback');
+      assert.equal(irRb.average_projected_points, 10.0, 'RB grounded baseline must be 10.0 pts');
+      assert.equal(oracle.hasOraclePlaceholder(irRb, 7), true, 'hasOraclePlaceholder must be true for IR player in live mode');
+      assert.equal(oracle.oracleEffectivePoints(irRb, 7), 10.0, 'oracleEffectivePoints must return grounded baseline for IR player');
+
+      const outQb = state.cosmic_board.find((p) => p.id === '30002');
+      assert.ok(outQb, 'Out player must exist on cosmic board');
+      assert.ok(outQb.average_projected_points && outQb.average_projected_points > 0, 'Out player must receive grounded baseline projection fallback');
+      assert.equal(outQb.average_projected_points, 15.3, 'QB grounded baseline must be 15.3 pts');
+      assert.equal(oracle.hasOraclePlaceholder(outQb, 7), true, 'hasOraclePlaceholder must be true for Out player in live mode');
+      assert.equal(oracle.oracleEffectivePoints(outQb, 7), 15.3, 'oracleEffectivePoints must return grounded baseline for Out player');
+
+      const pupTe = state.cosmic_board.find((p) => p.id === '30004');
+      assert.ok(pupTe, 'PUP player must exist on cosmic board');
+      assert.equal(pupTe.average_projected_points, 7.1, 'TE grounded baseline must be 7.1 pts');
+      assert.equal(oracle.hasOraclePlaceholder(pupTe, 7), true, 'hasOraclePlaceholder must be true for PUP player in live mode');
+
+      const doubtfulWr = state.cosmic_board.find((p) => p.id === '30005');
+      assert.ok(doubtfulWr, 'Doubtful player must exist on cosmic board');
+      assert.equal(doubtfulWr.average_projected_points, 10.6, 'WR grounded baseline must be 10.6 pts');
+      assert.equal(oracle.hasOraclePlaceholder(doubtfulWr, 7), true, 'hasOraclePlaceholder must be true for Doubtful player in live mode');
+
+      const deepFa = state.cosmic_board.find((p) => p.id === '30003');
+      assert.ok(deepFa, 'Deep FA must exist on cosmic board');
+      assert.equal(deepFa.average_projected_points, undefined, 'Healthy unprojected deep FA must not receive baseline');
+      assert.equal(oracle.hasOraclePlaceholder(deepFa, 7), false, 'Healthy unprojected deep FA must not have placeholder');
+    });
+
+    test('5.41 should directly verify getGroundedPositionBaseline calculations across positions, depths, search ranks, and my_team exemption', () => {
+      // 1. Standard position baselines
+      assert.equal(sleeper.getGroundedPositionBaseline('QB'), 15.3, 'Standard QB baseline must be 15.3 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('RB'), 10.0, 'Standard RB baseline must be 10.0 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('WR'), 10.6, 'Standard WR baseline must be 10.6 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('TE'), 7.1, 'Standard TE baseline must be 7.1 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('K'), 6.5, 'Standard K baseline must be 6.5 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('DEF'), 5.9, 'Standard DEF baseline must be 5.9 pts');
+      assert.equal(sleeper.getGroundedPositionBaseline('FLEX'), 8.0, 'Fallback baseline for unknown posKey must be 8.0 pts');
+
+      // 2. searchRank > 250 with isMyTeam: false vs true
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { searchRank: 300, isMyTeam: false }),
+        5.0,
+        'Deep free-agent QB (searchRank > 250) must be capped at 5.0 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { searchRank: 300, isMyTeam: true }),
+        15.3,
+        'My team QB with searchRank > 250 must remain uncapped (15.3 pts)',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('RB', { searchRank: 300, isMyTeam: false }),
+        4.0,
+        'Deep free-agent RB (searchRank > 250) must be capped at 4.0 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('RB', { searchRank: 300, isMyTeam: true }),
+        10.0,
+        'My team RB with searchRank > 250 must remain uncapped (10.0 pts)',
+      );
+
+      // 3. Null / undefined searchRank
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('RB', { searchRank: null }),
+        10.0,
+        'Null searchRank must resolve to standard baseline',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { searchRank: undefined }),
+        15.3,
+        'Undefined searchRank must resolve to standard baseline',
+      );
+
+      // 4. depthChartOrder thresholds (QB > 2, non-QB > 3)
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { depthChartOrder: 3 }),
+        5.0,
+        'QB at depth 3 must be capped at 5.0 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { depthChartOrder: 2 }),
+        15.3,
+        'QB at depth 2 (backup) must receive full baseline 15.3 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('RB', { depthChartOrder: 4 }),
+        4.0,
+        'RB at depth 4 must be capped at 4.0 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('RB', { depthChartOrder: 3 }),
+        10.0,
+        'RB at depth 3 must receive full baseline 10.0 pts',
+      );
+
+      // 5. Practice Squad status
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('QB', { status: 'Practice Squad' }),
+        5.0,
+        'Practice Squad QB must be capped at 5.0 pts',
+      );
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('WR', { status: 'Practice Squad' }),
+        4.0,
+        'Practice Squad WR must be capped at 4.0 pts',
+      );
+
+      // 6. Explicit isDeepReserve flag
+      assert.equal(
+        sleeper.getGroundedPositionBaseline('WR', { isDeepReserve: true }),
+        4.0,
+        'Explicit isDeepReserve flag must cap baseline at 4.0 pts',
       );
     });
   });

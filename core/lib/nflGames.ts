@@ -56,6 +56,12 @@ export function clearNflGames(): void {
   gamesByWeek.clear();
 }
 
+/** Whether schedule games for a given NFL regular-season week have been loaded. */
+export function hasNflWeekSchedule(week: number): boolean {
+  const weekGames = gamesByWeek.get(week);
+  return Boolean(weekGames && weekGames.size > 0);
+}
+
 /** The team's game that week; undefined on a bye or when unknown. */
 export function teamGame(week: number, team?: string | null): NflGame | undefined {
   if (!team) return undefined;

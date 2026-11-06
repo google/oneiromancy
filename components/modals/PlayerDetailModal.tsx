@@ -17,7 +17,7 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import { CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
@@ -31,8 +31,236 @@ import {
   normalizeOracleWeights,
 } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
-import { TONE_PILL, favorabilityTone, oracleScore, starsScore } from '@/lib/oracle';
+import {
+  TONE_PILL,
+  favorabilityTone,
+  oraclePlaceholderInfo,
+  oracleScore,
+  resolveActiveWeek,
+  starsScore,
+  statsPoints,
+} from '@/lib/oracle';
 import { X, Sparkles, Compass, Shield, ArrowRightLeft } from 'lucide-react';
+
+type ModalHistoryEntry = {
+  isOpen: boolean;
+  playerId: string | null;
+  entryId: string | null;
+  pushed: boolean;
+  awaitingRePush: boolean;
+  reusedPendingEntry: boolean;
+  adoptedWithoutPush: boolean;
+  onClose: () => void;
+};
+
+type ModalHistoryStore = {
+  sessionId: string;
+  nextModalEntrySeq: number;
+  pendingBacks: number;
+  lastPendingBackFromState: unknown;
+  lastPendingBackEntryId: string | null;
+  attachedPopStateWindow: Window | null;
+  attachedPopStateHandler?: ((event: PopStateEvent) => void) | null;
+  registeredModalEntries: Set<ModalHistoryEntry>;
+};
+
+declare global {
+  interface Window {
+    __oneiromancyModalHistory__?: ModalHistoryStore;
+  }
+}
+
+let ssrModalStore: ModalHistoryStore | null = null;
+
+function getModalHistoryStore(): ModalHistoryStore {
+  if (typeof window !== 'undefined') {
+    if (!window.__oneiromancyModalHistory__) {
+      window.__oneiromancyModalHistory__ = {
+        sessionId: `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`,
+        nextModalEntrySeq: 0,
+        pendingBacks: 0,
+        lastPendingBackFromState: null,
+        lastPendingBackEntryId: null,
+        attachedPopStateWindow: null,
+        attachedPopStateHandler: null,
+        registeredModalEntries: new Set<ModalHistoryEntry>(),
+      };
+    }
+    return window.__oneiromancyModalHistory__;
+  }
+  if (!ssrModalStore) {
+    ssrModalStore = {
+      sessionId: 'ssr-session',
+      nextModalEntrySeq: 0,
+      pendingBacks: 0,
+      lastPendingBackFromState: null,
+      lastPendingBackEntryId: null,
+      attachedPopStateWindow: null,
+      attachedPopStateHandler: null,
+      registeredModalEntries: new Set<ModalHistoryEntry>(),
+    };
+  }
+  return ssrModalStore;
+}
+
+function createModalHistoryEntryId(): string {
+  const store = getModalHistoryStore();
+  store.nextModalEntrySeq += 1;
+  return `${store.sessionId}:${store.nextModalEntrySeq}`;
+}
+
+function safeCurrentHistoryState(): Record<string, unknown> {
+  if (
+    typeof window !== 'undefined' &&
+    window.history?.state &&
+    typeof window.history.state === 'object'
+  ) {
+    return window.history.state as Record<string, unknown>;
+  }
+  return {};
+}
+
+function syncClearedStalePendingBacks(): void {
+  const store = getModalHistoryStore();
+  if (store.pendingBacks <= 0 || typeof window === 'undefined' || !window.history) return;
+  const currentState = window.history.state ?? null;
+  const currentEntryId =
+    typeof (currentState as any)?.oneiromancyEntryId === 'string'
+      ? (currentState as any).oneiromancyEntryId
+      : null;
+  if (
+    store.lastPendingBackFromState !== null &&
+    currentState !== store.lastPendingBackFromState &&
+    currentEntryId !== store.lastPendingBackEntryId
+  ) {
+    store.pendingBacks = 0;
+    store.lastPendingBackFromState = null;
+    store.lastPendingBackEntryId = null;
+  }
+}
+
+function triggerModalHistoryBack(expectedEntryId: string | null = null): void {
+  if (typeof window === 'undefined' || !window.history) return;
+  const store = getModalHistoryStore();
+  const currentState = window.history.state ?? null;
+  const currentEntryId =
+    typeof (currentState as any)?.oneiromancyEntryId === 'string'
+      ? (currentState as any).oneiromancyEntryId
+      : null;
+  if (
+    expectedEntryId &&
+    currentEntryId !== expectedEntryId
+  ) {
+    return;
+  }
+  store.lastPendingBackFromState = currentState;
+  store.lastPendingBackEntryId = currentEntryId;
+  store.pendingBacks += 1;
+  window.history.back?.();
+}
+
+function handleGlobalModalPopState(event: PopStateEvent): void {
+  const store = getModalHistoryStore();
+  if (store.pendingBacks > 0) {
+    store.pendingBacks -= 1;
+    if (store.pendingBacks === 0) {
+      store.lastPendingBackFromState = null;
+      store.lastPendingBackEntryId = null;
+    }
+    for (const entry of store.registeredModalEntries) {
+      if (entry.awaitingRePush) {
+        entry.awaitingRePush = false;
+        entry.reusedPendingEntry = false;
+        if (
+          entry.isOpen &&
+          entry.playerId &&
+          canUseBrowserHistory() &&
+          window.history.state?.oneiromancyEntryId !== entry.entryId
+        ) {
+          const entryId = createModalHistoryEntryId();
+          entry.entryId = entryId;
+          entry.pushed = true;
+          window.history.pushState(
+            {
+              ...safeCurrentHistoryState(),
+              oneiromancyModal: 'playerDetail',
+              oneiromancyEntryId: entryId,
+              playerId: entry.playerId,
+            },
+            '',
+          );
+        }
+        return;
+      }
+    }
+    return;
+  }
+
+  const poppedEntryId = event?.state?.oneiromancyEntryId;
+  for (const entry of store.registeredModalEntries) {
+    if (entry.pushed && poppedEntryId !== entry.entryId) {
+      entry.pushed = false;
+      entry.awaitingRePush = false;
+      entry.reusedPendingEntry = false;
+      entry.adoptedWithoutPush = false;
+      entry.entryId = null;
+      entry.onClose();
+    }
+  }
+}
+
+function ensureGlobalPopStateListener(): void {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return;
+  const store = getModalHistoryStore();
+  if (
+    store.attachedPopStateWindow !== window ||
+    store.attachedPopStateHandler !== handleGlobalModalPopState
+  ) {
+    if (
+      store.attachedPopStateWindow &&
+      store.attachedPopStateHandler &&
+      typeof store.attachedPopStateWindow.removeEventListener === 'function'
+    ) {
+      store.attachedPopStateWindow.removeEventListener('popstate', store.attachedPopStateHandler);
+    }
+    window.addEventListener('popstate', handleGlobalModalPopState);
+    store.attachedPopStateWindow = window;
+    store.attachedPopStateHandler = handleGlobalModalPopState;
+  }
+}
+
+export function resetPlayerDetailModalHistoryForTest(): void {
+  const store = getModalHistoryStore();
+  store.pendingBacks = 0;
+  store.lastPendingBackFromState = null;
+  store.lastPendingBackEntryId = null;
+  for (const entry of store.registeredModalEntries) {
+    entry.pushed = false;
+    entry.awaitingRePush = false;
+    entry.reusedPendingEntry = false;
+    entry.adoptedWithoutPush = false;
+    entry.entryId = null;
+  }
+  if (
+    store.attachedPopStateWindow &&
+    typeof store.attachedPopStateWindow.removeEventListener === 'function'
+  ) {
+    const handler = store.attachedPopStateHandler ?? handleGlobalModalPopState;
+    store.attachedPopStateWindow.removeEventListener('popstate', handler);
+    store.attachedPopStateWindow = null;
+    store.attachedPopStateHandler = null;
+  }
+  if (store.registeredModalEntries.size > 0) {
+    ensureGlobalPopStateListener();
+  }
+}
+
+function canUseBrowserHistory(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.history?.pushState === 'function'
+  );
+}
 
 export interface PlayerDetailModalProps {
   player: CosmicPlayer | null;
@@ -41,6 +269,8 @@ export interface PlayerDetailModalProps {
   onDraft?: (playerId: string) => void;
   roster?: RosterSlot[];
   compareWith?: CosmicPlayer | null;
+  compareCandidates?: CosmicPlayer[] | null;
+  activeWeek?: number;
 }
 
 export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
@@ -49,10 +279,12 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
   onClose,
   roster: propRoster,
   compareWith = null,
+  compareCandidates = null,
+  activeWeek: propActiveWeek,
 }) => {
   const ctx = useOptionalOneiromancy();
   const [showRoster, setShowRoster] = useState(false);
-  const comparisonKey = `${player?.id ?? ''}|${compareWith?.id ?? ''}`;
+  const comparisonKey = `${player?.id ?? ''}|${compareWith?.id ?? ''}|${(compareCandidates ?? []).map((c) => c.id).join(',')}`;
   useEffect(() => setShowRoster(false), [comparisonKey]);
   const modalLambda = ctx?.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const pillarWeights = normalizeOracleWeights(
@@ -60,14 +292,185 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
   );
   const pct = (w: number) => `${Math.round(w * 100)}%`;
 
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  const activePlayerId =
+    player?.id !== undefined && player?.id !== null && player.id !== ''
+      ? String(player.id)
+      : null;
+  const modalEntryRef = useRef<ModalHistoryEntry | null>(null);
+  if (!modalEntryRef.current) {
+    modalEntryRef.current = {
+      isOpen,
+      playerId: activePlayerId,
+      entryId: null,
+      pushed: false,
+      awaitingRePush: false,
+      reusedPendingEntry: false,
+      adoptedWithoutPush: false,
+      onClose: () => onCloseRef.current(),
+    };
+  }
+  modalEntryRef.current.isOpen = isOpen;
+  modalEntryRef.current.playerId = isOpen ? activePlayerId : null;
+  modalEntryRef.current.onClose = () => onCloseRef.current();
+
+  const requestClose = () => {
+    syncClearedStalePendingBacks();
+    const entry = modalEntryRef.current!;
+    if (entry.pushed && canUseBrowserHistory()) {
+      const closingEntryId = entry.entryId;
+      entry.pushed = false;
+      entry.entryId = null;
+      if (entry.reusedPendingEntry) {
+        entry.reusedPendingEntry = false;
+        entry.awaitingRePush = false;
+        entry.adoptedWithoutPush = false;
+        onCloseRef.current();
+        return;
+      }
+      if (entry.adoptedWithoutPush) {
+        entry.adoptedWithoutPush = false;
+        entry.awaitingRePush = false;
+        const cur = safeCurrentHistoryState();
+        if (cur && typeof cur === 'object') {
+          const { oneiromancyModal: _m, oneiromancyEntryId: _e, playerId: _p, ...rest } = cur;
+          window.history.replaceState?.(rest, '');
+        }
+        onCloseRef.current();
+        return;
+      }
+      entry.awaitingRePush = false;
+      entry.adoptedWithoutPush = false;
+      triggerModalHistoryBack(closingEntryId);
+    }
+    onCloseRef.current();
+  };
+
   useEffect(() => {
-    if (!isOpen || typeof window === 'undefined') return;
+    const store = getModalHistoryStore();
+    const entry = modalEntryRef.current!;
+    store.registeredModalEntries.add(entry);
+    ensureGlobalPopStateListener();
+    return () => {
+      store.registeredModalEntries.delete(entry);
+      if (
+        store.registeredModalEntries.size === 0 &&
+        store.attachedPopStateWindow &&
+        typeof store.attachedPopStateWindow.removeEventListener === 'function'
+      ) {
+        const handler = store.attachedPopStateHandler ?? handleGlobalModalPopState;
+        store.attachedPopStateWindow.removeEventListener('popstate', handler);
+        store.attachedPopStateWindow = null;
+        store.attachedPopStateHandler = null;
+      }
+    };
+  }, []);
+
+  // All callers render <PlayerDetailModal isOpen={...} /> persistently so the
+  // !isOpen branch handles popping the modal history entry when dismissed externally.
+  useEffect(() => {
+    if (!canUseBrowserHistory()) return;
+    syncClearedStalePendingBacks();
+    ensureGlobalPopStateListener();
+    const store = getModalHistoryStore();
+    const entry = modalEntryRef.current!;
+    if (isOpen && activePlayerId) {
+      if (!entry.pushed) {
+        entry.pushed = true;
+        if (window.history.state?.oneiromancyModal === 'playerDetail') {
+          const entryId = createModalHistoryEntryId();
+          entry.entryId = entryId;
+          entry.awaitingRePush = store.pendingBacks > 0;
+          entry.reusedPendingEntry = store.pendingBacks > 0;
+          entry.adoptedWithoutPush = store.pendingBacks === 0;
+          const nextState = {
+            ...safeCurrentHistoryState(),
+            oneiromancyModal: 'playerDetail',
+            oneiromancyEntryId: entryId,
+            playerId: activePlayerId,
+          };
+          window.history.replaceState?.(nextState, '');
+          if (store.pendingBacks > 0) {
+            store.lastPendingBackFromState = window.history.state ?? nextState;
+            store.lastPendingBackEntryId = entryId;
+          }
+        } else {
+          if (store.pendingBacks > 0) {
+            entry.awaitingRePush = true;
+          }
+          const entryId = createModalHistoryEntryId();
+          entry.entryId = entryId;
+          entry.reusedPendingEntry = false;
+          entry.adoptedWithoutPush = false;
+          window.history.pushState(
+            {
+              ...safeCurrentHistoryState(),
+              oneiromancyModal: 'playerDetail',
+              oneiromancyEntryId: entryId,
+              playerId: activePlayerId,
+            },
+            '',
+          );
+        }
+      } else if (
+        window.history.state?.oneiromancyModal === 'playerDetail' &&
+        window.history.state?.playerId !== activePlayerId
+      ) {
+        const entryId = createModalHistoryEntryId();
+        entry.entryId = entryId;
+        const nextState = {
+          ...safeCurrentHistoryState(),
+          oneiromancyModal: 'playerDetail',
+          oneiromancyEntryId: entryId,
+          playerId: activePlayerId,
+        };
+        window.history.replaceState?.(nextState, '');
+        if (store.pendingBacks > 0) {
+          store.lastPendingBackFromState = window.history.state ?? nextState;
+          store.lastPendingBackEntryId = entryId;
+        }
+      }
+      return;
+    }
+
+    if (!isOpen && entry.pushed) {
+      const closingEntryId = entry.entryId;
+      entry.pushed = false;
+      entry.entryId = null;
+      if (entry.reusedPendingEntry) {
+        entry.reusedPendingEntry = false;
+        entry.awaitingRePush = false;
+        entry.adoptedWithoutPush = false;
+        return;
+      }
+      if (entry.adoptedWithoutPush) {
+        entry.adoptedWithoutPush = false;
+        entry.awaitingRePush = false;
+        const cur = safeCurrentHistoryState();
+        if (cur && typeof cur === 'object') {
+          const { oneiromancyModal, oneiromancyEntryId, playerId, ...rest } = cur;
+          window.history.replaceState?.(rest, '');
+        }
+        return;
+      }
+      entry.awaitingRePush = false;
+      entry.adoptedWithoutPush = false;
+      triggerModalHistoryBack(closingEntryId);
+    }
+  }, [isOpen, activePlayerId]);
+
+  useEffect(() => {
+    if (!isOpen || typeof window === 'undefined' || typeof window.addEventListener !== 'function') {
+      return;
+    }
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key === 'Escape') requestClose();
     };
     window.addEventListener('keydown', onKeyDown);
-    return () => window.removeEventListener('keydown', onKeyDown);
-  }, [isOpen, onClose]);
+    return () => window.removeEventListener?.('keydown', onKeyDown);
+  }, [isOpen]);
 
   if (!isOpen || !player) return null;
 
@@ -156,7 +559,8 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
   }
 
   const teammates = sameRoleTeamPlayers.filter((r) => String(r.rosterPlayer.id) !== String(player.id));
-  const headToHead = Boolean(compareWith) && !showRoster;
+  const isMultiCompare = Boolean(compareCandidates && compareCandidates.length >= 3);
+  const headToHead = Boolean(compareWith) && !showRoster && !isMultiCompare;
   const comparisonRows = headToHead
     ? [
         {
@@ -167,14 +571,49 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
       ]
     : teammates;
 
-  const getWeeklyProj = (p: CosmicPlayer) =>
-    p.weekly_projected_points ??
-    p.sleeper_projected_points ??
-    p.projected_points ??
-    0;
+  const seasonCtx = getSeasonContext();
+  const activeWk = resolveActiveWeek(ctx?.draftState, propActiveWeek);
 
-  const candidateProj = getWeeklyProj(player);
-  const candidateFav = starsScore(player);
+  const getWeeklyProj = (p: CosmicPlayer) => {
+    const n = Number(
+      p.weekly_projected_points ??
+        p.sleeper_projected_points ??
+        p.projected_points ??
+        0,
+    );
+    return Number.isFinite(n) ? n : 0;
+  };
+
+  const getPlayerDisplayMetrics = (p: CosmicPlayer) => {
+    const pOnBye = isPlayerOnByeWeek(activeWk, p.bye_week, p.team, seasonCtx?.byeWeeks);
+    const placeholder = oraclePlaceholderInfo(p, activeWk);
+    const stars = starsScore(p, activeWk);
+    const oracle = oracleScore(p, modalLambda, { currentWeek: activeWk });
+    return {
+      onBye: pOnBye,
+      placeholder,
+      stats: statsPoints(p),
+      stars,
+      oracle,
+    };
+  };
+
+  let bestCandidateId: string | null = null;
+  if (compareCandidates && compareCandidates.length >= 3) {
+    let maxOracle = -Infinity;
+    for (const cand of compareCandidates) {
+      const o = getPlayerDisplayMetrics(cand).oracle;
+      if (o > maxOracle) {
+        maxOracle = o;
+        bestCandidateId = String(cand.id);
+      }
+    }
+  }
+
+  const candidateMetrics = getPlayerDisplayMetrics(player);
+  const candidateProj = candidateMetrics.stats;
+  const candidateFav = candidateMetrics.stars;
+  const candidateOracle = candidateMetrics.oracle;
 
   const breakdown = player.divination_breakdown || {
     celestial: player.spirit_score ? Math.round(player.spirit_score * 0.95) : 85,
@@ -250,19 +689,19 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
       aria-modal="true"
       aria-labelledby="player-detail-modal-title"
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
-      onClick={onClose}
+      onClick={requestClose}
     >
       <div
         onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
         className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-[#161622] border border-purple-500/40 p-5 sm:p-6 shadow-[0_0_30px_rgba(109,40,217,0.3)] space-y-4"
       >
         {/* Modal Top Header */}
-        <div className="flex justify-between items-start border-b border-white/10 pb-3">
+        <div className="sticky top-0 z-10 bg-[#161622] flex justify-between items-start border-b border-white/10 pb-3 pt-1">
           <div className="flex items-start gap-3 min-w-0">
             <PlayerHeadshot key={String(player.id)} player={player} size="lg" />
             <div className="space-y-1 min-w-0">
               <div className="flex items-center gap-2 flex-wrap">
-                <PositionalBadge position={player.position} size="md" />
+                <PositionalBadge position={player.position} size="md" depth={player.depth_chart_order} />
                 <span className="text-xs font-mono text-cyan-300 bg-cyan-950/80 px-2 py-0.5 rounded border border-cyan-500/30">
                   <TeamLogo team={player.team} className="mr-1" />
                   {player.team} • Bye {player.bye_week || '-'} • #{player.jersey_number}
@@ -278,28 +717,35 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                     {player.injury_status.toUpperCase()}
                   </span>
                 )}
-                {isPlayerOnByeWeek(getSeasonContext()?.currentWeek, player.bye_week, player.team, getSeasonContext()?.byeWeeks) && (
+                {candidateMetrics.onBye && (
                   <>
                     <span className="text-xs font-mono font-bold px-2 py-0.5 rounded border text-amber-300 bg-amber-950/80 border-amber-500/50">
-                      BYE WK {getSeasonContext()?.currentWeek}
+                      {`BYE WK ${player.bye_week || activeWk}`}
                     </span>
                     <span className="text-xs font-mono text-slate-400">On Bye</span>
                   </>
                 )}
               </div>
-              <h2
-                id="player-detail-modal-title"
-                className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide"
-              >
-                {player.name}
-              </h2>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2
+                  id="player-detail-modal-title"
+                  className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 tracking-wide"
+                >
+                  {player.name}
+                </h2>
+                {isMultiCompare && (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-cyan-950/80 text-cyan-300 border border-cyan-500/40">
+                    Comparing {compareCandidates!.length} Candidates
+                  </span>
+                )}
+              </div>
             </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={requestClose}
             aria-label="Close dossier"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            className="p-2.5 min-w-[44px] min-h-[44px] flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -307,20 +753,48 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
 
         {/* Strictly 3 Canonical Player Metrics: Stats, Oracle, Stars */}
         <div className="grid grid-cols-3 gap-2.5 text-center font-mono">
-          <div className="p-3 rounded-xl bg-slate-950/80 border border-white/10">
-            <span className="text-[10px] text-slate-400 uppercase font-bold block">Stats</span>
+          <div
+            className="p-3 rounded-xl bg-slate-950/80 border border-white/10"
+            title={candidateMetrics.placeholder.hasPlaceholder ? candidateMetrics.placeholder.statsTooltipText : undefined}
+          >
+            <span className="text-[10px] text-slate-400 uppercase font-bold block">
+              Stats
+            </span>
             <span className="text-xl font-bold text-slate-100 tabular-nums">{candidateProj.toFixed(1)} pts</span>
-            <span className="text-[9px] text-slate-500 block">Projected points</span>
+            <span className="text-[9px] text-slate-500 block">
+              Projected points
+            </span>
           </div>
-          <div className="p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/30">
+          <div
+            className="p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/30"
+            title={candidateMetrics.placeholder.hasPlaceholder ? candidateMetrics.placeholder.tooltipText : undefined}
+          >
             <span className="text-[10px] text-cyan-400 uppercase font-bold block">
               Oracle <span className="normal-case">(λ {modalLambda.toFixed(2)})</span>
             </span>
-            <span className="text-xl font-bold text-cyan-300 tabular-nums">{oracleScore(player, modalLambda).toFixed(1)}</span>
-            <span className="text-[9px] text-purple-300 block">Blended stats &amp; stars</span>
+            <span className="text-xl font-bold text-cyan-300 tabular-nums">
+              {candidateOracle.toFixed(1)}
+              {candidateMetrics.placeholder.hasPlaceholder && (
+                <span
+                  data-testid="oracle-placeholder-marker"
+                  title={candidateMetrics.placeholder.tooltipText}
+                  className="ml-0.5 text-amber-300 font-bold"
+                >
+                  ~
+                </span>
+              )}
+            </span>
+            <span className="text-[9px] text-purple-300 block">
+              Blended stats & stars
+            </span>
           </div>
-          <div className={`p-3 rounded-xl border ${TONE_PILL[favorabilityTone(candidateFav)]}`}>
-            <span className="text-[10px] uppercase font-bold block">Stars</span>
+          <div
+            className={`p-3 rounded-xl border ${TONE_PILL[favorabilityTone(candidateFav)]}`}
+            title={candidateMetrics.placeholder.hasPlaceholder ? candidateMetrics.placeholder.tooltipText : undefined}
+          >
+            <span className="text-[10px] uppercase font-bold block">
+              Stars
+            </span>
             <span className="text-xl font-bold tabular-nums">{candidateFav.toFixed(0)}</span>
             <span className="text-[9px] block font-mono truncate">
               {starsVerdictLabel(candidateFav)}
@@ -350,7 +824,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </div>
         </div>
 
-        {/* Roster Role Comparison (Left = User Roster in Purple Border, Right = Compared Player) */}
+        {/* Roster Role Comparison / Multi-Candidate Comparison */}
         <div
           data-testid="roster-role-comparison"
           className="space-y-2.5 p-3.5 rounded-xl bg-slate-950/90 border border-purple-500/40 font-mono text-xs"
@@ -358,13 +832,25 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           <div className="flex items-center justify-between flex-wrap gap-2">
             <span className="text-xs uppercase font-bold text-purple-200 tracking-wider flex items-center gap-1.5">
               <ArrowRightLeft className="w-3.5 h-3.5 text-purple-400" />
-              {headToHead
+              {isMultiCompare && !showRoster
+                ? `Comparing ${compareCandidates!.length} Selected Candidates`
+                : headToHead
                 ? `Head-to-head: ${player.name} vs. ${compareWith?.name}`
                 : isMine
                 ? `Role Comparison vs. Other ${player.position}s`
                 : `Role Comparison (${player.position})`}
             </span>
-            {compareWith ? (
+            {isMultiCompare ? (
+              <button
+                type="button"
+                onClick={() => setShowRoster((v) => !v)}
+                className="text-[10px] text-cyan-300 underline hover:text-cyan-200"
+              >
+                {showRoster
+                  ? `Back to ${compareCandidates!.length} Candidates`
+                  : `Compare with your ${player.position}s`}
+              </button>
+            ) : compareWith ? (
               <button
                 type="button"
                 onClick={() => setShowRoster((v) => !v)}
@@ -381,7 +867,127 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
             )}
           </div>
 
-          {comparisonRows.length === 0 ? (
+          {isMultiCompare && !showRoster ? (
+            <div
+              data-testid="multi-candidate-grid"
+              className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2 pt-1"
+            >
+              {compareCandidates!.map((cand, idx) => {
+                const candMetrics = getPlayerDisplayMetrics(cand);
+                const candRosterInfo = getPlayerRosterInfo(cand);
+                const roleLabel = getPlayerRoleLabel(cand, candRosterInfo.isMine, 'Candidate');
+                const isLeader = String(cand.id) === bestCandidateId;
+                return (
+                  <div
+                    key={cand.id}
+                    data-testid={`candidate-card-${cand.id}`}
+                    className={`p-2.5 rounded-lg border flex flex-col justify-between gap-2 ${
+                      isLeader
+                        ? 'bg-purple-950/30 border-purple-500/60 shadow-lg shadow-purple-950/20'
+                        : candRosterInfo.isMine
+                        ? 'bg-slate-900/90 border-purple-500/30'
+                        : 'bg-slate-900/70 border-white/10'
+                    }`}
+                  >
+                    <div>
+                      <div className="flex items-center justify-between gap-1 mb-1.5">
+                        <span className="text-[9px] font-bold text-slate-400">
+                          #{idx + 1}
+                        </span>
+                        {isLeader ? (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-emerald-950/80 text-emerald-300 border border-emerald-500/40">
+                            Leader
+                          </span>
+                        ) : (
+                          <span className="px-1.5 py-0.5 rounded text-[8px] font-bold uppercase bg-slate-800 text-slate-400 border border-white/5">
+                            {roleLabel}
+                          </span>
+                        )}
+                      </div>
+                      <div className="flex items-center gap-2 mb-2">
+                        <PlayerHeadshot
+                          player={cand}
+                          size="sm"
+                        />
+                        <div className="min-w-0 flex-1">
+                          <span className="font-serif font-bold text-xs text-slate-100 truncate block">
+                            {cand.name}
+                          </span>
+                          <div className="flex items-center gap-1.5 mt-0.5">
+                            <PositionalBadge
+                              position={cand.position}
+                              depth={cand.depth_chart_order}
+                              size="sm"
+                            />
+                            <span className="text-[10px] text-slate-400 font-mono">
+                              {cand.team || 'FA'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Metrics */}
+                    <div className="grid grid-cols-3 gap-1 text-center text-[10px] pt-1.5 border-t border-white/5">
+                      <div
+                        className="p-1 rounded bg-slate-950/70"
+                        title={
+                          candMetrics.placeholder.hasPlaceholder
+                            ? candMetrics.placeholder.tooltipText
+                            : 'Weekly stats projection'
+                        }
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">Stats</span>
+                        <span className="text-slate-200 font-bold block">
+                          {candMetrics.stats.toFixed(1)}
+                          {candMetrics.placeholder.hasPlaceholder && (
+                            <span
+                              data-testid="stats-placeholder-marker"
+                              title={candMetrics.placeholder.statsTooltipText}
+                              className="ml-0.5 text-amber-300 font-bold"
+                            >
+                              ~
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div
+                        className="p-1 rounded bg-slate-950/70"
+                        title={
+                          candMetrics.placeholder.hasPlaceholder
+                            ? candMetrics.placeholder.tooltipText
+                            : 'Oracle rating'
+                        }
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">Oracle</span>
+                        <span className="text-purple-300 font-bold block">
+                          {candMetrics.oracle.toFixed(1)}
+                          {candMetrics.placeholder.hasPlaceholder && (
+                            <span
+                              data-testid="oracle-placeholder-marker"
+                              title={candMetrics.placeholder.tooltipText}
+                              className="ml-0.5 text-amber-300 font-bold"
+                            >
+                              ~
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div
+                        className="p-1 rounded bg-slate-950/70"
+                        title="Astrological alignment (0 to 100)"
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">Stars</span>
+                        <span className="text-cyan-300 font-bold block">
+                          {candMetrics.stars.toFixed(0)}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : comparisonRows.length === 0 ? (
             <div className="p-3 rounded-lg bg-slate-900/60 border border-white/5 text-slate-400 text-[11px]">
               {isMine
                 ? `${player.name} is your only ${player.position}.`
@@ -412,12 +1018,15 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                 const isLeftMine = leftInfo.isMine;
                 const isRightMine = rightInfo.isMine;
 
+                const leftMetrics = getPlayerDisplayMetrics(leftPlayer);
+                const rightMetrics = getPlayerDisplayMetrics(rightPlayer);
+
                 const leftProj = getWeeklyProj(leftPlayer);
                 const rightProj = getWeeklyProj(rightPlayer);
-                const leftFav = starsScore(leftPlayer);
-                const rightFav = starsScore(rightPlayer);
-                const leftOracle = oracleScore(leftPlayer, modalLambda);
-                const rightOracle = oracleScore(rightPlayer, modalLambda);
+                const leftFav = leftMetrics.stars;
+                const rightFav = rightMetrics.stars;
+                const leftOracle = leftMetrics.oracle;
+                const rightOracle = rightMetrics.oracle;
 
                 const projDiff = rightProj - leftProj;
                 const dsDiff = rightOracle - leftOracle;
@@ -476,13 +1085,25 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                             {leftPlayer.name} ({leftPlayer.team})
                           </span>
                         </div>
-                        <span
-                          className={`text-xs font-bold shrink-0 ${
-                            isLeftMine ? 'text-purple-200' : 'text-slate-200'
-                          }`}
-                        >
-                          {leftOracle.toFixed(1)}
-                        </span>
+                        <div className="text-right shrink-0">
+                          <span
+                            className={`text-xs font-bold block ${
+                              isLeftMine ? 'text-purple-200' : 'text-slate-200'
+                            }`}
+                            title={leftMetrics.placeholder.hasPlaceholder ? leftMetrics.placeholder.tooltipText : undefined}
+                          >
+                            {leftOracle.toFixed(1)}
+                            {leftMetrics.placeholder.hasPlaceholder && (
+                              <span
+                                data-testid="oracle-placeholder-marker"
+                                title={leftMetrics.placeholder.tooltipText}
+                                className="ml-0.5 text-amber-300 font-bold"
+                              >
+                                ~
+                              </span>
+                            )}
+                          </span>
+                        </div>
                       </div>
 
                       {/* Right: Candidate / Opponent / Secondary Compare Piece */}
@@ -505,13 +1126,25 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                             {rightPlayer.name} ({rightPlayer.team})
                           </span>
                         </div>
-                        <span
-                          className={`text-xs font-bold shrink-0 ${
-                            isRightMine ? 'text-purple-200' : 'text-cyan-300'
-                          }`}
-                        >
-                          {rightOracle.toFixed(1)}
-                        </span>
+                        <div className="text-right shrink-0">
+                          <span
+                            className={`text-xs font-bold block ${
+                              isRightMine ? 'text-purple-200' : 'text-cyan-300'
+                            }`}
+                            title={rightMetrics.placeholder.hasPlaceholder ? rightMetrics.placeholder.tooltipText : undefined}
+                          >
+                            {rightOracle.toFixed(1)}
+                            {rightMetrics.placeholder.hasPlaceholder && (
+                              <span
+                                data-testid="oracle-placeholder-marker"
+                                title={rightMetrics.placeholder.tooltipText}
+                                className="ml-0.5 text-amber-300 font-bold"
+                              >
+                                ~
+                              </span>
+                            )}
+                          </span>
+                        </div>
                       </div>
                     </div>
 
@@ -554,8 +1187,20 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
 
                     {/* Strictly 3 Canonical Player Judgment Metrics Comparison & Delta Grid */}
                     <div className="grid grid-cols-3 gap-1.5 text-center text-[10px] pt-1 border-t border-white/5">
-                      <div className="p-1.5 rounded bg-slate-950/70" title="Baseline projected points comparison">
-                        <span className="text-[8px] text-slate-500 uppercase block">Stats</span>
+                      <div
+                        className="p-1.5 rounded bg-slate-950/70"
+                        title={
+                          leftMetrics.placeholder.hasPlaceholder || rightMetrics.placeholder.hasPlaceholder
+                            ? `Baseline projected points comparison (${[
+                                leftMetrics.placeholder.hasPlaceholder ? `${leftPlayer.name}: 0.0 pts actual` : null,
+                                rightMetrics.placeholder.hasPlaceholder ? `${rightPlayer.name}: 0.0 pts actual` : null,
+                              ].filter(Boolean).join(', ')})`
+                            : 'Baseline projected points comparison'
+                        }
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">
+                          Stats
+                        </span>
                         <span className="text-slate-200 font-bold">
                           {rightProj.toFixed(1)} vs {leftProj.toFixed(1)}
                         </span>
@@ -564,8 +1209,20 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         </span>
                       </div>
 
-                      <div className="p-1.5 rounded bg-slate-950/70" title="Combined Divinity / Oracle score comparison">
-                        <span className="text-[8px] text-slate-500 uppercase block">Oracle</span>
+                      <div
+                        className="p-1.5 rounded bg-slate-950/70"
+                        title={
+                          leftMetrics.placeholder.hasPlaceholder || rightMetrics.placeholder.hasPlaceholder
+                            ? `Combined Divinity / Oracle score comparison (uses average projection placeholder for ${[
+                                leftMetrics.placeholder.hasPlaceholder ? leftPlayer.name : null,
+                                rightMetrics.placeholder.hasPlaceholder ? rightPlayer.name : null,
+                              ].filter(Boolean).join(', ')})`
+                            : 'Combined Divinity / Oracle score comparison'
+                        }
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">
+                          Oracle
+                        </span>
                         <span className="text-slate-200 font-bold">
                           {rightOracle.toFixed(1)} vs {leftOracle.toFixed(1)}
                         </span>
@@ -574,8 +1231,13 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         </span>
                       </div>
 
-                      <div className="p-1.5 rounded bg-slate-950/70" title="Upcoming week astrological alignment comparison (0 to 100)">
-                        <span className="text-[8px] text-slate-500 uppercase block">Stars</span>
+                      <div
+                        className="p-1.5 rounded bg-slate-950/70"
+                        title="Astrological alignment comparison (0 to 100)"
+                      >
+                        <span className="text-[8px] text-slate-500 uppercase block">
+                          Stars
+                        </span>
                         <span className="text-slate-200 font-bold">
                           {rightFav.toFixed(0)} vs {leftFav.toFixed(0)}
                         </span>
@@ -672,8 +1334,8 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </div>
         </div>
 
-        <div className="flex items-center gap-2 pt-2">
-          <div className="flex-1 py-2.5 px-3 rounded-xl bg-slate-950 border border-white/10 font-mono text-xs text-center flex items-center justify-center gap-2">
+        <div className="pt-2">
+          <div className="w-full py-2.5 px-3 rounded-xl bg-slate-950 border border-white/10 font-mono text-xs text-center flex items-center justify-center gap-2">
             <Shield
               className={`w-3.5 h-3.5 ${
                 isMine
@@ -701,13 +1363,6 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                     : 'ROSTERED'}
             </strong>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="px-5 py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-slate-300 font-mono text-xs border border-white/10 active:scale-98 transition-all"
-          >
-            Close
-          </button>
         </div>
       </div>
     </div>

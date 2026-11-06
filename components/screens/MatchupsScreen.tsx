@@ -17,7 +17,7 @@
 
 'use client';
 
-import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
@@ -27,7 +27,7 @@ import type { InspectTarget } from '@/components/common/PlayerLink';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import { mockMatchupWeeks, mockPlayerFavorabilities, mockTeamComparison, mockWeeklyMatchup } from '@/lib/mockData';
 import { DEFAULT_CHAOS_LAMBDA, calculateWinProbability, starsVerdictLabel } from '@/lib/scoring';
-import { TONE_PILL, computeLineupCheck, favorabilityTone, oracleScore, starsScore, statsPoints } from '@/lib/oracle';
+import { TONE_PILL, computeLineupCheck, currentWeekOracleScore, favorabilityTone, oraclePlaceholderInfo, oracleScore, resolveActiveWeek, starsScore, statsPoints } from '@/lib/oracle';
 import { kickoffLabel, moonAt, neutralVenueCoords, planetaryHourAt, teamGame } from '@/lib/nflGames';
 import { buildStarterPairs, deriveEligiblePositions, deriveWeeklyMatchup, extractStartingSlots, formatStarterRole, getSeasonContext, isNFLByeWeek, isPlayerOnByeWeek } from '@/lib/sleeper';
 import type { CosmicPlayer, MatchupWeekData, PlayerMatchupFavorability, TeamCelestialComparison, WeeklyMatchup } from '@/types/oneiromancy';
@@ -52,35 +52,47 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   const lambda = context.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const [inspected, setInspected] = useState<InspectTarget | null>(null);
 
+  const contextWeek = context.draftState?.weekly_matchup?.week;
+  const upcomingMatchups = context.draftState?.weekly_matchup?.upcoming_matchups;
   const resolveActiveMatchupWeek = useCallback(() => {
     if (propWeeklyMatchup?.week) return propWeeklyMatchup.week;
     if (typeof window !== 'undefined' && window.location?.search) {
       const wParam = Number(new URLSearchParams(window.location.search).get('week'));
       if (Number.isFinite(wParam) && wParam >= 1 && wParam <= 18) return wParam;
     }
-    if (context.draftState?.weekly_matchup?.week) return context.draftState.weekly_matchup.week;
-    const upcoming = context.draftState?.weekly_matchup?.upcoming_matchups;
-    if (upcoming?.length) {
+    const isMock = Boolean(
+      context.draftState &&
+      !context.draftState.isLive &&
+      context.draftState.mode !== 'live'
+    );
+    if (isMock) {
+      return resolveActiveWeek(context.draftState);
+    }
+    if (contextWeek) return contextWeek;
+    if (upcomingMatchups?.length) {
       return (
-        upcoming.find((m) => m.status === 'active')?.week ||
-        upcoming.find((m) => m.is_upcoming)?.week ||
-        upcoming[0].week
+        upcomingMatchups.find((m) => m.status === 'active')?.week ||
+        upcomingMatchups.find((m) => m.is_upcoming)?.week ||
+        upcomingMatchups[0].week
       );
     }
-    return 1;
-  }, [propWeeklyMatchup?.week, context.draftState?.weekly_matchup]);
+    return resolveActiveWeek(context.draftState);
+  }, [propWeeklyMatchup?.week, context.draftState, contextWeek, upcomingMatchups]);
 
   const [selectedWeek, setSelectedWeek] = useState<number>(() => resolveActiveMatchupWeek());
+  const contextSyncKey = `${contextWeek ?? ''}|${context.draftState?.draft_id ?? ''}|${context.draftState?.settings?.league_id ?? ''}`;
+  const prevContextSyncKeyRef = useRef<string>(contextSyncKey);
 
   useEffect(() => {
     if (propWeeklyMatchup?.week) setSelectedWeek(propWeeklyMatchup.week);
   }, [propWeeklyMatchup?.week]);
 
   useEffect(() => {
-    if (!propWeeklyMatchup?.week && context.draftState?.weekly_matchup?.week) {
+    if (!propWeeklyMatchup?.week && contextWeek !== undefined && contextSyncKey !== prevContextSyncKeyRef.current) {
+      prevContextSyncKeyRef.current = contextSyncKey;
       setSelectedWeek(resolveActiveMatchupWeek());
     }
-  }, [propWeeklyMatchup?.week, context.draftState?.weekly_matchup?.week, resolveActiveMatchupWeek]);
+  }, [propWeeklyMatchup?.week, contextWeek, contextSyncKey, resolveActiveMatchupWeek]);
 
   const userSlot = context.userSlot;
   const settingsUserSlot = context.draftState?.settings?.user_slot;
@@ -206,9 +218,16 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   const rawRosterPositions = context.draftState?.roster_positions || context.draftState?.settings?.roster_positions;
   const leagueEligiblePositions = useMemo(() => deriveEligiblePositions(rawRosterPositions, context.draftState?.my_roster), [rawRosterPositions, context.draftState?.my_roster]);
   const boardMap = useMemo(() => new Map((context.draftState?.cosmic_board || []).map((p) => [String(p.id), p])), [context.draftState?.cosmic_board]);
-  const swaps = useMemo(() => computeLineupCheck(context.draftState?.my_roster || [], lambda), [context.draftState?.my_roster, lambda]);
-  const swapByStarterId = useMemo(() => new Map(swaps.filter((s) => s.playerOut).map((s) => [String(s.playerOut!.id), s])), [swaps]);
-  const leagueStartingSlots = useMemo(() => extractStartingSlots(rawRosterPositions, context.draftState?.my_roster), [rawRosterPositions, context.draftState?.my_roster]);
+
+  const rosterPlayerById = useMemo(
+    () =>
+      new Map(
+        (context.draftState?.my_roster || [])
+          .filter((s) => s.player)
+          .map((s) => [String(s.player!.id), s.player!]),
+      ),
+    [context.draftState?.my_roster],
+  );
 
   const byePlayerIds = useMemo(() => {
     const ids = new Set<string>();
@@ -216,9 +235,10 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     const season = getSeasonContext();
     for (const fav of playerFavorabilities) {
       const bp = boardMap.get(String(fav.player_id));
-      const team = (fav.nfl_team || fav.team || bp?.team || '').toUpperCase();
+      const rp = rosterPlayerById.get(String(fav.player_id));
+      const team = (fav.nfl_team || fav.team || bp?.team || rp?.team || '').toUpperCase();
       if (
-        isPlayerOnByeWeek(selectedWeek, fav.bye_week || bp?.bye_week, team, season?.byeWeeks) ||
+        isPlayerOnByeWeek(selectedWeek, fav.bye_week || bp?.bye_week || rp?.bye_week, team, season?.byeWeeks) ||
         fav.game_kickoff === 'Bye week' ||
         fav.game_kickoff === 'No game this week (Bye)' ||
         fav.stadium?.stadium_name === 'No game this week'
@@ -227,23 +247,51 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
       }
     }
     return ids;
-  }, [playerFavorabilities, boardMap, selectedWeek]);
+  }, [playerFavorabilities, boardMap, rosterPlayerById, selectedWeek]);
 
   const toCosmicPlayer = useCallback(
-    (fav: PlayerMatchupFavorability, isOnByeOverride?: boolean): CosmicPlayer => {
-      const found = boardMap.get(String(fav.player_id));
+    (
+      fav: PlayerMatchupFavorability,
+      isOnByeOverride?: boolean,
+      fallbackBase?: CosmicPlayer | null,
+    ): CosmicPlayer => {
+      const bp = boardMap.get(String(fav.player_id));
+      const rp = fallbackBase ?? rosterPlayerById.get(String(fav.player_id)) ?? null;
+      const found: CosmicPlayer | null =
+        bp && rp
+          ? {
+              ...bp,
+              ...rp,
+              spirit_score: bp.spirit_score ?? rp.spirit_score,
+              divination_breakdown: bp.divination_breakdown ?? rp.divination_breakdown,
+              average_projected_points: bp.average_projected_points ?? rp.average_projected_points ?? bp.baseline_projected_points ?? rp.baseline_projected_points,
+              baseline_projected_points: bp.baseline_projected_points ?? rp.baseline_projected_points,
+              next_play_week: bp.next_play_week ?? rp.next_play_week,
+              next_week_projected_points: bp.next_week_projected_points ?? rp.next_week_projected_points,
+              depth_chart_order: bp.depth_chart_order ?? rp.depth_chart_order ?? fav.depth_chart_order,
+            }
+          : bp ?? rp ?? null;
       const isOnBye = isOnByeOverride !== undefined ? isOnByeOverride : byePlayerIds.has(String(fav.player_id));
       const rawPts = Number.isFinite(Number(fav.projected_points)) ? Number(fav.projected_points) : found ? statsPoints(found) : 12;
       const pts = isOnBye ? 0 : rawPts;
-      const stars = Number.isFinite(Number(fav.favorability_score)) ? Number(fav.favorability_score) : found ? starsScore(found) : 75;
+      const stars = Number.isFinite(Number(fav.favorability_score)) ? Number(fav.favorability_score) : found ? starsScore(found, { currentWeek: selectedWeek }) : 75;
+      const avgPts = found?.average_projected_points ?? found?.baseline_projected_points ?? (rawPts > 0 ? rawPts : undefined);
       if (found) {
-        return { ...found, projected_points: pts, sleeper_projected_points: pts, weekly_projected_points: pts, favorability_score: stars };
+        return {
+          ...found,
+          average_projected_points: avgPts,
+          projected_points: pts,
+          sleeper_projected_points: pts,
+          weekly_projected_points: pts,
+          favorability_score: stars,
+        };
       }
       const nameParts = (fav.player_name || 'Player').split(' ');
       return {
         id: String(fav.player_id), name: fav.player_name, first_name: nameParts[0] || fav.player_name,
         last_name: nameParts.slice(1).join(' ') || '', position: fav.position, team: fav.nfl_team || fav.team || 'NFL',
-        jersey_number: 0, bye_week: 0, projected_points: pts, sleeper_projected_points: pts, weekly_projected_points: pts,
+        jersey_number: 0, bye_week: 0, depth_chart_order: fav.depth_chart_order, projected_points: pts, sleeper_projected_points: pts, weekly_projected_points: pts,
+        average_projected_points: avgPts, baseline_projected_points: avgPts,
         adp: 0, market_vor: 0, vor_normalized: Math.min(100, (pts / 25) * 100),
         spirit_score: Number(fav.spirit_score ?? stars), harmony_score: 75, draft_score: stars, favorability_score: stars,
         divination_breakdown: { celestial: stars, numeric: stars, geomantic: stars, oracular: stars, harmony: 75 },
@@ -251,8 +299,52 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         draft_status: fav.is_user_team ? 'my_team' : 'drafted',
       };
     },
-    [boardMap, byePlayerIds],
+    [boardMap, byePlayerIds, rosterPlayerById, selectedWeek],
   );
+
+  const favById = useMemo(
+    () => new Map(playerFavorabilities.map((fav) => [String(fav.player_id), fav])),
+    [playerFavorabilities],
+  );
+
+  const weekAdjustedRoster = useMemo(() => {
+    const rawRoster = context.draftState?.my_roster || [];
+    const season = getSeasonContext();
+    return rawRoster.map((slot) => {
+      if (!slot.player) return slot;
+      const p = slot.player;
+      const pId = String(p.id);
+      const fav = favById.get(pId);
+      const team = (fav?.nfl_team || fav?.team || p.team || '').toUpperCase();
+      const isOnBye =
+        byePlayerIds.has(pId) ||
+        isPlayerOnByeWeek(selectedWeek, fav?.bye_week || p.bye_week, team, season?.byeWeeks);
+
+      if (fav) {
+        return {
+          ...slot,
+          player: toCosmicPlayer(fav, isOnBye, p),
+        };
+      }
+
+      if (isOnBye) {
+        return {
+          ...slot,
+          player: {
+            ...p,
+            projected_points: 0,
+            sleeper_projected_points: 0,
+            weekly_projected_points: 0,
+          },
+        };
+      }
+      return slot;
+    });
+  }, [context.draftState?.my_roster, favById, byePlayerIds, toCosmicPlayer, selectedWeek]);
+
+  const swaps = useMemo(() => computeLineupCheck(weekAdjustedRoster, lambda, selectedWeek), [weekAdjustedRoster, lambda, selectedWeek]);
+  const swapByStarterId = useMemo(() => new Map(swaps.filter((s) => s.playerOut).map((s) => [String(s.playerOut!.id), s])), [swaps]);
+  const leagueStartingSlots = useMemo(() => extractStartingSlots(rawRosterPositions, context.draftState?.my_roster), [rawRosterPositions, context.draftState?.my_roster]);
 
   const userStarterIdSet = useMemo(
     () =>
@@ -326,32 +418,32 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     if (!hasMatchupMetrics) return 0;
     if (allUserStarters.length === 0) return fallbackUserAstral;
     const sum = allUserStarters.reduce((acc, s) => {
-      const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s)) : Number(s.favorability_score ?? 75);
+      const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s), { currentWeek: selectedWeek }) : Number(s.favorability_score ?? 75);
       return acc + (Number.isFinite(val) ? val : 75);
     }, 0);
     return Math.round((sum / allUserStarters.length) * 10) / 10;
-  }, [hasMatchupMetrics, allUserStarters, fallbackUserAstral, toCosmicPlayer, boardMap]);
+  }, [hasMatchupMetrics, allUserStarters, fallbackUserAstral, toCosmicPlayer, boardMap, selectedWeek]);
   const oppAstral = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
     if (allOppStarters.length === 0) return fallbackOppAstral;
     const sum = allOppStarters.reduce((acc, s) => {
-      const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s)) : Number(s.favorability_score ?? 75);
+      const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s), { currentWeek: selectedWeek }) : Number(s.favorability_score ?? 75);
       return acc + (Number.isFinite(val) ? val : 75);
     }, 0);
     return Math.round((sum / allOppStarters.length) * 10) / 10;
-  }, [hasMatchupMetrics, allOppStarters, fallbackOppAstral, toCosmicPlayer, boardMap]);
+  }, [hasMatchupMetrics, allOppStarters, fallbackOppAstral, toCosmicPlayer, boardMap, selectedWeek]);
   const userOracle = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
     if (allUserStarters.length === 0) return Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((userProj / 8) / 25) * 100)) + lambda * userAstral) * 10) / 10;
-    const sum = allUserStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda), 0);
+    const sum = allUserStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek }), 0);
     return Math.round((sum / allUserStarters.length) * 10) / 10;
-  }, [hasMatchupMetrics, allUserStarters, toCosmicPlayer, lambda, userProj, userAstral]);
+  }, [hasMatchupMetrics, allUserStarters, toCosmicPlayer, lambda, userProj, userAstral, selectedWeek]);
   const oppOracle = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
     if (allOppStarters.length === 0) return Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((oppProj / 8) / 25) * 100)) + lambda * oppAstral) * 10) / 10;
-    const sum = allOppStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda), 0);
+    const sum = allOppStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek }), 0);
     return Math.round((sum / allOppStarters.length) * 10) / 10;
-  }, [hasMatchupMetrics, allOppStarters, toCosmicPlayer, lambda, oppProj, oppAstral]);
+  }, [hasMatchupMetrics, allOppStarters, toCosmicPlayer, lambda, oppProj, oppAstral, selectedWeek]);
 
   const playersOnBye = useMemo(
     () => playerFavorabilities.filter((fav) => byePlayerIds.has(String(fav.player_id))),
@@ -433,12 +525,16 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   ) => {
     const isOnBye = byePlayerIds.has(String(player.player_id));
     const cp = toCosmicPlayer(player, isOnBye);
-    const rawStars = boardMap.has(String(player.player_id)) ? starsScore(cp) : Number(player.favorability_score ?? 75);
+    const placeholder = oraclePlaceholderInfo(cp, selectedWeek);
+
+    const rawStars = boardMap.has(String(player.player_id))
+      ? starsScore(cp, selectedWeek)
+      : Number(player.favorability_score ?? 75);
     const stars = Number.isFinite(rawStars) ? rawStars : 75;
     const tone = favorabilityTone(stars);
     const rawStats = isOnBye ? 0 : Number(player.projected_points ?? statsPoints(cp));
     const stats = Number.isFinite(rawStats) ? rawStats : 0;
-    const oracle = oracleScore(cp, lambda);
+    const oracle = oracleScore(cp, lambda, { currentWeek: selectedWeek });
     const swap = player.is_user_team && !isMutedBench ? swapByStarterId.get(String(player.player_id)) : undefined;
 
     const rawLat = player.stadium?.latitude ?? player.stadium?.coordinates?.lat;
@@ -476,7 +572,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             <PlayerHeadshot player={{ id: player.player_id, name: player.player_name, team: player.nfl_team || player.team, position: player.position }} size="sm" />
             <div data-testid="matchup-card-text-col" className="min-w-0 flex-1 space-y-0.5">
               <div className="flex items-center gap-1.5 min-w-0">
-                <PositionalBadge position={player.position} size="sm" />
+                <PositionalBadge position={player.position} size="sm" depth={player.depth_chart_order ?? cp.depth_chart_order} />
                 <span className="font-bold text-sm text-slate-100 truncate">{player.player_name}</span>
               </div>
               <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 whitespace-nowrap">
@@ -488,8 +584,10 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                   </span>
                 )}
                 {isOnBye && (
-                  <span title={`On bye in Week ${selectedWeek} - 0.0 projected points`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                    <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-500/50">BYE WK {selectedWeek}</span>
+                  <span title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : `On bye in Week ${selectedWeek} - 0.0 projected points`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
+                    <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-500/50">
+                      {`BYE WK ${cp.bye_week || selectedWeek}`}
+                    </span>
                     <span className="text-[10px] font-mono text-slate-500">· On Bye</span>
                   </span>
                 )}
@@ -499,19 +597,41 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
           {/* Strictly the 3 Canonical Player Judgment Metrics */}
           <div className="flex items-center gap-1.5 shrink-0 font-mono text-right">
-            <div className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-white/5" title="Baseline projected points">
+            <div
+              className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-white/5"
+              title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : 'Baseline projected points'}
+            >
               <span className="text-[8px] text-slate-500 block uppercase">Stats</span>
               <span className="text-xs font-bold text-cyan-300 tabular-nums">
                 {Math.round(stats * 100) % 10 === 0 ? stats.toFixed(1) : stats.toFixed(2)}
               </span>
             </div>
-            <div className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-purple-500/30" title="Combined Divinity / Oracle Score">
+            <div
+              className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-purple-500/30"
+              title={placeholder.hasPlaceholder ? placeholder.tooltipText : 'Combined Divinity / Oracle Score'}
+            >
               <span className="text-[8px] text-purple-300/80 block uppercase">Oracle</span>
-              <span className="text-xs font-bold text-purple-200 tabular-nums">{oracle.toFixed(1)}</span>
+              <span className="text-xs font-bold text-purple-200 tabular-nums">
+                {oracle.toFixed(1)}
+                {placeholder.hasPlaceholder && (
+                  <span
+                    data-testid="oracle-placeholder-marker"
+                    title={placeholder.tooltipText}
+                    className="ml-0.5 text-amber-300 font-bold"
+                  >
+                    ~
+                  </span>
+                )}
+              </span>
             </div>
-            <div className={`min-w-[42px] px-2 py-1 rounded border ${TONE_PILL[tone]}`} title={starsVerdictLabel(stars)}>
+            <div
+              className={`min-w-[42px] px-2 py-1 rounded border ${TONE_PILL[tone]}`}
+              title={placeholder.hasPlaceholder ? placeholder.tooltipText : starsVerdictLabel(stars)}
+            >
               <span className="text-[8px] opacity-75 block uppercase">Stars</span>
-              <span className="text-xs font-bold tabular-nums">{stars.toFixed(0)}</span>
+              <span className="text-xs font-bold tabular-nums">
+                {stars.toFixed(0)}
+              </span>
             </div>
           </div>
         </div>
@@ -531,34 +651,43 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         </div>
 
         {/* Inline Swap Opportunity Tooltip on Starter Slots */}
-        {swap && (
-          <div
-            role="button"
-            tabIndex={0}
-            data-testid="matchup-swap-opportunity"
-            title={`Bench ${swap.playerIn.name} scores +${Number(swap.oracleGain || 0).toFixed(1)} higher Oracle (${oracleScore(swap.playerIn, lambda).toFixed(1)} vs ${oracle.toFixed(1)})`}
-            onClick={(e: { stopPropagation: () => void }) => {
-              e.stopPropagation();
-              setInspected({ player: swap.playerIn, vs: swap.playerOut ?? null });
-            }}
-            onKeyDown={(e: { key: string; preventDefault: () => void; stopPropagation: () => void }) => {
-              if (e.key === 'Enter' || e.key === ' ') {
-                e.preventDefault();
+        {swap && (() => {
+          const benchCp = swap.playerIn;
+          const benchOracle = currentWeekOracleScore(benchCp, lambda, selectedWeek);
+          const benchDisplay = benchOracle.toFixed(1);
+          const currentDisplay = currentWeekOracleScore(swap.playerOut ?? cp, lambda, selectedWeek).toFixed(1);
+          const calculatedGain = Math.round((Number(benchDisplay) - Number(currentDisplay)) * 10) / 10;
+          if (calculatedGain < 0.5) return null;
+          const gainDisplay = calculatedGain.toFixed(1);
+          return (
+            <div
+              role="button"
+              tabIndex={0}
+              data-testid="matchup-swap-opportunity"
+              title={`Bench ${swap.playerIn.name} scores +${gainDisplay} higher Oracle (${benchDisplay} vs ${currentDisplay})`}
+              onClick={(e: { stopPropagation: () => void }) => {
                 e.stopPropagation();
-                setInspected({ player: swap.playerIn, vs: swap.playerOut ?? null });
-              }
-            }}
-            className="mt-2 px-2.5 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-[11px] font-mono text-emerald-200 flex items-center justify-between gap-2"
-          >
-            <span data-testid="matchup-swap-tooltip" className="flex items-center gap-1.5">
-              <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-              <span>
-                Swap Opportunity: Bench <strong>{swap.playerIn.name}</strong> adds +{Number(swap.oracleGain || 0).toFixed(1)} Oracle
+                setInspected({ player: benchCp, vs: swap.playerOut ?? null });
+              }}
+              onKeyDown={(e: { key: string; preventDefault: () => void; stopPropagation: () => void }) => {
+                if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  setInspected({ player: benchCp, vs: swap.playerOut ?? null });
+                }
+              }}
+              className="mt-2 px-2.5 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-[11px] font-mono text-emerald-200 flex items-center justify-between gap-2"
+            >
+              <span data-testid="matchup-swap-tooltip" className="flex items-center gap-1.5">
+                <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                <span>
+                  Swap Opportunity: Bench <strong>{swap.playerIn.name}</strong> adds +{gainDisplay} Oracle
+                </span>
               </span>
-            </span>
-            <span className="underline text-[10px] shrink-0">Compare →</span>
-          </div>
-        )}
+              <span className="underline text-[10px] shrink-0">Compare →</span>
+            </div>
+          );
+        })()}
         <details className="group mt-1 text-slate-300">
           <summary
             onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
@@ -840,8 +969,8 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
             {displayedPairs.map((pair, idx) => {
               const hasBoth = Boolean(pair.user && pair.opp);
-              const uOracle = pair.user ? oracleScore(toCosmicPlayer(pair.user), lambda) : 0;
-              const oOracle = pair.opp ? oracleScore(toCosmicPlayer(pair.opp), lambda) : 0;
+              const uOracle = pair.user ? oracleScore(toCosmicPlayer(pair.user), lambda, { currentWeek: selectedWeek }) : 0;
+              const oOracle = pair.opp ? oracleScore(toCosmicPlayer(pair.opp), lambda, { currentWeek: selectedWeek }) : 0;
               const delta = hasBoth ? uOracle - oOracle : 0;
               const sum = uOracle + oOracle;
               const isZeroSplit = hasBoth && sum <= 0;
@@ -988,6 +1117,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         isOpen={inspected !== null}
         onClose={() => setInspected(null)}
         roster={context.draftState?.my_roster || []}
+        activeWeek={selectedWeek}
       />
     </div>
   );

@@ -555,8 +555,8 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
     });
 
     it('5.5 should verify mock-to-live transition commits fresh live state and sets mode: live', async () => {
-      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
-      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      const { render, act, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('../context/OneiromancyContext.tsx');
       const originalFetch = globalThis.fetch;
       const J = (o) => new Response(JSON.stringify(o), { status: 200, headers: { 'Content-Type': 'application/json' } });
       globalThis.fetch = async (u) => {
@@ -584,13 +584,17 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       try {
         const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
         // Put in mock mode first
-        captured.loadMockData();
+        act(() => {
+          captured.loadMockData();
+        });
         assert.equal(captured.mode, 'mock');
         assert.equal(captured.draftState.settings?.mode, 'mock');
 
         // Transition to live mode with username
-        captured.setMode('live');
-        await captured.refreshDraft('OneiroVanguard');
+        await act(async () => {
+          captured.setMode('live');
+          await captured.refreshDraft('OneiroVanguard');
+        });
 
         assert.equal(captured.mode, 'live', 'Mode must become live');
         assert.equal(captured.draftState.isLive, true, 'isLive must be true');
@@ -604,8 +608,8 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
     });
 
     it('5.6 should verify rejected in-flight live sync does not corrupt mock state when switched to mock', async () => {
-      const { render, jsx } = await import('./helpers/react_testing_wrapper.mjs');
-      const { OneiromancyProvider, useOneiromancy } = await import('./dist/context/OneiromancyContext.js');
+      const { render, act, jsx } = await import('./helpers/react_testing_wrapper.mjs');
+      const { OneiromancyProvider, useOneiromancy } = await import('../context/OneiromancyContext.tsx');
       const originalFetch = globalThis.fetch;
       let rejectSync = false;
       globalThis.fetch = async (u) => {
@@ -625,16 +629,19 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       try {
         const view = render(jsx(OneiromancyProvider, { children: jsx(Probe, {}) }));
         rejectSync = true;
-        // Start live sync
-        const liveSyncPromise = captured.refreshDraft('TestUser99');
-        // Immediately switch mode to mock before live sync rejects
-        captured.setMode('mock');
+        let liveSyncPromise;
+        act(() => {
+          liveSyncPromise = captured.refreshDraft('TestUser99');
+          captured.setMode('mock');
+        });
         assert.equal(captured.mode, 'mock');
         assert.equal(captured.draftState.settings?.mode, 'mock');
         const mockBoardLen = captured.draftState.cosmic_board?.length;
 
         // Wait for rejected live sync to complete
-        await liveSyncPromise;
+        await act(async () => {
+          await liveSyncPromise;
+        });
 
         // Ensure mock state was NOT overwritten by the rejected live sync
         assert.equal(captured.mode, 'mock', 'Mode must remain mock');

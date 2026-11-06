@@ -24,7 +24,16 @@ export interface PositionalBadgeProps {
   size?: BadgeSize;
   className?: string;
   showGlow?: boolean;
+  depth?: number | string | null;
+  title?: string;
 }
+
+export const toSuperscript = (depth: number | string | null | undefined): string => {
+  if (depth === null || depth === undefined || String(depth).trim() === '') return '';
+  const num = Number(depth);
+  if (!Number.isInteger(num) || num < 1 || num > 99) return '';
+  return String(num);
+};
 
 const POSITION_STYLES: Record<string, { text: string; bg: string; border: string; glow: string }> = {
   QB: {
@@ -88,6 +97,8 @@ export const PositionalBadge: React.FC<PositionalBadgeProps> = ({
   size = 'md',
   className = '',
   showGlow = true,
+  depth,
+  title,
 }) => {
   const normalizedPos = position.toUpperCase();
   const styles = POSITION_STYLES[normalizedPos] || {
@@ -97,15 +108,32 @@ export const PositionalBadge: React.FC<PositionalBadgeProps> = ({
     glow: '',
   };
 
+  const depthText = toSuperscript(depth);
+  const isValidDepth = depthText !== '';
+
   const sizeClass = SIZE_CLASSES[size] || SIZE_CLASSES.md;
   const glowClass = showGlow ? styles.glow : '';
+  const badgeTitle = title ?? (isValidDepth ? `${normalizedPos} · depth chart #${depthText}` : undefined);
 
   return (
     <span
       data-testid={`badge-${normalizedPos.toLowerCase()}`}
+      title={badgeTitle}
       className={`inline-flex items-center justify-center font-mono border uppercase tracking-wider transition-all duration-200 ${styles.text} ${styles.bg} ${styles.border} ${glowClass} ${sizeClass} ${className}`}
     >
       {normalizedPos}
+      {isValidDepth ? (
+        <>
+          <sup
+            data-testid="position-depth"
+            aria-hidden="true"
+            className="relative -top-[0.35em] text-[0.7em] font-bold leading-none ml-0.5 tracking-tight select-none"
+          >
+            {depthText}
+          </sup>
+          <span className="sr-only normal-case">, depth chart {depthText}</span>
+        </>
+      ) : null}
     </span>
   );
 };

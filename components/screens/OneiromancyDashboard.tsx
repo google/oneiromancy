@@ -33,7 +33,9 @@ import {
   compute18WeekByeCoverage,
   computeLineupCheck,
   favorabilityTone,
+  oraclePlaceholderInfo,
   oracleScore,
+  resolveActiveWeek,
   starsScore,
   statsPoints,
 } from '@/lib/oracle';
@@ -41,6 +43,7 @@ import {
   DEFAULT_CHAOS_LAMBDA,
   computeRosterHarmony,
   computeRosterHarmonyBreakdown,
+  isNFLByeWeek,
   isPlayerOnByeWeek,
 } from '@/lib/scoring';
 import type {
@@ -119,6 +122,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
   const draftState = context.draftState;
   const lambda = draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const [inspected, setInspected] = useState<InspectTarget | null>(null);
+  const [selectedWeek, setSelectedWeek] = useState<number | null>(null);
 
   const myRoster = useMemo(
     () => propMyRoster || draftState?.my_roster || [],
@@ -171,7 +175,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
   // Global Universe State at current kickoff window
   const universeState = useMemo(() => {
     const season = getSeasonContext();
-    const activeWeek = weeklyMatchup?.week ?? season?.currentWeek ?? 2;
+    const activeWeek = resolveActiveWeek(draftState, selectedWeek);
     const starterGame = startingPlayers
       .map((p) => teamGame(activeWeek, p.team))
       .find((g) => Boolean(g?.kickoff));
@@ -189,10 +193,17 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
     const hour = planetaryHourAt(refDate, typeof refLon === 'number' && Number.isFinite(refLon) ? refLon : 0);
     const isPeakMoon = moon.includes('Full Moon') || moon.includes('New Moon');
     return { moon, hour, activeWeek, isPeakMoon };
-  }, [weeklyMatchup?.week, weeklyMatchup?.player_favorabilities, startingPlayers]);
+  }, [
+    weeklyMatchup?.week,
+    weeklyMatchup?.player_favorabilities,
+    startingPlayers,
+    selectedWeek,
+    draftState?.isLive,
+    draftState?.mode,
+  ]);
 
   // Lineup swap recommendations (bench -> starter)
-  const swaps = useMemo(() => computeLineupCheck(myRoster, lambda), [myRoster, lambda]);
+  const swaps = useMemo(() => computeLineupCheck(myRoster, lambda, universeState.activeWeek), [myRoster, lambda, universeState.activeWeek]);
   const swapByStarterId = useMemo(() => {
     const map = new Map<string, (typeof swaps)[number]>();
     for (const s of swaps) {
@@ -318,9 +329,13 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
         </div>
       );
     }
+    const seasonCtx = getSeasonContext();
+    const activeWk = universeState.activeWeek;
+    const onBye = isPlayerOnByeWeek(activeWk, p.bye_week, p.team, seasonCtx?.byeWeeks);
+    const placeholder = oraclePlaceholderInfo(p, activeWk);
     const stats = statsPoints(p);
-    const oracle = oracleScore(p, lambda);
-    const stars = starsScore(p);
+    const oracle = oracleScore(p, lambda, { currentWeek: activeWk });
+    const stars = starsScore(p, activeWk);
     const tone = favorabilityTone(stars);
     const aura = auraClasses(stars);
     const starterSwap = !isBench ? swapByStarterId.get(String(p.id)) : undefined;
@@ -332,7 +347,6 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
       !isBench &&
       stackTeamSet.has(p.team) &&
       (p.position === 'QB' || p.position === 'WR' || p.position === 'TE');
-    const onBye = isPlayerOnByeWeek(universeState.activeWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks);
 
     return (
       <div
@@ -369,7 +383,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
             <div data-testid="roster-card-text-col" className="min-w-0 flex-1 space-y-0.5">
               <div className="flex items-center gap-1.5 whitespace-nowrap overflow-hidden min-w-0">
                 <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-200 border border-purple-500/40 shrink min-w-0 truncate">{slot.slot_name}</span>
-                <PositionalBadge position={p.position} size="sm" showGlow={false} className="shrink-0" />
+                <PositionalBadge position={p.position} size="sm" showGlow={false} className="shrink-0" depth={p.depth_chart_order} />
                 {starterSwap && (() => {
                   const gain = Number(starterSwap.oracleGain || 0).toFixed(1);
                   const title = `Swap alert: bench ${starterSwap.playerIn.name} leads by +${gain} Oracle`;
@@ -408,7 +422,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
                 <span className="flex items-center gap-0.5 min-w-0"><ElementIcon element={el} /><span className="truncate">{p.elemental_traits?.sun_sign || el}</span></span>
               </div>
               <div className="flex items-center gap-1.5 pt-0.5 flex-wrap">
-                <HealthTag player={p} />
+                <HealthTag player={p} activeWeek={activeWk} />
                 {hasStack && <span className="px-1.5 py-0.5 rounded bg-amber-950/80 border border-amber-500/40 text-amber-300 text-[9px] font-mono font-bold whitespace-nowrap">☌ {p.team} Stack</span>}
                 {hasTrine && !isBench && <span className="px-1.5 py-0.5 rounded bg-cyan-950/70 border border-cyan-500/30 text-cyan-300 text-[9px] font-mono whitespace-nowrap">△ {el} Trine</span>}
               </div>
@@ -417,16 +431,42 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
 
           {/* Strictly the 3 Canonical Player Judgment Metrics */}
           <div className="flex items-center gap-1.5 shrink-0 font-mono text-right">
-            <div className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-white/5" title="Baseline projected points">
-              <span className="text-[8px] text-slate-500 block uppercase">Stats</span>
+            <div
+              className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-white/5"
+              title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : 'Baseline projected points'}
+            >
+              <span className="text-[8px] text-slate-500 block uppercase">
+                Stats
+              </span>
               <span className="text-xs font-bold text-cyan-300 tabular-nums">{stats.toFixed(1)}</span>
             </div>
-            <div className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-purple-500/30" title={`Combined Divinity / Oracle Score at λ ${lambda.toFixed(2)}`}>
-              <span className="text-[8px] text-purple-300/80 block uppercase">Oracle</span>
-              <span className="text-xs font-bold text-purple-200 tabular-nums">{oracle.toFixed(1)}</span>
+            <div
+              className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-purple-500/30"
+              title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Combined Divinity / Oracle Score at λ ${lambda.toFixed(2)}`}
+            >
+              <span className="text-[8px] text-purple-300/80 block uppercase">
+                Oracle
+              </span>
+              <span className="text-xs font-bold text-purple-200 tabular-nums">
+                {oracle.toFixed(1)}
+                {placeholder.hasPlaceholder && (
+                  <span
+                    data-testid="oracle-placeholder-marker"
+                    title={placeholder.tooltipText}
+                    className="ml-0.5 text-amber-300 font-bold"
+                  >
+                    ~
+                  </span>
+                )}
+              </span>
             </div>
-            <div className={`min-w-[42px] px-2 py-1 rounded-lg border ${TONE_PILL[tone]}`} title="Upcoming week astrological alignment (0 to 100)">
-              <span className="text-[8px] opacity-75 block uppercase">Stars</span>
+            <div
+              className={`min-w-[42px] px-2 py-1 rounded-lg border ${TONE_PILL[tone]}`}
+              title={placeholder.hasPlaceholder ? placeholder.tooltipText : 'Upcoming week astrological alignment (0 to 100)'}
+            >
+              <span className="text-[8px] opacity-75 block uppercase">
+                Stars
+              </span>
               <span className="text-xs font-bold tabular-nums">{stars.toFixed(0)}</span>
             </div>
           </div>
@@ -446,10 +486,28 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
       >
         <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="space-y-0.5">
-            <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/90 flex items-center gap-1.5">
-              <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-              Ideal Team &amp; League Telemetry · Week {universeState.activeWeek}
-            </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-[10px] font-mono uppercase tracking-widest text-purple-300/90 flex items-center gap-1.5">
+                <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+                Ideal Team &amp; League Telemetry · Week {universeState.activeWeek}
+              </span>
+              <div className="inline-flex items-center gap-1 bg-slate-950/80 px-2 py-0.5 rounded border border-purple-500/30 text-[10px] font-mono">
+                <span className="text-slate-400">Wk</span>
+                <select
+                  data-testid="dashboard-week-select"
+                  aria-label="Select active week"
+                  value={universeState.activeWeek}
+                  onChange={(e) => setSelectedWeek(Number(e.target.value))}
+                  className="bg-transparent text-purple-200 font-bold focus:outline-none cursor-pointer"
+                >
+                  {Array.from({ length: 18 }, (_, i) => i + 1).map((wk) => (
+                    <option key={wk} value={wk} className="bg-slate-900 text-slate-100">
+                      Wk {wk} {isNFLByeWeek(wk) ? '(Byes)' : ''}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            </div>
             <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 flex flex-wrap items-center gap-2">
               <span>{userTeam?.name?.replace(/\s*\(You\)$/, '') || 'My Roster'}</span>
             </h2>
@@ -682,15 +740,17 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
                   : 'bg-slate-900/60 border-white/5 text-slate-500';
             const names = w.players.map((p) => `${p.name} (${p.position})`).join(', ');
             return (
-              <div
+              <button
+                type="button"
                 key={w.week}
+                onClick={() => setSelectedWeek(selectedWeek === w.week ? null : w.week)}
                 data-testid={`bye-week-cell-${w.week}`}
-                title={names ? `Week ${w.week} byes: ${names}` : `Week ${w.week}: No players on bye`}
-                className={`py-1.5 px-1 rounded-lg border ${cls} ${w.week === universeState.activeWeek ? 'ring-2 ring-purple-400' : ''}`}
+                title={names ? `Week ${w.week} byes: ${names} (click to inspect week)` : `Week ${w.week}: No players on bye (click to inspect week)`}
+                className={`py-1.5 px-1 rounded-lg border text-center transition-all cursor-pointer ${cls} ${w.week === universeState.activeWeek ? 'ring-2 ring-purple-400' : 'hover:border-purple-400/50'}`}
               >
                 <span className="block text-[9px] opacity-75">W{w.week}</span>
                 <span className="block text-xs font-bold">{w.players.length}</span>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -735,6 +795,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
         isOpen={inspected !== null}
         onClose={() => setInspected(null)}
         roster={myRoster}
+        activeWeek={universeState.activeWeek}
       />
     </div>
   );

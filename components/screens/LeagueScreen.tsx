@@ -24,7 +24,7 @@ import UserAvatar from '@/components/common/UserAvatar';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import CelestialLeaderboardGraph from '@/components/oneiromancy/CelestialLeaderboardGraph';
-import { TONE_LABEL, TONE_PILL, favorabilityTone, oracleScore, starsScore, statsPoints } from '@/lib/oracle';
+import { TONE_LABEL, TONE_PILL, favorabilityTone, oraclePlaceholderInfo, oracleScore, resolveActiveWeek, starsScore, statsPoints } from '@/lib/oracle';
 import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
 import type { CompetitorTeam, CosmicPlayer } from '@/types/oneiromancy';
@@ -41,6 +41,7 @@ export const LeagueScreen: React.FC = () => {
   const lambda = draftState.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const byId = useMemo(() => new Map(board.map((p) => [String(p.id), p])), [board]);
   const me = teams.find((t) => t.is_user);
+  const activeWeek = resolveActiveWeek(draftState);
   const [selected, setSelected] = useState<number | undefined>(undefined);
   const [inspectedPlayer, setInspectedPlayer] = useState<CosmicPlayer | null>(null);
   const team = teams.find((t) => t.roster_id === (selected ?? me?.roster_id)) ?? teams[0];
@@ -54,7 +55,7 @@ export const LeagueScreen: React.FC = () => {
     .filter((id) => !starterIds.has(String(id)))
     .map((id) => byId.get(String(id)))
     .filter((p): p is CosmicPlayer => Boolean(p))
-    .sort((a, b) => oracleScore(b, lambda) - oracleScore(a, lambda));
+    .sort((a, b) => oracleScore(b, lambda, { currentWeek: activeWeek }) - oracleScore(a, lambda, { currentWeek: activeWeek }));
 
   const row = (p: CosmicPlayer | null, label: string, key: string) => {
     if (!p) {
@@ -64,9 +65,11 @@ export const LeagueScreen: React.FC = () => {
         </li>
       );
     }
-    const stars = starsScore(p);
+    const stars = starsScore(p, { currentWeek: activeWeek });
     const tone = favorabilityTone(stars);
-    const onBye = isPlayerOnByeWeek(getSeasonContext()?.currentWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks);
+    const onBye = isPlayerOnByeWeek(activeWeek, p.bye_week, p.team, getSeasonContext()?.byeWeeks);
+    const placeholder = oraclePlaceholderInfo(p, activeWeek);
+    const byeWkLabel = p.bye_week || activeWeek;
     return (
       <li
         key={key}
@@ -75,7 +78,7 @@ export const LeagueScreen: React.FC = () => {
       >
         <span className="w-8 sm:w-10 shrink-0 font-mono text-slate-500">{label}</span>
         <PlayerHeadshot player={p} size="sm" />
-        <PositionalBadge position={p.position} size="sm" />
+        <PositionalBadge position={p.position} size="sm" depth={p.depth_chart_order} />
         <span className="text-slate-100 min-w-0 truncate font-medium">{p.name}</span>
         <span className="hidden sm:inline font-mono text-slate-500 shrink-0">
           {p.team} · Bye {p.bye_week || '-'}
@@ -87,17 +90,31 @@ export const LeagueScreen: React.FC = () => {
         )}
         {onBye && (
           <>
-            <span className="text-[9px] font-mono px-1 rounded border border-amber-500/40 text-amber-300 shrink-0">BYE WK {getSeasonContext()?.currentWeek}</span>
+            <span className="text-[9px] font-mono px-1 rounded border border-amber-500/40 text-amber-300 shrink-0">BYE WK {byeWkLabel}</span>
             <span className="text-[10px] font-mono text-slate-500 shrink-0">On Bye</span>
           </>
         )}
         <span
-          title={`Oracle at λ ${lambda.toFixed(2)}`}
-          className="ml-auto font-mono font-semibold text-purple-200 tabular-nums shrink-0 w-10 text-right"
+          title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Oracle at λ ${lambda.toFixed(2)}`}
+          className="ml-auto font-mono font-semibold text-purple-200 tabular-nums shrink-0 w-10 text-right flex items-center justify-end"
         >
-          {oracleScore(p, lambda).toFixed(1)}
+          {oracleScore(p, lambda, { currentWeek: activeWeek }).toFixed(1)}
+          {placeholder.hasPlaceholder && (
+            <span
+              data-testid="oracle-placeholder-marker"
+              title={placeholder.tooltipText}
+              className="ml-0.5 text-amber-300 font-bold"
+            >
+              ~
+            </span>
+          )}
         </span>
-        <span className="font-mono text-slate-400 tabular-nums shrink-0 w-9 sm:w-10 text-right">{statsPoints(p).toFixed(1)}</span>
+        <span
+          title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}
+          className="font-mono text-slate-400 tabular-nums shrink-0 w-9 sm:w-10 text-right"
+        >
+          {statsPoints(p).toFixed(1)}
+        </span>
         <span
           title={TONE_LABEL[tone]}
           className={`font-mono text-[11px] px-1 rounded border shrink-0 w-9 text-center ${TONE_PILL[tone]}`}
@@ -204,6 +221,7 @@ export const LeagueScreen: React.FC = () => {
         player={inspectedPlayer}
         isOpen={Boolean(inspectedPlayer)}
         roster={draftState.my_roster}
+        activeWeek={activeWeek}
         onClose={() => setInspectedPlayer(null)}
       />
     </div>

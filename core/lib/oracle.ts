@@ -27,6 +27,7 @@
  */
 
 import { isLocked } from './gameStatus';
+import { hasNflWeekSchedule, teamGame } from './nflGames';
 import type {
   CompetitorTeam,
   CosmicPlayer,
@@ -51,6 +52,69 @@ export { DEFAULT_CHAOS_LAMBDA, DEFAULT_ORACLE_WEIGHTS };
 /** Projection that maps to a Stats score of 100. */
 const STATS_FULL_SCALE = 25;
 
+/**
+ * Returns the next NFL regular-season week w in [currentWeek + 1 .. 18] where
+ * a bye-week team (within the NFL Weeks 5–14 bye window enforced by
+ * isPlayerOnByeWeek) has a scheduled game (or is not on bye when schedule data
+ * is unloaded). Returns null when the player is not on bye in currentWeek.
+ */
+export function getNextPlayWeek(
+  team?: string | null,
+  currentWeek?: number | null,
+  seasonByeWeeks?: Record<string, number> | null,
+  playerByeWeek?: number | null,
+): number | null {
+  if (!team || typeof currentWeek !== 'number' || !Number.isFinite(currentWeek)) {
+    return null;
+  }
+  const week = Math.trunc(currentWeek);
+  if (week < 1) return null;
+
+  const normalizedTeam = team.trim().toUpperCase();
+  if (!normalizedTeam) {
+    return null;
+  }
+  if (!isPlayerSigned(normalizedTeam)) {
+    return null;
+  }
+  if (!isPlayerOnByeWeek(week, playerByeWeek ?? undefined, normalizedTeam, seasonByeWeeks ?? undefined)) {
+    return null;
+  }
+
+  for (let w = week + 1; w <= 18; w++) {
+    if (hasNflWeekSchedule(w)) {
+      if (teamGame(w, normalizedTeam) || teamGame(w, team)) {
+        return w;
+      }
+      continue;
+    }
+    const byeForW =
+      seasonByeWeeks?.[normalizedTeam] ?? seasonByeWeeks?.[team] ?? playerByeWeek ?? undefined;
+    if (byeForW !== w) {
+      return w;
+    }
+  }
+  return null;
+}
+
+const STATUS_TEXT: Record<string, string> = {
+  Out: 'out',
+  IR: 'on injured reserve',
+  PUP: 'on the PUP list',
+  Sus: 'suspended',
+  NA: 'not active',
+  Questionable: 'questionable',
+  Doubtful: 'doubtful',
+};
+
+/** Plain-English Sleeper injury status ("NA" → "not active"). */
+export function injuryStatusText(status?: string | null): string {
+  const s = String(status ?? '');
+  return STATUS_TEXT[s] ?? s.toLowerCase();
+}
+
+export const statusText = injuryStatusText;
+
 export function statsPoints(p: Partial<CosmicPlayer> | null | undefined): number {
   if (!p) return 0;
   const n = Number(
@@ -59,15 +123,173 @@ export function statsPoints(p: Partial<CosmicPlayer> | null | undefined): number
   return Number.isFinite(n) ? n : 0;
 }
 
-export function statsScore(p: Partial<CosmicPlayer> | null | undefined): number {
-  return Math.max(0, Math.min(100, (statsPoints(p) / STATS_FULL_SCALE) * 100));
+/**
+ * Returns a player's average projected points per game.
+ * Uses average_projected_points, falling back to baseline_projected_points,
+ * then season_projected_points / 17.
+ */
+export function averageProjectedPoints(p: Partial<CosmicPlayer> | null | undefined): number {
+  if (!p) return 0;
+  const avg = Number(p.average_projected_points);
+  if (Number.isFinite(avg) && avg > 0) return Math.round(avg * 10) / 10;
+  const base = Number(p.baseline_projected_points);
+  if (Number.isFinite(base) && base > 0) return Math.round(base * 10) / 10;
+  const season = Number(p.season_projected_points);
+  if (Number.isFinite(season) && season > 0) return Math.round((season / 17) * 10) / 10;
+  return 0;
 }
 
-export function starsScore(p: Partial<CosmicPlayer> | null | undefined): number {
+export const INJURED_STATUSES = ['Out', 'IR', 'PUP', 'Doubtful', 'Sus', 'NA'] as const;
+
+export function resolveContextWeek(currentWeek?: number): number | undefined {
+  if (typeof currentWeek === 'number' && Number.isFinite(currentWeek) && currentWeek > 0) {
+    return Math.trunc(currentWeek);
+  }
+  const seasonCtx = getSeasonContext();
+  if (
+    typeof seasonCtx?.currentWeek === 'number' &&
+    Number.isFinite(seasonCtx.currentWeek) &&
+    seasonCtx.currentWeek > 0
+  ) {
+    return Math.trunc(seasonCtx.currentWeek);
+  }
+  return undefined;
+}
+
+/**
+ * Checks whether a player qualifies for an Oracle scoring average projection placeholder.
+ * A player gets a placeholder when their stats projection is 0 and they have a positive average projection.
+ */
+export function hasOraclePlaceholder(
+  p: Partial<CosmicPlayer> | null | undefined,
+  currentWeek?: number,
+): boolean {
+  if (!p) return false;
+  const raw = statsPoints(p);
+  if (raw > 0) return false;
+  const avg = averageProjectedPoints(p);
+  if (avg <= 0) return false;
+
+  const week = resolveContextWeek(currentWeek);
+  const isInjuredOrInactive = Boolean(
+    (p.injury_status && (INJURED_STATUSES as readonly string[]).includes(p.injury_status)) ||
+    p.status === 'Inactive' ||
+    p.status === 'NA' ||
+    p.injury_status === 'NA',
+  );
+
+  if (!week && !isInjuredOrInactive) {
+    return false;
+  }
+
+  const seasonCtx = getSeasonContext();
+  const onBye = week ? isPlayerOnByeWeek(week, p.bye_week, p.team, seasonCtx?.byeWeeks) : false;
+
+  return onBye || isInjuredOrInactive;
+}
+
+export interface OraclePlaceholderInfo {
+  hasPlaceholder: boolean;
+  avgPoints: number;
+  reason: string;
+  tooltipText: string;
+  statsTooltipText: string;
+}
+
+/**
+ * Detailed metadata and explanatory tooltips for players whose Oracle score
+ * uses an average projected points placeholder.
+ */
+export function oraclePlaceholderInfo(
+  p: Partial<CosmicPlayer> | null | undefined,
+  currentWeek?: number,
+): OraclePlaceholderInfo {
+  if (!p || !hasOraclePlaceholder(p, currentWeek)) {
+    return {
+      hasPlaceholder: false,
+      avgPoints: 0,
+      reason: '',
+      tooltipText: '',
+      statsTooltipText: '',
+    };
+  }
+
+  const avg = averageProjectedPoints(p);
+  const week = resolveContextWeek(currentWeek);
+  const seasonCtx = getSeasonContext();
+  const onBye = week ? isPlayerOnByeWeek(week, p.bye_week, p.team, seasonCtx?.byeWeeks) : false;
+
+  let reason = 'on bye';
+  if (onBye) {
+    reason = 'on bye';
+  } else if (p.injury_status && (INJURED_STATUSES as readonly string[]).includes(p.injury_status)) {
+    reason = injuryStatusText(p.injury_status);
+  } else if (p.status === 'NA' || p.injury_status === 'NA') {
+    reason = 'not active';
+  } else if (p.status === 'Inactive') {
+    reason = 'inactive';
+  } else {
+    reason = 'on bye or inactive';
+  }
+
+  const tooltipText = `Oracle score uses average projection (${avg.toFixed(1)} pts) as a placeholder while ${reason}. Will update once active.`;
+  const statsTooltipText = `0.0 pts (${reason}). Oracle rating uses ${avg.toFixed(1)} pt average projection placeholder.`;
+
+  return {
+    hasPlaceholder: true,
+    avgPoints: avg,
+    reason,
+    tooltipText,
+    statsTooltipText,
+  };
+}
+
+/**
+ * Returns effective points for Oracle scoring. If placeholder is disabled, returns raw statsPoints.
+ * If raw statsPoints > 0, returns raw statsPoints.
+ * If raw statsPoints is 0 and player qualifies for placeholder, returns averageProjectedPoints.
+ */
+export function oracleEffectivePoints(
+  p: Partial<CosmicPlayer> | null | undefined,
+  currentWeek?: number,
+  options?: { placeholder?: boolean },
+): number {
   if (!p) return 0;
+  const raw = statsPoints(p);
+  if (options?.placeholder === false) {
+    return raw;
+  }
+  if (raw > 0) {
+    return raw;
+  }
+  if (hasOraclePlaceholder(p, currentWeek)) {
+    const avg = averageProjectedPoints(p);
+    return avg > 0 ? avg : raw;
+  }
+  return raw;
+}
+
+export function statsScore(
+  p: Partial<CosmicPlayer> | null | undefined,
+  options?: { placeholder?: boolean; currentWeek?: number },
+): number {
+  const pts = oracleEffectivePoints(p, options?.currentWeek, options);
+  return Math.max(0, Math.min(100, (pts / STATS_FULL_SCALE) * 100));
+}
+
+export function starsScore(
+  p: Partial<CosmicPlayer> | null | undefined,
+  currentWeekOrOptions?: number | { placeholder?: boolean; currentWeek?: number },
+): number {
+  if (!p) return 0;
+  const options =
+    typeof currentWeekOrOptions === 'number'
+      ? { currentWeek: currentWeekOrOptions }
+      : currentWeekOrOptions;
+  const effectivePts = oracleEffectivePoints(p, options?.currentWeek, options);
   const calc = computeWeeklyPlayerFavorability({
     spiritScore: p.spirit_score ?? 50,
-    projectedPoints: statsPoints(p),
+    projectedPoints: effectivePts,
     injuryStatus: p.injury_status,
     isStarter: true,
     geomantic: p.divination_breakdown?.geomantic ?? 78,
@@ -79,10 +301,72 @@ export function starsScore(p: Partial<CosmicPlayer> | null | undefined): number 
 export function oracleScore(
   p: Partial<CosmicPlayer> | null | undefined,
   lambda?: number,
+  options?: { placeholder?: boolean; currentWeek?: number },
 ): number {
   const l = Math.max(0, Math.min(1, Number.isFinite(lambda) ? (lambda as number) : DEFAULT_CHAOS_LAMBDA));
-  const o = Math.round(((1 - l) * statsScore(p) + l * starsScore(p)) * 10) / 10;
+  const sScore = statsScore(p, options);
+  const stScore = starsScore(p, options);
+  const o = Math.round(((1 - l) * sScore + l * stScore) * 10) / 10;
   return Number.isFinite(o) ? o : 0;
+}
+
+/**
+ * Computes Oracle score strictly for the current week without average placeholder.
+ * Used for start/sit lineup optimization and swap checks so bye players are not started.
+ */
+export function currentWeekOracleScore(
+  p: Partial<CosmicPlayer> | null | undefined,
+  lambda?: number,
+  currentWeekOrOpts?: number | { currentWeek?: number },
+): number {
+  const currentWeek =
+    typeof currentWeekOrOpts === 'object' && currentWeekOrOpts !== null
+      ? currentWeekOrOpts.currentWeek
+      : typeof currentWeekOrOpts === 'number'
+        ? currentWeekOrOpts
+        : undefined;
+  return oracleScore(p, lambda, { placeholder: false, currentWeek });
+}
+
+export const MOCK_DEFAULT_ACTIVE_WEEK = 7;
+
+/**
+ * Resolves the active NFL week across screens and components.
+ * Honors explicit week overrides (e.g. from props or week selectors), falls back
+ * to registered Sleeper season context if active, unifies mock mode to Week 7
+ * (when mock bye weeks are active) if mock weekly matchup defaults to Week 1,
+ * and otherwise defaults to weekly_matchup.week or Week 2.
+ */
+export function resolveActiveWeek(
+  draftState?: { isLive?: boolean; mode?: string; weekly_matchup?: { week?: number } } | null,
+  overrideWeek?: number | null,
+): number {
+  if (typeof overrideWeek === 'number' && Number.isFinite(overrideWeek) && overrideWeek > 0) {
+    return Math.trunc(overrideWeek);
+  }
+  const season = getSeasonContext();
+  if (
+    typeof season?.currentWeek === 'number' &&
+    Number.isFinite(season.currentWeek) &&
+    season.currentWeek > 0
+  ) {
+    return Math.trunc(season.currentWeek);
+  }
+  if (!draftState) {
+    return 2;
+  }
+  const isMock = Boolean(!draftState.isLive && draftState.mode !== 'live');
+  if (isMock && (draftState?.weekly_matchup?.week === 1 || !draftState?.weekly_matchup?.week)) {
+    return MOCK_DEFAULT_ACTIVE_WEEK;
+  }
+  if (
+    typeof draftState?.weekly_matchup?.week === 'number' &&
+    Number.isFinite(draftState.weekly_matchup.week) &&
+    draftState.weekly_matchup.week > 0
+  ) {
+    return Math.trunc(draftState.weekly_matchup.week);
+  }
+  return 2;
 }
 
 // ---------------------------------------------------------------------------
@@ -193,17 +477,27 @@ export interface LineupSwap {
   moved?: { player: CosmicPlayer; to: string } | null;
 }
 
-/**
- * Best lineup by Oracle score. Slots are filled most-restrictive first (QB, RB,
- * WR, TE, then FLEX, then SUPER_FLEX), each with the best eligible player left.
- * Returns the swaps between the current lineup and that best lineup.
- */
+export function isUnavailable(p: Partial<CosmicPlayer> | null | undefined): boolean {
+  if (!p) return false;
+  return (
+    (INJURED_STATUSES as readonly string[]).includes(String(p.injury_status ?? '')) ||
+    p.status === 'Inactive' ||
+    p.status === 'NA' ||
+    p.injury_status === 'NA'
+  );
+}
+
 /**
  * The best lineup by Oracle: each starter slot (by slot_id) and who should
  * fill it. Lineup checks, waiver and trade advice all judge against this, so
  * they never contradict each other.
  */
-export function optimalLineup(roster: RosterSlot[], lambda: number): Map<string, CosmicPlayer | null> {
+export function optimalLineup(
+  roster: RosterSlot[],
+  lambda: number,
+  currentWeek?: number,
+  options?: { placeholder?: boolean; byeOnly?: boolean },
+): Map<string, CosmicPlayer | null> {
   const starters = roster.filter(isStarterSlot);
   // Players whose game has kicked off are locked: starters keep their slot,
   // bench players can't come in.
@@ -222,22 +516,40 @@ export function optimalLineup(roster: RosterSlot[], lambda: number): Map<string,
   const order = [...starters]
     .filter((slot) => !best.has(String(slot.slot_id)))
     .sort((a, b) => (a.eligible_positions?.length ?? 9) - (b.eligible_positions?.length ?? 9));
+  const scoreFn = (p: CosmicPlayer) => {
+    if (options?.placeholder) {
+      if (options?.byeOnly) {
+        const week = resolveContextWeek(currentWeek);
+        const seasonCtx = getSeasonContext();
+        const onBye = week ? isPlayerOnByeWeek(week, p.bye_week, p.team, seasonCtx?.byeWeeks) : false;
+        // In byeOnly mode (season-long trade evaluation), grant the average placeholder ONLY
+        // to healthy starters temporarily resting on bye. Injured/Out/IR/Inactive players must not
+        // displace active healthy starters.
+        if (onBye && !isUnavailable(p)) {
+          return oracleScore(p, lambda, { currentWeek });
+        }
+        return currentWeekOracleScore(p, lambda, currentWeek);
+      }
+      return oracleScore(p, lambda, { currentWeek });
+    }
+    return currentWeekOracleScore(p, lambda, currentWeek);
+  };
   for (const slot of order) {
     const choice = pool
       .filter((p) => !used.has(String(p.id)) && slot.eligible_positions?.includes(p.position))
-      .sort((a, b) => oracleScore(b, lambda) - oracleScore(a, lambda))[0];
+      .sort((a, b) => scoreFn(b) - scoreFn(a))[0];
     if (choice) used.add(String(choice.id));
     best.set(String(slot.slot_id), choice ?? null);
   }
   return best;
 }
 
-export function computeLineupCheck(roster: RosterSlot[], lambda: number): LineupSwap[] {
+export function computeLineupCheck(roster: RosterSlot[], lambda: number, currentWeek?: number): LineupSwap[] {
   const starters = roster.filter(isStarterSlot);
   const pool = roster.map((s) => s.player).filter((p): p is CosmicPlayer => Boolean(p));
   if (starters.length === 0 || pool.length === 0) return [];
 
-  const best = optimalLineup(roster, lambda);
+  const best = optimalLineup(roster, lambda, currentWeek);
   const used = new Set(
     Array.from(best.values()).filter((p): p is CosmicPlayer => Boolean(p)).map((p) => String(p.id)),
   );
@@ -259,7 +571,7 @@ export function computeLineupCheck(roster: RosterSlot[], lambda: number): Lineup
     // Pair with the weakest demoted starter whose slot the new player can fill.
     const candidates = demotedSlots
       .filter((s) => s.player && !takenOut.has(String(s.player.id)) && s.eligible_positions?.includes(pIn.position))
-      .sort((a, b) => oracleScore(a.player, lambda) - oracleScore(b.player, lambda));
+      .sort((a, b) => currentWeekOracleScore(a.player, lambda, currentWeek) - currentWeekOracleScore(b.player, lambda, currentWeek));
     const directSlot = candidates[0];
     const outSlot = directSlot ?? demotedSlots.find((s) => s.player && !takenOut.has(String(s.player.id)));
     const pOut = outSlot?.player ?? null;
@@ -272,13 +584,13 @@ export function computeLineupCheck(roster: RosterSlot[], lambda: number): Lineup
 
     const statsIn = statsPoints(pIn);
     const statsOut = statsPoints(pOut);
-    const starsIn = starsScore(pIn);
-    const starsOut = starsScore(pOut);
-    const dS = statsScore(pIn) - statsScore(pOut);
+    const starsIn = starsScore(pIn, { placeholder: false, currentWeek });
+    const starsOut = starsScore(pOut, { placeholder: false, currentWeek });
+    const dS = statsScore(pIn, { placeholder: false, currentWeek }) - statsScore(pOut, { placeholder: false, currentWeek });
     const dT = starsIn - starsOut;
     const favor = (d: number): 'in' | 'out' | 'even' => (Math.abs(d) < 0.05 ? 'even' : d > 0 ? 'in' : 'out');
     const flip = dS * dT < 0 ? dS / (dS - dT) : null;
-    const gain = oracleScore(pIn, lambda) - oracleScore(pOut, lambda);
+    const gain = currentWeekOracleScore(pIn, lambda, currentWeek) - currentWeekOracleScore(pOut, lambda, currentWeek);
     if (gain < 0.5) continue;
     swaps.push({
       slot: inSlot ? slotLabel(inSlot) : outSlot ? slotLabel(outSlot) : 'Lineup',
@@ -313,26 +625,6 @@ export interface WaiverMove {
   reason: string;
 }
 
-const STATUS_TEXT: Record<string, string> = {
-  Out: 'out',
-  IR: 'on injured reserve',
-  PUP: 'on the PUP list',
-  Sus: 'suspended',
-  NA: 'not active',
-  Questionable: 'questionable',
-  Doubtful: 'doubtful',
-};
-
-/** Plain-English Sleeper injury status ("NA" → "not active"). */
-export function injuryStatusText(status?: string | null): string {
-  const s = String(status ?? '');
-  return STATUS_TEXT[s] ?? s.toLowerCase();
-}
-
-function isUnavailable(p: CosmicPlayer): boolean {
-  return ['Out', 'IR', 'PUP', 'Sus', 'NA'].includes(String(p.injury_status ?? ''));
-}
-
 /**
  * Need-aware waiver moves. Never drops a starter, a player whose only problem
  * is a bye this week, or a player the roster needs for minimum depth.
@@ -352,7 +644,7 @@ export function computeWaiverMoves(
   );
   // Also protect anyone the lineup check says to start, so the app never
   // recommends starting a player and dropping him in the same breath.
-  for (const swap of computeLineupCheck(roster, lambda)) starterIds.add(String(swap.playerIn.id));
+  for (const swap of computeLineupCheck(roster, lambda, currentWeek)) starterIds.add(String(swap.playerIn.id));
   const eligible = new Set(roster.flatMap((s) => s.eligible_positions ?? []));
   const depth = minimumDepth(roster);
   const counts = countByPosition(rosterPlayers);
@@ -363,7 +655,7 @@ export function computeWaiverMoves(
     .filter((p) => (counts[p.position] ?? 0) > (depth[p.position] ?? 1));
   if (rawDroppable.length === 0) return [];
 
-  const dropScores = new Map(rawDroppable.map((d) => [String(d.id), oracleScore(d, lambda)]));
+  const dropScores = new Map(rawDroppable.map((d) => [String(d.id), oracleScore(d, lambda, { currentWeek })]));
   const droppable = [...rawDroppable].sort(
     (a, b) => (dropScores.get(String(a.id)) ?? 0) - (dropScores.get(String(b.id)) ?? 0),
   );
@@ -372,21 +664,25 @@ export function computeWaiverMoves(
 
   // Weakest starter each position could replace in the best lineup (after
   // the lineup check's swaps), for "would start".
-  const best = optimalLineup(roster, lambda);
+  const best = optimalLineup(roster, lambda, currentWeek);
   const weakestStarterFor = (pos: NFLPosition): number => {
     const scores = roster
       .filter(isStarterSlot)
       .filter((s) => s.eligible_positions?.includes(pos))
       .map((s) => best.get(String(s.slot_id)))
       .filter((p): p is CosmicPlayer => Boolean(p))
-      .map((p) => oracleScore(p, lambda));
+      .map((p) => currentWeekOracleScore(p, lambda, currentWeek));
     return scores.length ? Math.min(...scores) : Infinity;
   };
 
   const available = board
     .filter((p) => p.draft_status === 'available' && !rosterIds.has(String(p.id)))
     .filter((p) => eligible.has(p.position) && !isUnavailable(p) && !isLocked(p))
-    .map((p) => ({ p, o: oracleScore(p, lambda) }))
+    .map((p) => ({
+      p,
+      o: oracleScore(p, lambda, { currentWeek }),
+      currentO: currentWeekOracleScore(p, lambda, currentWeek),
+    }))
     .sort((a, b) => b.o - a.o);
 
   const signedCandidates = available.filter((c) => isPlayerSigned(c.p)).slice(0, 40);
@@ -398,10 +694,12 @@ export function computeWaiverMoves(
   const moves: WaiverMove[] = [];
   const usedDrops = new Set<string>();
 
-  const buildMove = (p: CosmicPlayer, o: number, drop: CosmicPlayer): WaiverMove => {
-    const dScore = dropScores.get(String(drop.id)) ?? oracleScore(drop, lambda);
+  const buildMove = (cand: { p: CosmicPlayer; o: number; currentO: number }, drop: CosmicPlayer): WaiverMove => {
+    const p = cand.p;
+    const o = cand.o;
+    const dScore = dropScores.get(String(drop.id)) ?? oracleScore(drop, lambda, { currentWeek });
     const gain = o - dScore;
-    const wouldStart = o > weakestStarterFor(p.position);
+    const wouldStart = cand.currentO > weakestStarterFor(p.position);
     const isWeakest = String(drop.id) === String(droppable[0]?.id);
     const dropWhy =
       isUnavailable(drop) ? `${drop.name} is ${injuryStatusText(drop.injury_status)}` :
@@ -413,8 +711,8 @@ export function computeWaiverMoves(
       add: p,
       drop,
       statsGain: Math.round((statsPoints(p) - statsPoints(drop)) * 10) / 10,
-      starsAdd: starsScore(p),
-      starsDrop: starsScore(drop),
+      starsAdd: starsScore(p, { currentWeek }),
+      starsDrop: starsScore(drop, { currentWeek }),
       oracleGain: Math.round(gain * 10) / 10,
       wouldStart,
       reason: `${dropWhy}. ${p.name} ${wouldStart ? 'would start for you' : 'adds bench depth'} at ${p.position}.`,
@@ -424,7 +722,8 @@ export function computeWaiverMoves(
   // Pass 1: Greedy drop assignment.
   // - Signed candidates claim the weakest available bench player.
   // - Unsigned candidates can ONLY claim an unused unsigned bench player.
-  for (const { p, o } of candidates) {
+  for (const cand of candidates) {
+    const { p, o } = cand;
     if (usedDrops.size >= droppable.length) break;
 
     const chosenDrop = isPlayerSigned(p)
@@ -432,10 +731,10 @@ export function computeWaiverMoves(
       : unsignedDrops.find((d) => !usedDrops.has(String(d.id)));
 
     if (!chosenDrop) continue;
-    const dScore = dropScores.get(String(chosenDrop.id)) ?? oracleScore(chosenDrop, lambda);
+    const dScore = dropScores.get(String(chosenDrop.id)) ?? oracleScore(chosenDrop, lambda, { currentWeek });
     if (o - dScore <= 1) continue;
 
-    moves.push(buildMove(p, o, chosenDrop));
+    moves.push(buildMove(cand, chosenDrop));
     usedDrops.add(String(chosenDrop.id));
   }
 
@@ -514,8 +813,12 @@ export interface TradePiece {
 }
 
 /** "Oracle 61.2 (15.3 pts · Stars 72)": a player's value, never stats alone. */
-export function describeValue(p: CosmicPlayer, lambda: number): string {
-  return `Oracle ${oracleScore(p, lambda).toFixed(1)} (${statsPoints(p).toFixed(1)} pts · Stars ${starsScore(p).toFixed(0)})`;
+export function describeValue(
+  p: CosmicPlayer,
+  lambda: number,
+  opts?: { currentWeek?: number },
+): string {
+  return `Oracle ${oracleScore(p, lambda, opts).toFixed(1)} (${statsPoints(p).toFixed(1)} pts · Stars ${starsScore(p, opts).toFixed(0)})`;
 }
 
 export interface TradePartner {
@@ -543,14 +846,15 @@ function bestUpgrade(
   toStarters: CosmicPlayer[],
   canGive: (p: CosmicPlayer) => boolean,
   lambda: number,
+  opts?: { currentWeek?: number },
 ): TradePiece | null {
   let best: TradePiece | null = null;
   for (const p of fromBench) {
     if (!canGive(p) || isUnavailable(p)) continue;
     const sameSpot = toStarters.filter((s) => s.position === p.position);
     if (sameSpot.length === 0) continue;
-    const weakest = sameSpot.reduce((w, s) => (oracleScore(s, lambda) < oracleScore(w, lambda) ? s : w));
-    const gain = oracleScore(p, lambda) - oracleScore(weakest, lambda);
+    const weakest = sameSpot.reduce((w, s) => (oracleScore(s, lambda, opts) < oracleScore(w, lambda, opts) ? s : w));
+    const gain = oracleScore(p, lambda, opts) - oracleScore(weakest, lambda, opts);
     if (gain >= 1 && (!best || gain > best.gain)) {
       best = { player: p, replaces: weakest, gain: Math.round(gain * 10) / 10 };
     }
@@ -568,6 +872,7 @@ export function computeTradePartners(
   board: CosmicPlayer[],
   roster: RosterSlot[],
   lambda: number,
+  opts?: { currentWeek?: number },
 ): TradePartner[] {
   const byId = new Map(board.map((p) => [String(p.id), p]));
   const depth = minimumDepth(roster);
@@ -584,10 +889,14 @@ export function computeTradePartners(
       bench: all.filter((p) => !starterIds.has(String(p.id))),
     };
   };
-  // Your side is judged on the best lineup, not the one currently set, so a
-  // trade never "starts over" a player the lineup check already benches.
+  const currentWeek = resolveContextWeek(opts?.currentWeek);
+  // Your side is judged on the best season-long lineup, not the one currently set, so a
+  // trade never "starts over" a player the lineup check already benches, nor does it treat
+  // a starter temporarily resting on a single-week bye as disposable bench trade bait.
+  // We use placeholder with byeOnly: true so starters on bye are protected while injured/IR
+  // players with zero weekly projection do not displace active healthy starters.
   const bestIds = new Set(
-    Array.from(optimalLineup(roster, lambda).values())
+    Array.from(optimalLineup(roster, lambda, currentWeek, { placeholder: true, byeOnly: true }).values())
       .filter((p): p is CosmicPlayer => Boolean(p))
       .map((p) => String(p.id)),
   );
@@ -614,20 +923,20 @@ export function computeTradePartners(
     const youCanOffer = theyNeed.filter((pos) => mySurplus.includes(pos));
     const theirCanGive = (p: CosmicPlayer) => (counts[p.position] ?? 0) > (depth[p.position] ?? 1);
 
-    const give = bestUpgrade(mine.bench, theirs.starters, canGiveMine, lambda);
-    const get = bestUpgrade(theirs.bench, mine.starters, theirCanGive, lambda);
+    const give = bestUpgrade(mine.bench, theirs.starters, canGiveMine, lambda, opts);
+    const get = bestUpgrade(theirs.bench, mine.starters, theirCanGive, lambda, opts);
     if (!(give && get) && youCanOffer.length === 0) continue;
 
     const name = t.name.replace(/\s*\(You\)$/, '');
     const parts: string[] = [];
     if (give) {
       parts.push(
-        `${name} starts ${give.replaces.name}, ${describeValue(give.replaces, lambda)}, at ${give.player.position}; your bench ${give.player.name} rates ${describeValue(give.player, lambda)}.`,
+        `${name} starts ${give.replaces.name}, ${describeValue(give.replaces, lambda, opts)}, at ${give.player.position}; your bench ${give.player.name} rates ${describeValue(give.player, lambda, opts)}.`,
       );
     }
     if (get) {
       parts.push(
-        `Their bench ${get.player.name}, ${describeValue(get.player, lambda)}, would start over your ${get.replaces.name}, ${describeValue(get.replaces, lambda)}.`,
+        `Their bench ${get.player.name}, ${describeValue(get.player, lambda, opts)}, would start over your ${get.replaces.name}, ${describeValue(get.replaces, lambda, opts)}.`,
       );
     }
     if (youCanOffer.length) {
@@ -727,6 +1036,7 @@ export function computeTeamOracles(
   teams: CompetitorTeam[],
   board: CosmicPlayer[],
   lambda: number,
+  opts?: { currentWeek?: number },
 ): TeamOracle[] {
   const byId = new Map(board.map((p) => [String(p.id), p]));
   const out: TeamOracle[] = [];
@@ -736,11 +1046,11 @@ export function computeTeamOracles(
       .filter((p): p is CosmicPlayer => Boolean(p));
     if (starters.length === 0) continue;
     const mean = (f: (p: CosmicPlayer) => number) => starters.reduce((a, p) => a + f(p), 0) / starters.length;
-    const ranked = [...starters].sort((a, b) => oracleScore(b, lambda) - oracleScore(a, lambda));
+    const ranked = [...starters].sort((a, b) => oracleScore(b, lambda, opts) - oracleScore(a, lambda, opts));
     out.push({
       team,
-      oracle: Math.round(mean((p) => oracleScore(p, lambda)) * 10) / 10,
-      stars: Math.round(mean(starsScore) * 10) / 10,
+      oracle: Math.round(mean((p) => oracleScore(p, lambda, opts)) * 10) / 10,
+      stars: Math.round(mean((p) => starsScore(p, opts)) * 10) / 10,
       points: Math.round(starters.reduce((a, p) => a + statsPoints(p), 0) * 10) / 10,
       starters,
       best: ranked[0] ?? null,

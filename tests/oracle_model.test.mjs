@@ -34,6 +34,7 @@ const scoring = await import('../core/lib/scoring.ts');
 const headshots = await import('../components/common/PlayerHeadshot.tsx');
 const gameStatus = await import('../core/lib/gameStatus.ts');
 const nflGames = await import('../core/lib/nflGames.ts');
+const seasonContext = await import('../core/lib/seasonContext.ts');
 const sleeper = await import('./dist/lib/sleeper.js');
 const mockData = await import('./dist/lib/mockData.js');
 const { default: OneiromancyContext } = await import('./dist/context/OneiromancyContext.js');
@@ -46,7 +47,7 @@ const { TradesScreen } = await import('./dist/components/screens/TradesScreen.js
 const { PlayerMarketplace } = await import('./dist/components/screens/PlayerMarketplace.js');
 const { OneiromancyDashboard } = await import('./dist/components/screens/OneiromancyDashboard.js');
 const { MatchupsScreen } = await import('./dist/components/screens/MatchupsScreen.js');
-const { CosmicBoard } = await import('./dist/components/screens/CosmicBoard.js');
+const { CosmicBoard, comparePlayersForBoard } = await import('./dist/components/screens/CosmicBoard.js');
 const { LeagueScreen } = await import('./dist/components/screens/LeagueScreen.js');
 
 function buildMockCtx(overrides = {}) {
@@ -1144,7 +1145,7 @@ describe('Tier 10: Oracle model and recommendations', () => {
     it('10.13.4 MatchupsScreen renders unclipped stadium venue names in dedicated subrow', () => {
       const ctx = buildMockCtx();
       const matchupView = render(
-        jsx(OneiromancyContext.Provider, { value: ctx, children: jsx(MatchupsScreen, {}) })
+        jsx(OneiromancyContext.Provider, { value: ctx, children: jsx(MatchupsScreen, { weeklyMatchup: ctx.draftState.weekly_matchup }) })
       );
       const starterCard = matchupView.getByTestId('matchup-starter-card-4574');
       assert.ok(starterCard, 'Starter card must be present');
@@ -1465,6 +1466,693 @@ describe('Tier 10: Oracle model and recommendations', () => {
       } finally {
         sleeper.setSeasonContext(null);
       }
+    });
+  });
+
+  describe('10.14 Bye-week lookahead projections & scoring invariants', () => {
+    it('10.14.1 getNextPlayWeek resolves next non-bye week across bye, non-bye, Wk 14, Wk 18, schedule-loaded gaps, and unloaded schedule', () => {
+      try {
+        nflGames.clearNflGames();
+        const byeMap = { BUF: 7, DET: 9, SF: 14, KC: 18 };
+        assert.equal(oracle.getNextPlayWeek('BUF', 7, byeMap), 8, 'Week-7 bye team returns Week 8 when schedule unloaded');
+        assert.equal(oracle.getNextPlayWeek('DET', 7, byeMap), null, 'Non-bye team returns null');
+        assert.equal(oracle.getNextPlayWeek('SF', 14, byeMap), 15, 'Week-14 bye team returns Week 15');
+        assert.equal(oracle.getNextPlayWeek('KC', 18, byeMap), null, 'Week-18 bye team returns null');
+        assert.equal(oracle.getNextPlayWeek('KC', 17, { KC: 18 }, 18), null, 'Week-17 non-bye team with Week-18 bye returns null');
+        assert.equal(oracle.getNextPlayWeek('', 7, byeMap), null, 'Empty team string returns null');
+        assert.equal(oracle.getNextPlayWeek('   ', 7, byeMap), null, 'Whitespace-only team string returns null');
+        assert.equal(oracle.getNextPlayWeek(null, 7, byeMap), null, 'Null team returns null');
+        assert.equal(oracle.getNextPlayWeek(undefined, 7, byeMap), null, 'Undefined team returns null');
+        assert.equal(oracle.getNextPlayWeek('BUF', 2, { BUF: 2 }), null, 'Weeks outside NFL bye window (5..14) return null');
+        assert.equal(oracle.getNextPlayWeek('BUF', 7, {}, 7), 8, 'Falls back to player bye_week when season map absent');
+        assert.equal(oracle.getNextPlayWeek('FA', 7, byeMap, 7), null, 'Free agent FA returns null even with byeWeek 7');
+        assert.equal(oracle.getNextPlayWeek('NFL', 7, byeMap, 7), null, 'Unsigned NFL string returns null');
+        assert.equal(oracle.getNextPlayWeek('Free Agent', 7, byeMap, 7), null, 'Free Agent string returns null');
+        assert.equal(sleeper.getNextPlayWeek('BUF', 7, byeMap), 8, 'sleeper re-export of getNextPlayWeek works');
+        assert.equal(sleeper.getNextPlayWeek('FA', 7, byeMap, 7), null, 'sleeper re-export returns null for FA');
+
+        nflGames.setWeekGames(8, [
+          { week: 8, home: 'KC', away: 'LV', kickoff: null, date: '2026-10-25', venue: null, neutral: false },
+        ]);
+        nflGames.setWeekGames(9, [
+          { week: 9, home: 'BUF', away: 'MIA', kickoff: null, date: '2026-11-01', venue: null, neutral: false },
+        ]);
+        assert.equal(
+          oracle.getNextPlayWeek('BUF', 7, byeMap),
+          9,
+          'Skips intermediate Week 8 when loaded schedule has no game for BUF',
+        );
+
+        nflGames.setWeekGames(8, [
+          { week: 8, home: 'BUF', away: 'NYJ', kickoff: null, date: '2026-10-25', venue: null, neutral: false },
+        ]);
+        assert.equal(
+          oracle.getNextPlayWeek('BUF', 7, byeMap),
+          8,
+          'Returns Week 8 when loaded schedule confirms BUF plays in Week 8',
+        );
+
+        for (const w of [15, 16, 17, 18]) {
+          nflGames.setWeekGames(w, [
+            { week: w, home: 'KC', away: 'LV', kickoff: null, date: '2026-12-06', venue: null, neutral: false },
+          ]);
+        }
+        assert.equal(
+          oracle.getNextPlayWeek('SF', 14, byeMap),
+          null,
+          'Week-14 bye team returns null when Weeks 15-18 schedule has no games for team',
+        );
+      } finally {
+        nflGames.clearNflGames();
+      }
+    });
+
+    it('10.14.2 averageProjectedPoints, hasOraclePlaceholder, and oracleEffectivePoints fallback hierarchy', () => {
+      const explicitAvg = player('Avg Player', 'QB', 0, 80, { bye_week: 7, average_projected_points: 17.5 });
+      assert.equal(oracle.averageProjectedPoints(explicitAvg), 17.5);
+      assert.equal(oracle.hasOraclePlaceholder(explicitAvg, 7), true);
+      assert.equal(oracle.oracleEffectivePoints(explicitAvg, 7), 17.5);
+
+      const baselineFallback = player('Base Player', 'QB', 0, 80, { bye_week: 7, baseline_projected_points: 16.2 });
+      assert.equal(oracle.averageProjectedPoints(baselineFallback), 16.2);
+      assert.equal(oracle.hasOraclePlaceholder(baselineFallback, 7), true);
+      assert.equal(oracle.oracleEffectivePoints(baselineFallback, 7), 16.2);
+
+      const seasonFallback = player('Season Player', 'QB', 0, 80, { bye_week: 7, season_projected_points: 255.0 });
+      assert.equal(oracle.averageProjectedPoints(seasonFallback), 15.0);
+      assert.equal(oracle.hasOraclePlaceholder(seasonFallback, 7), true);
+
+      const activePlaying = player('Active Player', 'QB', 21.0, 80, { bye_week: 7, average_projected_points: 17.5 });
+      assert.equal(oracle.hasOraclePlaceholder(activePlaying, 7), false, 'Active positive projection does not use placeholder');
+      assert.equal(oracle.oracleEffectivePoints(activePlaying, 7), 21.0);
+
+      const healthyNotOnBye = player('Healthy Zero', 'QB', 0, 80, { bye_week: 9, average_projected_points: 17.5 });
+      assert.equal(oracle.hasOraclePlaceholder(healthyNotOnBye, 7), false, 'Healthy player not on bye must not receive placeholder');
+
+      const placeholderDisabled = oracle.oracleEffectivePoints(explicitAvg, 7, { placeholder: false });
+      assert.equal(placeholderDisabled, 0, 'options.placeholder=false must bypass placeholder and return raw 0');
+    });
+
+    it('10.14.3 oraclePlaceholderInfo generates explanatory tooltips for bye, IR, Out, and inactive statuses', () => {
+      const byePlayer = player('Josh Allen', 'QB', 0, 82, {
+        team: 'BUF',
+        bye_week: 7,
+        average_projected_points: 18.5,
+      });
+      const byeInfo = oracle.oraclePlaceholderInfo(byePlayer, 7);
+      assert.equal(byeInfo.hasPlaceholder, true);
+      assert.equal(byeInfo.avgPoints, 18.5);
+      assert.equal(byeInfo.reason, 'on bye');
+      assert.equal(
+        byeInfo.tooltipText,
+        'Oracle score uses average projection (18.5 pts) as a placeholder while on bye. Will update once active.',
+      );
+      assert.equal(
+        byeInfo.statsTooltipText,
+        '0.0 pts (on bye). Oracle rating uses 18.5 pt average projection placeholder.',
+      );
+
+      const irPlayer = player('Injured Star', 'RB', 0, 80, {
+        team: 'DET',
+        bye_week: 9,
+        injury_status: 'IR',
+        average_projected_points: 14.0,
+      });
+      const irInfo = oracle.oraclePlaceholderInfo(irPlayer, 7);
+      assert.equal(irInfo.hasPlaceholder, true);
+      assert.equal(irInfo.reason, 'on injured reserve');
+      assert.equal(
+        irInfo.tooltipText,
+        'Oracle score uses average projection (14.0 pts) as a placeholder while on injured reserve. Will update once active.',
+      );
+      assert.equal(
+        irInfo.statsTooltipText,
+        '0.0 pts (on injured reserve). Oracle rating uses 14.0 pt average projection placeholder.',
+      );
+    });
+
+    it('10.14.4 oracleScore uses placeholder by default and currentWeekOracleScore evaluates raw 0 for start/sit checks', () => {
+      const byePlayer = player('Healthy Bye Star', 'QB', 0, 85, {
+        team: 'BUF',
+        bye_week: 7,
+        average_projected_points: 18.0,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const placeholderOracle = oracle.oracleScore(byePlayer, 0.5, { currentWeek: 7 });
+      const currentWeekOracle = oracle.currentWeekOracleScore(byePlayer, 0.5, 7);
+      assert.ok(
+        placeholderOracle > currentWeekOracle + 25.0,
+        `Placeholder Oracle (${placeholderOracle}) must be much higher than currentWeekOracle (${currentWeekOracle}) for healthy bye star`,
+      );
+
+      // Verify real injury still incurs health penalty even with placeholder
+      const injuredPlayer = player('Injured Star', 'QB', 0, 85, {
+        team: 'BUF',
+        bye_week: 7,
+        injury_status: 'IR',
+        average_projected_points: 18.0,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const injuredStars = oracle.starsScore(injuredPlayer, 7);
+      const healthyStars = oracle.starsScore(byePlayer, 7);
+      assert.ok(
+        healthyStars - injuredStars >= 20.0,
+        `Injured player stars (${injuredStars}) must reflect severe injury penalty compared to healthy bye player (${healthyStars})`,
+      );
+    });
+
+    it('10.14.5 bye player with missing, zero, negative, NaN, or Infinity next_week_projected_points does not invent lookahead scores', () => {
+      const missingNext = player('Bench Bye Missing', 'WR', 0, 74, {
+        team: 'BUF',
+        bye_week: 7,
+        next_play_week: 8,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const zeroNext = player('Bench Bye Zero', 'WR', 0, 74, {
+        team: 'BUF',
+        bye_week: 7,
+        next_play_week: 8,
+        next_week_projected_points: 0,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const negativeNext = player('Bench Bye Negative', 'WR', 0, 74, {
+        team: 'BUF',
+        bye_week: 7,
+        next_play_week: 8,
+        next_week_projected_points: -5,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const nanNext = player('Bench Bye NaN', 'WR', 0, 74, {
+        team: 'BUF',
+        bye_week: 7,
+        next_play_week: 8,
+        next_week_projected_points: Number.NaN,
+        divination_breakdown: { geomantic: 78 },
+      });
+      const infNext = player('Bench Bye Infinity', 'WR', 0, 74, {
+        team: 'BUF',
+        bye_week: 7,
+        next_play_week: 8,
+        next_week_projected_points: Number.POSITIVE_INFINITY,
+        divination_breakdown: { geomantic: 78 },
+      });
+
+      for (const p of [missingNext, zeroNext, negativeNext, nanNext, infNext]) {
+        assert.equal(oracle.statsPoints(p), 0);
+        assert.ok(oracle.starsScore(p) > 0);
+        assert.ok(oracle.oracleScore(p, 0.75) > 0);
+      }
+    });
+
+    it('10.14.6 spirit_score is identical with and without lookahead', () => {
+      const basePlayer = player('Spirit Invariance', 'RB', 0, 75, {
+        team: 'BUF',
+        bye_week: 7,
+        adp: 18.5,
+      });
+      const withLookahead = {
+        ...basePlayer,
+        next_play_week: 8,
+        next_week_projected_points: 16.4,
+      };
+      const [scoredBase] = scoring.recomputeDraftScores([basePlayer], {
+        chaos_lambda: 0.75,
+        oracle_weights: scoring.DEFAULT_ORACLE_WEIGHTS,
+      });
+      const [scoredLookahead] = scoring.recomputeDraftScores([withLookahead], {
+        chaos_lambda: 0.75,
+        oracle_weights: scoring.DEFAULT_ORACLE_WEIGHTS,
+      });
+      assert.equal(scoredLookahead.spirit_score, scoredBase.spirit_score);
+      assert.deepEqual(scoring.DIVINATION_PILLARS.map((p) => p.key), [
+        'celestial',
+        'geomantic',
+        'numeric',
+        'harmony',
+        'oracular',
+      ]);
+    });
+
+    it('10.14.7 updating lambda or oracle_weights updates oracle and stars scores', () => {
+      const byePlayer = player('Weight Sensitivity', 'WR', 0, 80, {
+        team: 'BUF',
+        bye_week: 7,
+        adp: 12,
+        next_play_week: 8,
+        next_week_projected_points: 15,
+        divination_breakdown: {
+          celestial: 92,
+          numeric: 42,
+          geomantic: 78,
+          oracular: 65,
+          harmony: 95,
+        },
+      });
+      const statsHeavy = oracle.oracleScore(byePlayer, 0.1);
+      const starsHeavy = oracle.oracleScore(byePlayer, 0.9);
+      assert.notEqual(statsHeavy, starsHeavy, 'Changing lambda must update oracle score');
+
+      const [recomputedHarmony] = scoring.recomputeDraftScores([byePlayer], {
+        chaos_lambda: 0.75,
+        oracle_weights: { celestial: 0, numeric: 0, geomantic: 0, oracular: 0, harmony: 1 },
+      });
+      const [recomputedNumeric] = scoring.recomputeDraftScores([byePlayer], {
+        chaos_lambda: 0.75,
+        oracle_weights: { celestial: 0, numeric: 1, geomantic: 0, oracular: 0, harmony: 0 },
+      });
+      assert.notEqual(
+        oracle.starsScore(recomputedHarmony),
+        oracle.starsScore(recomputedNumeric),
+        'Updating oracle_weights must update spirit_score and stars',
+      );
+    });
+
+    it('10.14.8 deriveWeeklyMatchup, computeLineupCheck, computeWaiverMoves, vor_normalized, draft_score, and board sorting remain unchanged', () => {
+      const byeStarter = player('Bye Starter', 'QB', 0, 95, {
+        id: 'bye_qb_1',
+        team: 'BUF',
+        bye_week: 7,
+        vor_normalized: 88.2,
+        draft_score: 91.4,
+      });
+      const byeStarterWithLookahead = {
+        ...byeStarter,
+        next_play_week: 8,
+        next_week_projected_points: 24.5,
+      };
+      const benchHealthyQb = player('Healthy Bench QB', 'QB', 14.2, 70, {
+        id: 'healthy_qb_2',
+        team: 'DET',
+        bye_week: 9,
+        vor_normalized: 61.0,
+        draft_score: 66.5,
+      });
+      const waiverTarget = player('Waiver QB', 'QB', 18.0, 85, {
+        id: 'waiver_qb_3',
+        team: 'BAL',
+        bye_week: 14,
+        draft_status: 'available',
+        vor_normalized: 72.0,
+        draft_score: 79.0,
+      });
+
+      const makeRoster = (qbStarter) => [
+        slot('QB', ['QB'], qbStarter),
+        slot('BN1', ['BN', 'QB', 'RB', 'WR', 'TE'], benchHealthyQb),
+      ];
+      const competitor = {
+        roster_id: 1,
+        owner_id: 'u_me',
+        name: 'My Team',
+        is_user: true,
+        players: ['bye_qb_1', 'healthy_qb_2'],
+        projected_points: 14.2,
+        spirit_avg: 82.5,
+      };
+      const opponent = {
+        roster_id: 2,
+        owner_id: 'u_opp',
+        name: 'Opponent',
+        is_user: false,
+        players: [],
+        projected_points: 20.0,
+        spirit_avg: 75.0,
+      };
+      const matchups = [
+        { roster_id: 1, matchup_id: 1, starters: ['bye_qb_1'], players: ['bye_qb_1', 'healthy_qb_2'], points: 0 },
+        { roster_id: 2, matchup_id: 1, starters: [], players: [], points: 20.0 },
+      ];
+
+      const mWithout = sleeper.deriveWeeklyMatchup(1, [competitor, opponent], matchups, [byeStarter, benchHealthyQb], makeRoster(byeStarter), 7);
+      const mWith = sleeper.deriveWeeklyMatchup(1, [competitor, opponent], matchups, [byeStarterWithLookahead, benchHealthyQb], makeRoster(byeStarterWithLookahead), 7);
+      assert.equal(mWith.user_team.projected_points, mWithout.user_team.projected_points);
+      assert.equal(mWith.player_favorabilities[0].projected_points, 0);
+      assert.equal(mWith.player_favorabilities[0].game_kickoff, 'Bye week');
+
+      const optWithout = oracle.optimalLineup(makeRoster(byeStarter), 0.75);
+      const optWith = oracle.optimalLineup(makeRoster(byeStarterWithLookahead), 0.75);
+      assert.equal(optWith.get('QB')?.id, 'healthy_qb_2', 'optimalLineup must keep bye player out of starter slot');
+      assert.equal(optWith.get('QB')?.id, optWithout.get('QB')?.id);
+      const benchByeRoster = [
+        slot('QB', ['QB'], benchHealthyQb),
+        slot('BN1', ['BN', 'QB', 'RB', 'WR', 'TE'], byeStarterWithLookahead),
+      ];
+      assert.deepEqual(
+        oracle.computeLineupCheck(benchByeRoster, 0.75),
+        [],
+        'computeLineupCheck must never promote a bye player into a starter slot',
+      );
+
+      const weakBenchQb = player('Weak Bench QB', 'QB', 8.0, 52, {
+        id: 'weak_qb_4',
+        team: 'CLE',
+        bye_week: 10,
+        vor_normalized: 45.0,
+        draft_score: 51.0,
+      });
+      const makeFullRoster = (qbStarter) => [
+        slot('QB', ['QB'], qbStarter),
+        slot('BN1', ['QB'], benchHealthyQb),
+        slot('BN2', ['QB'], weakBenchQb),
+      ];
+      const waiverBoardWithout = [byeStarter, benchHealthyQb, weakBenchQb, waiverTarget];
+      const waiverBoardWith = [byeStarterWithLookahead, benchHealthyQb, weakBenchQb, waiverTarget];
+      const waiversWithout = oracle.computeWaiverMoves(waiverBoardWithout, makeFullRoster(byeStarter), 0.75, 7);
+      const waiversWith = oracle.computeWaiverMoves(waiverBoardWith, makeFullRoster(byeStarterWithLookahead), 0.75, 7);
+      assert.ok(waiversWith.length > 0, 'computeWaiverMoves must produce real waiver candidates on valid RosterSlot[] input');
+      assert.deepEqual(waiversWith, waiversWithout, 'computeWaiverMoves must be completely invariant to next-week lookahead fields');
+
+      const [recompWithout] = scoring.recomputeDraftScores([byeStarter], { chaos_lambda: 0.75 });
+      const [recomp] = scoring.recomputeDraftScores([byeStarterWithLookahead], { chaos_lambda: 0.75 });
+      assert.equal(recomp.vor_normalized, recompWithout.vor_normalized);
+      assert.equal(recomp.draft_score, recompWithout.draft_score, 'draft_score must remain unchanged by lookahead fields');
+
+      assert.ok(comparePlayersForBoard(benchHealthyQb, byeStarterWithLookahead, 'oracle', 'desc', 0.75) < 0);
+    });
+
+    it('10.14.9 computeWaiverMoves gives wouldStart=false to a bye waiver add while ranking by placeholder oracle', () => {
+      const activeStarterQb = player('Active Starter', 'QB', 18.0, 75, {
+        id: 'act_qb',
+        team: 'KC',
+        bye_week: 10,
+      });
+      const droppableBench = player('Droppable Bench', 'QB', 5.0, 40, {
+        id: 'drop_qb',
+        team: 'NYJ',
+        bye_week: 12,
+      });
+      const extraBench = player('Extra Bench', 'QB', 6.0, 42, {
+        id: 'extra_qb',
+        team: 'TEN',
+        bye_week: 12,
+      });
+      const byeWaiverTarget = player('Bye Star Free Agent', 'QB', 0, 90, {
+        id: 'bye_fa',
+        team: 'DAL',
+        bye_week: 7,
+        average_projected_points: 22.0,
+        draft_status: 'available',
+      });
+      const roster = [
+        slot('QB', ['QB'], activeStarterQb),
+        slot('BN1', ['QB'], droppableBench),
+        slot('BN2', ['QB'], extraBench),
+      ];
+      const moves = oracle.computeWaiverMoves([byeWaiverTarget], roster, 0.75, 7);
+      assert.ok(moves.length > 0, 'Should find waiver move for high-oracle bye player');
+      assert.equal(moves[0].add.id, 'bye_fa');
+      assert.equal(
+        moves[0].wouldStart,
+        false,
+        'Bye waiver candidate must not be marked wouldStart for the current week',
+      );
+    });
+
+    it('10.14.10 synthetic live players without verified projections never receive average_projected_points or placeholder', () => {
+      const syntheticPlayer = player('Synthetic Depth', 'RB', 0, 50, {
+        id: 'synth_rb',
+        team: 'MIA',
+        bye_week: 6,
+      });
+      assert.equal(oracle.averageProjectedPoints(syntheticPlayer), 0);
+      assert.equal(oracle.hasOraclePlaceholder(syntheticPlayer, 7), false);
+      const info = oracle.oraclePlaceholderInfo(syntheticPlayer, 7);
+      assert.equal(info.hasPlaceholder, false);
+      assert.equal(info.avgPoints, 0);
+    });
+
+    it('10.14.11 team Matchup Oracle strictly equals the mean of row Oracles when a starter is on bye', () => {
+      const activeStarter = player('Active WR', 'WR', 16.0, 75, {
+        id: 'act_wr',
+        team: 'KC',
+        bye_week: 10,
+        average_projected_points: 16.0,
+      });
+      const byeStarter = player('Bye WR', 'WR', 0, 80, {
+        id: 'bye_wr',
+        team: 'BUF',
+        bye_week: 7,
+        average_projected_points: 18.0,
+      });
+      const starters = [activeStarter, byeStarter];
+      const lambda = 0.75;
+      const selectedWeek = 7;
+
+      const o1 = oracle.oracleScore(activeStarter, lambda, { currentWeek: selectedWeek });
+      const o2 = oracle.oracleScore(byeStarter, lambda, { currentWeek: selectedWeek });
+
+      assert.ok(oracle.hasOraclePlaceholder(byeStarter, selectedWeek));
+      assert.equal(oracle.oracleEffectivePoints(byeStarter, selectedWeek), 18.0);
+      assert.ok(o2 > 50, 'Bye starter oracle score should reflect placeholder projection');
+
+      const sum = starters.reduce((acc, s) => acc + oracle.oracleScore(s, lambda, { currentWeek: selectedWeek }), 0);
+      const teamOracle = Math.round((sum / starters.length) * 10) / 10;
+      const expectedMean = Math.round(((o1 + o2) / 2) * 10) / 10;
+
+      assert.equal(teamOracle, expectedMean, 'Team Matchup Oracle must strictly equal the mean of row Oracles with selectedWeek');
+
+      // Verify describeValue threads currentWeek
+      const desc = oracle.describeValue(byeStarter, lambda, { currentWeek: selectedWeek });
+      assert.ok(desc.includes(`Oracle ${o2.toFixed(1)}`), 'describeValue must include placeholder oracle score');
+
+      // Verify computeTeamOracles threads currentWeek
+      const teamOracles = oracle.computeTeamOracles(
+        [{ id: 't1', name: 'Team 1', starters: ['act_wr', 'bye_wr'] }],
+        starters,
+        lambda,
+        { currentWeek: selectedWeek },
+      );
+      assert.equal(teamOracles[0].oracle, expectedMean, 'computeTeamOracles must thread currentWeek');
+
+      // Verify MatchupsScreen rendering with week 7 bye starter
+      try {
+        sleeper.setSeasonContext({
+          season: '2025',
+          leagueId: 'mock_league_1',
+          currentWeek: 7,
+          lastRegularWeek: 14,
+          byeWeeks: { BUF: 7 },
+          weekDates: { 7: 'Oct 16 - Oct 20, 2025' },
+          matchupsByWeek: { 7: [] },
+        });
+        const derivedW7 = sleeper.deriveWeeklyMatchup(
+          7,
+          mockData.mockCompetitorTeams,
+          null,
+          mockData.mockCosmicBoard,
+          mockData.mockMyRoster,
+          7,
+        );
+        const ctxW7 = buildMockCtx({
+          draftState: {
+            ...mockData.mock_oneiromancy_draft_2025,
+            weekly_matchup: derivedW7,
+          },
+        });
+        const viewW7 = render(
+          jsx(OneiromancyContext.Provider, { value: ctxW7, children: jsx(MatchupsScreen, { weeklyMatchup: derivedW7 }) }),
+        );
+        const textW7 = viewW7.container.textContent || '';
+        assert.ok(textW7.includes('Starter Oracle Average') || textW7.includes('AstralOracles'), 'MatchupsScreen must render team oracle headers');
+        viewW7.unmount();
+      } finally {
+        sleeper.setSeasonContext(null);
+      }
+    });
+
+    it('10.14.12 hasOraclePlaceholder returns false when week cannot be resolved rather than guessing week 2', () => {
+      sleeper.setSeasonContext(null);
+      const byePlayer = player('Bye Player', 'WR', 0, 80, {
+        id: 'bye_p',
+        team: 'BUF',
+        bye_week: 7,
+        average_projected_points: 15.0,
+      });
+      // Without passing week and without season context, it must return false (no guessing week 2)
+      assert.equal(oracle.hasOraclePlaceholder(byePlayer, undefined), false);
+      const info = oracle.oraclePlaceholderInfo(byePlayer, undefined);
+      assert.equal(info.hasPlaceholder, false);
+      assert.equal(info.avgPoints, 0);
+
+      // With explicit week 7, it activates
+      assert.equal(oracle.hasOraclePlaceholder(byePlayer, 7), true);
+      const infoW7 = oracle.oraclePlaceholderInfo(byePlayer, 7);
+      assert.equal(infoW7.hasPlaceholder, true);
+      assert.equal(infoW7.avgPoints, 15.0);
+    });
+
+    it('10.14.13 computeTradePartners threads currentWeek option correctly and protects starters on bye from being offered as trade bait', () => {
+      seasonContext.setSeasonContextState(null);
+      // Both teams have spare depth at the position they give (depth = dedicated slots + 1).
+      // My team has a top starting RB on Week 7 bye (myByeRB, avg 18.0 pts) and active backups.
+      const myByeRB = player('My Bye RB', 'RB', 0, 85, { bye_week: 7, average_projected_points: 18.0 });
+      const myActiveRB1 = player('My Active RB1', 'RB', 17, 85);
+      const myActiveRB2 = player('My Active RB2', 'RB', 16, 85);
+      const myWR = player('My Weak WR', 'WR', 4, 60);
+      const myWR2 = player('My WR2', 'WR', 3, 55);
+
+      const theirRB = player('Their Weak RB', 'RB', 6, 60);
+      const theirRB2 = player('Their RB2', 'RB', 5, 55);
+      const theirBenchWR = player('Their Bench WR', 'WR', 16, 85);
+      const theirWRs = [player('Their WR1', 'WR', 18, 85), player('Their WR2', 'WR', 17, 85)];
+
+      const roster = [
+        slot('RB', ['RB'], myByeRB),
+        slot('WR', ['WR'], myWR),
+        slot('BN1', ['RB', 'WR'], myActiveRB1),
+        slot('BN2', ['RB', 'WR'], myActiveRB2),
+        slot('BN3', ['RB', 'WR'], myWR2),
+      ];
+
+      // In Week 7, optimalLineup benches myByeRB (0 stats pts) and starts active RB1 for match day
+      const optimalW7 = oracle.optimalLineup(roster, 0.75, 7);
+      assert.equal(optimalW7.get('RB')?.id, myActiveRB1.id, 'Week 7 optimal lineup starts active RB over bye RB');
+
+      const me = {
+        roster_id: 1,
+        slot: 1,
+        name: 'Me (You)',
+        is_user: true,
+        players: [myByeRB, myActiveRB1, myActiveRB2, myWR, myWR2].map((x) => x.id),
+        starters: [myByeRB.id, myWR.id],
+      };
+      const them = {
+        roster_id: 2,
+        slot: 2,
+        name: 'Them',
+        players: [theirRB, theirRB2, theirBenchWR, ...theirWRs].map((x) => x.id),
+        starters: [theirRB.id, theirWRs[0].id],
+      };
+      const board = [myByeRB, myActiveRB1, myActiveRB2, myWR, myWR2, theirRB, theirRB2, theirBenchWR, ...theirWRs];
+
+      // In Week 7, trade partner evaluation considers season-long starter quality,
+      // so myByeRB (top starter resting on 1-week bye) is NEVER offered as bench trade bait.
+      const partnersW7 = oracle.computeTradePartners([me, them], board, roster, 0.75, { currentWeek: 7 });
+      assert.ok(Array.isArray(partnersW7), 'computeTradePartners with currentWeek must return array');
+      assert.ok(partnersW7.length > 0, 'Must identify mutual trade partner in Week 7');
+      assert.ok(partnersW7[0].give, 'Must identify give piece');
+      assert.ok(partnersW7[0].get, 'Must identify get piece');
+      assert.equal(
+        partnersW7[0].give.player.id,
+        myActiveRB1.id,
+        'Week 7 trade partner recommendation trades active backup RB1, protecting starting myByeRB on bye',
+      );
+      assert.notEqual(
+        partnersW7[0].give.player.id,
+        myByeRB.id,
+        'Starter on single-week bye must never be offered as disposable bench trade bait',
+      );
+
+      // In Week 8 (non-bye), when the starter has a regular active weekly projection (18 pts),
+      // they remain the starter, and active backup RB1 is traded
+      const myActiveStarterRB = player('My Starter RB (W8 active)', 'RB', 18, 85, { bye_week: 7, average_projected_points: 18.0 });
+      const rosterW8 = [
+        slot('RB', ['RB'], myActiveStarterRB),
+        slot('WR', ['WR'], myWR),
+        slot('BN1', ['RB', 'WR'], myActiveRB1),
+        slot('BN2', ['RB', 'WR'], myActiveRB2),
+        slot('BN3', ['RB', 'WR'], myWR2),
+      ];
+      const meW8 = {
+        ...me,
+        starters: [myActiveStarterRB.id, myWR.id],
+        players: [myActiveStarterRB, myActiveRB1, myActiveRB2, myWR, myWR2].map((x) => x.id),
+      };
+      const boardW8 = [myActiveStarterRB, myActiveRB1, myActiveRB2, myWR, myWR2, theirRB, theirRB2, theirBenchWR, ...theirWRs];
+      const partnersW8 = oracle.computeTradePartners([meW8, them], boardW8, rosterW8, 0.75, { currentWeek: 8 });
+      assert.ok(partnersW8.length > 0, 'Must identify mutual trade partner in Week 8');
+      assert.equal(
+        partnersW8[0].give.player.id,
+        myActiveRB1.id,
+        'Week 8 trade partner recommendation keeps active starter and trades backup RB1',
+      );
+      assert.notEqual(
+        partnersW8[0].give.player.id,
+        myActiveStarterRB.id,
+        'Active starter is protected in Week 8',
+      );
+
+      // If a player has 0 weekly projection and no placeholder in Week 8, they are benched,
+      // so active RB1 starts and backup RB2 is offered
+      const partnersW8Benched = oracle.computeTradePartners([me, them], board, roster, 0.75, { currentWeek: 8 });
+      assert.ok(partnersW8Benched.length > 0, 'Must identify mutual trade partner in Week 8 when zero-projection player is benched');
+      assert.equal(
+        partnersW8Benched[0].give.player.id,
+        myActiveRB2.id,
+        'Week 8 recommendation trades active backup RB2 when zero-projection player is benched',
+      );
+
+      // Without currentWeek option, defaults cleanly to non-bye behavior trading active backup RB2
+      const partnersDefault = oracle.computeTradePartners([me, them], board, roster, 0.75);
+      assert.ok(partnersDefault.length > 0, 'Must identify mutual trade partner without week option');
+      assert.equal(
+        partnersDefault[0].give.player.id,
+        myActiveRB2.id,
+        'Default trade partner recommendation trades active backup RB2',
+      );
+    });
+
+    it('10.14.14 computeTradePartners does not displace active healthy starters with injured or IR players during trade evaluation', () => {
+      seasonContext.setSeasonContextState(null);
+      // Roster with an injured star on IR with high average points (25.0) but 0 weekly projection,
+      // a healthy active starter RB1 (14.0 pts), a bench backup RB2 (11.0 pts), and wide receivers.
+      const irStar = player('Injured Star RB', 'RB', 0, 95, { injury_status: 'IR', average_projected_points: 25.0 });
+      const healthyRB1 = player('Healthy RB1', 'RB', 14, 85);
+      const healthyRB2 = player('Healthy Backup RB2', 'RB', 11, 80);
+      const myWR = player('My Weak WR', 'WR', 4, 60);
+      const myWR2 = player('My WR2', 'WR', 3, 55);
+
+      const theirRB = player('Their Weak RB', 'RB', 6, 60);
+      const theirRB2 = player('Their RB2', 'RB', 5, 55);
+      const theirBenchWR = player('Their Bench WR', 'WR', 16, 85);
+      const theirWRs = [player('Their WR1', 'WR', 18, 85), player('Their WR2', 'WR', 17, 85)];
+
+      const roster = [
+        slot('RB', ['RB'], healthyRB1),
+        slot('WR', ['WR'], myWR),
+        slot('BN1', ['RB', 'WR'], irStar),
+        slot('BN2', ['RB', 'WR'], healthyRB2),
+        slot('BN3', ['RB', 'WR'], myWR2),
+      ];
+
+      // In Week 10, optimalLineup with byeOnly: true must select healthyRB1 as starter, NOT the injured IR star
+      const optimalW10 = oracle.optimalLineup(roster, 0.75, 10, { placeholder: true, byeOnly: true });
+      assert.equal(
+        optimalW10.get('RB')?.id,
+        healthyRB1.id,
+        'optimalLineup with byeOnly: true must keep active healthy RB1 as starter over injured IR player',
+      );
+
+      const me = {
+        roster_id: 1,
+        slot: 1,
+        name: 'Me (You)',
+        is_user: true,
+        players: [irStar, healthyRB1, healthyRB2, myWR, myWR2].map((x) => x.id),
+        starters: [healthyRB1.id, myWR.id],
+      };
+      const them = {
+        roster_id: 2,
+        slot: 2,
+        name: 'Them',
+        players: [theirRB, theirRB2, theirBenchWR, ...theirWRs].map((x) => x.id),
+        starters: [theirRB.id, theirWRs[0].id],
+      };
+      const board = [irStar, healthyRB1, healthyRB2, myWR, myWR2, theirRB, theirRB2, theirBenchWR, ...theirWRs];
+
+      // Trade evaluation must NOT offer healthyRB1 (our active starting RB while the star is on IR)
+      const partnersW10 = oracle.computeTradePartners([me, them], board, roster, 0.75, { currentWeek: 10 });
+      assert.ok(partnersW10.length > 0, 'Must identify mutual trade partner in Week 10');
+      assert.notEqual(
+        partnersW10[0].give.player.id,
+        healthyRB1.id,
+        'Healthy active starter RB1 must NOT be offered as trade bait while star is on IR',
+      );
+      assert.equal(
+        partnersW10[0].give.player.id,
+        healthyRB2.id,
+        'Trade evaluation must offer healthy backup RB2 instead',
+      );
     });
   });
 });

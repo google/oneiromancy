@@ -17,30 +17,20 @@
 /**
  * Oneiromancy - React Testing Library (RTL) Execution Wrapper
  *
- * Lightweight, hermetic React Component Testing Environment for Node.js 22
- * backed by real React 19 (`react`, `react/jsx-runtime`, `react-dom/server`).
- * Evaluates compiled React functional components, unwinds subtrees, resolves
- * JSX structures and OneiromancyContext, and builds an inspectable Virtual DOM tree.
- *
- * Implements standard RTL & Jest testing primitives:
- * - render(ui, options)
- * - screen.getByTestId(id), screen.queryByTestId(id)
- * - screen.getByText(textOrRegex), screen.queryByText(textOrRegex)
- * - screen.getByRole(role, options), screen.getAllByRole(role)
- * - fireEvent.click(element), fireEvent.change(element, eventData)
- * - waitFor(callback, options)
- * - act(callback)
+ * Hermetic React Component Testing Environment for Node.js backed by genuine
+ * React 19 (`react`, `react/jsx-runtime`, `react-dom/client`, `react-dom/server`)
+ * and a W3C DOM node implementation (`document`, `Element`, `Text`, `Comment`, `Event`).
  */
 
 import assert from 'node:assert/strict';
-import React from 'react';
-import { jsx as realJsx, jsxs as realJsxs, Fragment as realFragment } from 'react/jsx-runtime';
-import {
-  renderToStaticMarkup as realRenderToStaticMarkup,
-  renderToString as realRenderToString,
-} from 'react-dom/server';
+import React, { act as reactAct } from 'react';
+import { jsx as realJsx, Fragment as realFragment } from 'react/jsx-runtime';
+
+globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
 export const Fragment = realFragment;
+export const StrictMode = React.StrictMode;
+export { React };
 
 export function jsx(type, props, ...extra) {
   const finalProps = { ...props };
@@ -62,18 +52,6 @@ export function jsx(type, props, ...extra) {
 export const jsxs = jsx;
 export const jsxDEV = jsx;
 export const createElement = React.createElement;
-export const renderToStaticMarkup = realRenderToStaticMarkup;
-export const renderToString = realRenderToString;
-
-// React Hook Store & Re-render Dispatcher for interactive VNode evaluation
-let currentInstance = null;
-let currentHookIndex = 0;
-let reRenderListener = null;
-let renderGeneration = 0;
-const hookStores = new Map();
-let activeCleanups = [];
-let activeTimers = [];
-let pendingEffects = [];
 
 function runWithUnrefTimers(fn) {
   const origSetInterval = globalThis.setInterval;
@@ -81,13 +59,11 @@ function runWithUnrefTimers(fn) {
   globalThis.setInterval = (...args) => {
     const t = origSetInterval(...args);
     if (t && typeof t.unref === 'function') t.unref();
-    activeTimers.push({ type: 'interval', id: t });
     return t;
   };
-  globalThis.setTimeout = (...args) => {
-    const t = origSetTimeout(...args);
-    if (t && typeof t.unref === 'function') t.unref();
-    activeTimers.push({ type: 'timeout', id: t });
+  globalThis.setTimeout = (cb, delay, ...rest) => {
+    const t = origSetTimeout(cb, delay, ...rest);
+    if (Number(delay) >= 1000 && t && typeof t.unref === 'function') t.unref();
     return t;
   };
   try {
@@ -98,293 +74,731 @@ function runWithUnrefTimers(fn) {
   }
 }
 
-export function setReRenderListener(listener) {
-  reRenderListener = listener;
-}
+// ============================================================================
+// Lightweight W3C DOM Node Implementation for React 19 `react-dom/client`
+// ============================================================================
 
-function getHookStore(instanceId) {
-  if (!hookStores.has(instanceId)) {
-    hookStores.set(instanceId, []);
-  }
-  return hookStores.get(instanceId);
-}
-
-export function clearHookStores() {
-  hookStores.clear();
-  pendingEffects = [];
-  cleanupEffects();
-}
-
-function depsEqual(a, b) {
-  if (!a || !b || a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i++) {
-    if (!Object.is(a[i], b[i])) return false;
-  }
-  return true;
-}
-
-export function useContext(context) {
-  return context?._currentValue;
-}
-
-export function useState(initial) {
-  if (!currentInstance) {
-    let val = typeof initial === 'function' ? initial() : initial;
-    const setter = (next) => {
-      val = typeof next === 'function' ? next(val) : next;
-      if (reRenderListener) reRenderListener();
-    };
-    return [val, setter];
-  }
-  const store = getHookStore(currentInstance);
-  const hookIdx = currentHookIndex++;
-  if (!(hookIdx in store)) {
-    store[hookIdx] = typeof initial === 'function' ? initial() : initial;
-  }
-  const gen = renderGeneration;
-  const setter = (next) => {
-    if (gen !== renderGeneration) return;
-    store[hookIdx] = typeof next === 'function' ? next(store[hookIdx]) : next;
-    if (reRenderListener) reRenderListener();
-  };
-  return [store[hookIdx], setter];
-}
-
-export function useReducer(reducer, initialArg, init) {
-  const [state, setState] = useState(() => (typeof init === 'function' ? init(initialArg) : initialArg));
-  const dispatch = (action) => {
-    setState((prev) => reducer(prev, action));
-  };
-  return [state, dispatch];
-}
-
-export function useEffect(callback, deps) {
-  if (!currentInstance) {
-    const cleanup = callback();
-    if (typeof cleanup === 'function') activeCleanups.push(cleanup);
-    return;
-  }
-  const store = getHookStore(currentInstance);
-  const hookIdx = currentHookIndex++;
-  const prev = store[hookIdx];
-  if (!prev || !deps || !depsEqual(prev.deps, deps)) {
-    pendingEffects.push({
-      store,
-      hookIdx,
-      callback,
-      deps,
-      prevCleanup: prev?.cleanup,
-    });
-  }
-}
-
-export function flushPendingEffects() {
-  if (pendingEffects.length === 0) return false;
-  const effectsToRun = [...pendingEffects];
-  pendingEffects = [];
-  for (const eff of effectsToRun) {
-    if (eff.prevCleanup && typeof eff.prevCleanup === 'function') {
-      eff.prevCleanup();
-    }
-    const cleanup = runWithUnrefTimers(() => eff.callback());
-    eff.store[eff.hookIdx] = { cleanup, deps: eff.deps };
-    if (typeof cleanup === 'function') activeCleanups.push(cleanup);
-  }
-  return true;
-}
-
-export function cleanupEffects() {
-  const cleanups = [...activeCleanups];
-  activeCleanups = [];
-  for (const cleanup of cleanups) {
-    if (typeof cleanup === 'function') {
-      cleanup();
+export class DOMEvent {
+  constructor(type, init = {}) {
+    this.type = String(type);
+    this.bubbles = Boolean(init.bubbles ?? true);
+    this.cancelable = Boolean(init.cancelable ?? true);
+    this.defaultPrevented = false;
+    this.target = null;
+    this.currentTarget = null;
+    this.eventPhase = 0;
+    this._propagationStopped = false;
+    this._immediatePropagationStopped = false;
+    for (const [k, v] of Object.entries(init)) {
+      if (!(k in this)) this[k] = v;
     }
   }
-  const timers = [...activeTimers];
-  activeTimers = [];
-  for (const t of timers) {
-    if (t.type === 'interval') clearInterval(t.id);
-    else clearTimeout(t.id);
+
+  preventDefault() {
+    if (this.cancelable) this.defaultPrevented = true;
+  }
+
+  stopPropagation() {
+    this._propagationStopped = true;
+  }
+
+  stopImmediatePropagation() {
+    this._propagationStopped = true;
+    this._immediatePropagationStopped = true;
   }
 }
 
-export function useLayoutEffect(callback, deps) {
-  return useEffect(callback, deps);
-}
-
-export function useRef(initial) {
-  if (!currentInstance) {
-    return { current: initial };
-  }
-  const store = getHookStore(currentInstance);
-  const hookIdx = currentHookIndex++;
-  if (!(hookIdx in store)) {
-    store[hookIdx] = { current: initial };
-  }
-  return store[hookIdx];
-}
-
-export function useMemo(factory, deps) {
-  if (!currentInstance) {
-    return factory();
-  }
-  const store = getHookStore(currentInstance);
-  const hookIdx = currentHookIndex++;
-  const prev = store[hookIdx];
-  if (!prev || !deps || !depsEqual(prev.deps, deps)) {
-    const value = factory();
-    store[hookIdx] = { value, deps };
-    return value;
-  }
-  return prev.value;
-}
-
-export function useCallback(callback, deps) {
-  return useMemo(() => callback, deps);
-}
-
-const interactiveDispatcher = {
-  useState,
-  useReducer,
-  useEffect,
-  useLayoutEffect,
-  useInsertionEffect: useEffect,
-  useRef,
-  useMemo,
-  useCallback,
-  useContext,
-  useId: () => ':r0:',
-  useTransition: () => [false, (fn) => fn()],
-  useDeferredValue: (v) => v,
-  useSyncExternalStore: (_sub, getSnapshot) => getSnapshot(),
-  useImperativeHandle: () => {},
-  useDebugValue: () => {},
-};
-
-function getReactDispatcherHolder() {
-  const clientInternals =
-    React.__CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE;
-  if (clientInternals && 'H' in clientInternals) {
-    return { holder: clientInternals, key: 'H' };
-  }
-  const secretInternals =
-    React.__SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED?.ReactCurrentDispatcher;
-  if (secretInternals && 'current' in secretInternals) {
-    return { holder: secretInternals, key: 'current' };
-  }
-  throw new Error(
-    'Unable to locate React internal hook dispatcher (neither React 19 __CLIENT_INTERNALS_DO_NOT_USE_OR_WARN_USERS_THEY_CANNOT_UPGRADE.H nor React 18 __SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED.ReactCurrentDispatcher.current found).'
-  );
-}
-
-export function withComponentInstance(instanceId, fn) {
-  const prevInstance = currentInstance;
-  const prevIndex = currentHookIndex;
-  const { holder, key } = getReactDispatcherHolder();
-  const prevDispatcher = holder[key];
-  currentInstance = instanceId;
-  currentHookIndex = 0;
-  holder[key] = interactiveDispatcher;
-  try {
-    return fn();
-  } finally {
-    holder[key] = prevDispatcher;
-    currentInstance = prevInstance;
-    currentHookIndex = prevIndex;
+function linkSiblings(parent) {
+  const kids = parent.childNodes;
+  for (let i = 0; i < kids.length; i++) {
+    kids[i].parentNode = parent;
+    kids[i].previousSibling = i > 0 ? kids[i - 1] : null;
+    kids[i].nextSibling = i < kids.length - 1 ? kids[i + 1] : null;
   }
 }
 
-// Global state tracking rendered trees
-let currentContainer = null;
-let currentRootUI = null;
-let currentRenderOptions = null;
-
-export class VNode {
-  constructor(tag, props = {}, children = []) {
-    this.tag = tag;
-    this.props = props || {};
-    this.children = children || [];
+export class DOMNode {
+  constructor(nodeType, nodeName, ownerDocument = null) {
+    this.nodeType = nodeType;
+    this.nodeName = nodeName;
+    this.ownerDocument = ownerDocument;
     this.parentNode = null;
+    this.childNodes = [];
+    this.previousSibling = null;
+    this.nextSibling = null;
+    this._listeners = new Map();
+  }
 
-    for (const child of this.children) {
-      if (child instanceof VNode) {
-        child.parentNode = this;
+  get parentElement() {
+    return this.parentNode && this.parentNode.nodeType === 1 ? this.parentNode : null;
+  }
+
+  get firstChild() {
+    return this.childNodes[0] || null;
+  }
+
+  get lastChild() {
+    return this.childNodes[this.childNodes.length - 1] || null;
+  }
+
+  get children() {
+    return this.childNodes.filter((c) => c.nodeType === 1);
+  }
+
+  get isConnected() {
+    let curr = this;
+    while (curr) {
+      if (curr === this.ownerDocument) return true;
+      curr = curr.parentNode;
+    }
+    return false;
+  }
+
+  contains(other) {
+    let curr = other;
+    while (curr) {
+      if (curr === this) return true;
+      curr = curr.parentNode;
+    }
+    return false;
+  }
+
+  _removeSingleChild(child) {
+    const idx = this.childNodes.indexOf(child);
+    if (idx === -1) return child;
+    this.childNodes.splice(idx, 1);
+    child.parentNode = null;
+    child.previousSibling = null;
+    child.nextSibling = null;
+    linkSiblings(this);
+    return child;
+  }
+
+  appendChild(child) {
+    return this.insertBefore(child, null);
+  }
+
+  insertBefore(newChild, refChild) {
+    if (!newChild) return newChild;
+    if (newChild.nodeType === 11) {
+      const fragmentKids = [...newChild.childNodes];
+      for (const k of fragmentKids) {
+        this.insertBefore(k, refChild);
+      }
+      return newChild;
+    }
+    if (newChild.parentNode) {
+      newChild.parentNode._removeSingleChild(newChild);
+    }
+    let insertIdx = this.childNodes.length;
+    if (refChild) {
+      const refIdx = this.childNodes.indexOf(refChild);
+      if (refIdx !== -1) insertIdx = refIdx;
+    }
+    this.childNodes.splice(insertIdx, 0, newChild);
+    linkSiblings(this);
+    return newChild;
+  }
+
+  removeChild(child) {
+    if (!child || child.parentNode !== this) return child;
+    return this._removeSingleChild(child);
+  }
+
+  replaceChild(newChild, oldChild) {
+    const ref = oldChild?.nextSibling || null;
+    this.removeChild(oldChild);
+    this.insertBefore(newChild, ref);
+    return oldChild;
+  }
+
+  addEventListener(type, listener, options) {
+    if (typeof listener !== 'function') return;
+    const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
+    const once = typeof options === 'object' && Boolean(options?.once);
+    if (!this._listeners.has(type)) this._listeners.set(type, []);
+    const list = this._listeners.get(type);
+    const exists = list.some((entry) => entry.listener === listener && entry.capture === capture);
+    if (!exists) {
+      list.push({ listener, capture, once });
+    }
+  }
+
+  removeEventListener(type, listener, options) {
+    const list = this._listeners.get(type);
+    if (!list) return;
+    const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
+    for (let i = list.length - 1; i >= 0; i--) {
+      if (list[i].listener === listener && list[i].capture === capture) {
+        list.splice(i, 1);
       }
     }
   }
 
+  _invokeListeners(type, event, isCapturePhase, isTargetPhase) {
+    const list = this._listeners.get(type);
+    if (!list || list.length === 0) return;
+    for (const entry of [...list]) {
+      if (event._immediatePropagationStopped) break;
+      const shouldFire = isTargetPhase
+        ? entry.capture === isCapturePhase
+        : entry.capture === isCapturePhase;
+      if (!shouldFire) continue;
+      if (entry.once) {
+        this.removeEventListener(type, entry.listener, entry.capture);
+      }
+      entry.listener.call(this, event);
+    }
+  }
+
+  dispatchEvent(event) {
+    if (!event) return true;
+    event.target = this;
+    const prevWindowEvent = globalThis.window ? globalThis.window.event : undefined;
+    if (globalThis.window) {
+      globalThis.window.event = event;
+    }
+    try {
+      const path = [];
+      let curr = this;
+      while (curr) {
+        path.push(curr);
+        curr = curr.parentNode || (curr === this.ownerDocument ? null : null);
+      }
+      if (this.ownerDocument && path[path.length - 1] !== this.ownerDocument) {
+        path.push(this.ownerDocument);
+      }
+
+      // Capture phase (top -> down)
+      for (let i = path.length - 1; i > 0; i--) {
+        if (event._propagationStopped) break;
+        event.currentTarget = path[i];
+        event.eventPhase = 1;
+        path[i]._invokeListeners(event.type, event, true, false);
+      }
+
+      // Target phase
+      if (!event._propagationStopped) {
+        event.currentTarget = this;
+        event.eventPhase = 2;
+        this._invokeListeners(event.type, event, true, true);
+        if (!event._immediatePropagationStopped) {
+          this._invokeListeners(event.type, event, false, true);
+        }
+      }
+
+      // Bubble phase (bottom -> up)
+      if (event.bubbles) {
+        for (let i = 1; i < path.length; i++) {
+          if (event._propagationStopped) break;
+          event.currentTarget = path[i];
+          event.eventPhase = 3;
+          path[i]._invokeListeners(event.type, event, false, false);
+        }
+      }
+
+      event.currentTarget = null;
+      event.eventPhase = 0;
+      return !event.defaultPrevented;
+    } finally {
+      if (globalThis.window) {
+        globalThis.window.event = prevWindowEvent;
+      }
+    }
+  }
+}
+
+export class DOMText extends DOMNode {
+  constructor(text = '', ownerDocument = null) {
+    super(3, '#text', ownerDocument);
+    this._data = text == null ? '' : String(text);
+  }
+
+  get data() {
+    return this._data;
+  }
+
+  set data(v) {
+    this._data = v == null ? '' : String(v);
+  }
+
+  get nodeValue() {
+    return this._data;
+  }
+
+  set nodeValue(v) {
+    this._data = v == null ? '' : String(v);
+  }
+
+  get textContent() {
+    return this._data;
+  }
+
+  set textContent(v) {
+    this._data = v == null ? '' : String(v);
+  }
+}
+
+export class DOMComment extends DOMNode {
+  constructor(data = '', ownerDocument = null) {
+    super(8, '#comment', ownerDocument);
+    this._data = data == null ? '' : String(data);
+  }
+
+  get data() {
+    return this._data;
+  }
+
+  set data(v) {
+    this._data = v == null ? '' : String(v);
+  }
+
+  get nodeValue() {
+    return this._data;
+  }
+
+  set nodeValue(v) {
+    this._data = v == null ? '' : String(v);
+  }
+
+  get textContent() {
+    return '';
+  }
+
+  set textContent(v) {
+    this._data = v == null ? '' : String(v);
+  }
+}
+
+function createStyleProxy() {
+  const store = Object.create(null);
+  return new Proxy(store, {
+    get(target, prop) {
+      if (prop === 'setProperty') {
+        return (k, v) => {
+          target[k] = v == null ? '' : String(v);
+        };
+      }
+      if (prop === 'removeProperty') {
+        return (k) => {
+          const prev = target[k] ?? '';
+          delete target[k];
+          return prev;
+        };
+      }
+      if (prop === 'getPropertyValue') {
+        return (k) => target[k] ?? '';
+      }
+      if (prop === 'cssText') {
+        return Object.entries(target)
+          .map(([k, v]) => `${k}: ${v}`)
+          .join('; ');
+      }
+      return target[prop] ?? '';
+    },
+    set(target, prop, value) {
+      if (prop === 'cssText') {
+        for (const k of Object.keys(target)) delete target[k];
+        if (typeof value === 'string') {
+          for (const decl of value.split(';')) {
+            const idx = decl.indexOf(':');
+            if (idx > 0) {
+              target[decl.slice(0, idx).trim()] = decl.slice(idx + 1).trim();
+            }
+          }
+        }
+        return true;
+      }
+      target[prop] = value == null ? '' : String(value);
+      return true;
+    },
+  });
+}
+
+function normalizeAttrKey(name) {
+  const lower = String(name).toLowerCase();
+  if (lower === 'classname') return 'class';
+  if (lower === 'htmlfor') return 'for';
+  return lower;
+}
+
+function matchesSingleSelector(node, sel) {
+  if (!node || node.nodeType !== 1) return false;
+  let rest = sel.trim();
+  if (!rest) return false;
+
+  // Match optional leading tag name
+  const tagMatch = rest.match(/^([a-zA-Z0-9_-]+)/);
+  if (tagMatch) {
+    if (node.localName !== tagMatch[1].toLowerCase()) return false;
+    rest = rest.slice(tagMatch[1].length);
+  }
+
+  while (rest.length > 0) {
+    if (rest.startsWith('#')) {
+      const m = rest.match(/^#([a-zA-Z0-9_-]+)/);
+      if (!m || node.id !== m[1]) return false;
+      rest = rest.slice(m[0].length);
+    } else if (rest.startsWith('.')) {
+      const m = rest.match(/^\.([a-zA-Z0-9_-]+)/);
+      if (!m || !node.className.split(/\s+/).filter(Boolean).includes(m[1])) return false;
+      rest = rest.slice(m[0].length);
+    } else if (rest.startsWith('[')) {
+      const m = rest.match(/^\[([\w:-]+)(?:=["']?([^"'\]]*)["']?)?\]/);
+      if (!m) return false;
+      const [, attr, expected] = m;
+      const actual = node.getAttribute(attr);
+      if (expected !== undefined ? actual !== expected : actual === null) return false;
+      rest = rest.slice(m[0].length);
+    } else {
+      return false;
+    }
+  }
+  return true;
+}
+
+function querySelectorAllFrom(root, selector) {
+  const results = [];
+  const selectors = String(selector)
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const walk = (node) => {
+    for (const child of node.childNodes) {
+      if (child.nodeType === 1) {
+        if (selectors.some((s) => matchesSingleSelector(child, s))) {
+          results.push(child);
+        }
+        walk(child);
+      }
+    }
+  };
+  walk(root);
+  return results;
+}
+
+export class DOMElement extends DOMNode {
+  constructor(tagName, ownerDocument = null, namespaceURI = 'http://www.w3.org/1999/xhtml') {
+    const upper = String(tagName).toUpperCase();
+    super(1, upper, ownerDocument);
+    this.tagName = upper;
+    this.localName = String(tagName).toLowerCase();
+    this.tag = this.localName;
+    this.namespaceURI = namespaceURI;
+    this._attrs = new Map();
+    this._value = undefined;
+    this._checked = false;
+    this._disabled = false;
+    this._selected = false;
+    this.oninput = null;
+    this.onchange = null;
+    this.onclick = null;
+    this.onsubmit = null;
+    this.onkeydown = null;
+    this.onkeyup = null;
+    this.style = createStyleProxy();
+    this.dataset = new Proxy(this, {
+      get(el, prop) {
+        if (typeof prop !== 'string') return undefined;
+        const kebab = prop.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+        return el._attrs.get(`data-${kebab}`);
+      },
+      set(el, prop, val) {
+        if (typeof prop !== 'string') return false;
+        const kebab = prop.replace(/[A-Z]/g, (m) => `-${m.toLowerCase()}`);
+        el._attrs.set(`data-${kebab}`, val == null ? '' : String(val));
+        return true;
+      },
+    });
+  }
+
   get id() {
-    return this.props.id || '';
+    return this._attrs.get('id') ?? '';
+  }
+
+  set id(v) {
+    if (v === '' || v == null) this._attrs.delete('id');
+    else this._attrs.set('id', String(v));
   }
 
   get className() {
-    return this.props.className || '';
+    return this._attrs.get('class') ?? '';
+  }
+
+  set className(v) {
+    if (v == null || v === '') this._attrs.delete('class');
+    else this._attrs.set('class', String(v));
+  }
+
+  get classList() {
+    const el = this;
+    return {
+      contains(cls) {
+        return el.className.split(/\s+/).filter(Boolean).includes(cls);
+      },
+      add(...clsList) {
+        const set = new Set(el.className.split(/\s+/).filter(Boolean));
+        for (const c of clsList) set.add(c);
+        el.className = Array.from(set).join(' ');
+      },
+      remove(...clsList) {
+        const removeSet = new Set(clsList);
+        el.className = el.className
+          .split(/\s+/)
+          .filter((c) => c && !removeSet.has(c))
+          .join(' ');
+      },
+      toggle(cls) {
+        if (this.contains(cls)) {
+          this.remove(cls);
+          return false;
+        }
+        this.add(cls);
+        return true;
+      },
+    };
+  }
+
+  get htmlFor() {
+    return this._attrs.get('for') ?? '';
+  }
+
+  set htmlFor(v) {
+    if (v == null || v === '') this._attrs.delete('for');
+    else this._attrs.set('for', String(v));
+  }
+
+  get tabIndex() {
+    const raw = this._attrs.get('tabindex');
+    return raw !== undefined ? Number(raw) : -1;
+  }
+
+  set tabIndex(v) {
+    this._attrs.set('tabindex', String(v));
+  }
+
+  get type() {
+    const explicit = this._attrs.get('type');
+    if (explicit !== undefined) return String(explicit).toLowerCase();
+    if (this.localName === 'select') {
+      return this.multiple ? 'select-multiple' : 'select-one';
+    }
+    if (this.localName === 'textarea') return 'textarea';
+    if (this.localName === 'button') return 'submit';
+    if (this.localName === 'input') return 'text';
+    return '';
+  }
+
+  set type(v) {
+    if (v == null || v === '') this._attrs.delete('type');
+    else this._attrs.set('type', String(v));
+  }
+
+  get options() {
+    return this.localName === 'select' ? this.querySelectorAll('option') : [];
+  }
+
+  get multiple() {
+    return this._attrs.has('multiple');
+  }
+
+  set multiple(v) {
+    if (v) this._attrs.set('multiple', '');
+    else this._attrs.delete('multiple');
+  }
+
+  get selectedIndex() {
+    if (this.localName !== 'select') return -1;
+    const opts = this.options;
+    const explicitIdx = opts.findIndex((o) => o.selected);
+    if (explicitIdx !== -1) return explicitIdx;
+    return opts.findIndex((o) => !o.disabled);
+  }
+
+  get value() {
+    if (this._value !== undefined) return this._value;
+    if (this._attrs.has('value')) return this._attrs.get('value') ?? '';
+    if (this.localName === 'option') return this.textContent;
+    if (this.localName === 'select') {
+      const opts = this.options;
+      const chosen = opts.find((o) => o.selected) || opts.find((o) => !o.disabled);
+      return chosen ? chosen.value : '';
+    }
+    return '';
+  }
+
+  set value(v) {
+    const str = v == null ? '' : String(v);
+    this._value = str;
+    this._attrs.set('value', str);
+    if (this.localName === 'select') {
+      for (const opt of this.options) {
+        opt._selected = opt.value === str;
+      }
+    }
+  }
+
+  get defaultValue() {
+    return this._attrs.get('value') ?? '';
+  }
+
+  set defaultValue(v) {
+    const str = v == null ? '' : String(v);
+    this._attrs.set('value', str);
+    if (this._value === undefined) this._value = str;
+  }
+
+  get checked() {
+    return this._checked;
+  }
+
+  set checked(v) {
+    this._checked = Boolean(v);
+    if (this._checked) this._attrs.set('checked', '');
+    else this._attrs.delete('checked');
+  }
+
+  get defaultChecked() {
+    return this._attrs.has('checked');
+  }
+
+  set defaultChecked(v) {
+    this.checked = v;
+  }
+
+  get disabled() {
+    return this._disabled || this._attrs.has('disabled');
+  }
+
+  set disabled(v) {
+    this._disabled = Boolean(v);
+    if (this._disabled) this._attrs.set('disabled', '');
+    else this._attrs.delete('disabled');
+  }
+
+  get selected() {
+    if (this._selected !== undefined) return this._selected;
+    return this._attrs.has('selected');
+  }
+
+  set selected(v) {
+    this._selected = Boolean(v);
+  }
+
+  get defaultSelected() {
+    return this._attrs.has('selected');
+  }
+
+  set defaultSelected(v) {
+    if (v) {
+      this._attrs.set('selected', '');
+      this._selected = true;
+    } else {
+      this._attrs.delete('selected');
+      this._selected = false;
+    }
+  }
+
+  setAttribute(name, value) {
+    const key = normalizeAttrKey(name);
+    const str = value == null ? '' : String(value);
+    this._attrs.set(key, str);
+    if (key === 'value') this._value = str;
+    if (key === 'disabled') this._disabled = true;
+    if (key === 'checked') this._checked = true;
+    if (key === 'selected') this._selected = true;
+    if (key.startsWith('on') && key.length > 2) {
+      this[key] = () => {};
+    }
+  }
+
+  setAttributeNS(_ns, qualifiedName, value) {
+    const raw = String(qualifiedName);
+    const local = raw.includes(':') ? raw.split(':').pop() : raw;
+    this.setAttribute(local, value);
   }
 
   getAttribute(name) {
-    if (name === 'class' || name === 'className') return this.props.className || null;
-    if (name === 'data-testid') return this.props['data-testid'] || null;
-    return this.props[name] !== undefined ? String(this.props[name]) : null;
+    const key = normalizeAttrKey(name);
+    return this._attrs.has(key) ? this._attrs.get(key) : null;
   }
 
   hasAttribute(name) {
-    return this.getAttribute(name) !== null;
+    return this._attrs.has(normalizeAttrKey(name));
+  }
+
+  removeAttribute(name) {
+    const key = normalizeAttrKey(name);
+    this._attrs.delete(key);
+    if (key === 'value') this._value = undefined;
+    if (key === 'disabled') this._disabled = false;
+    if (key === 'checked') this._checked = false;
+    if (key === 'selected') this._selected = false;
   }
 
   get textContent() {
     let text = '';
-    for (const child of this.children) {
-      if (typeof child === 'string' || typeof child === 'number') {
-        text += String(child);
-      } else if (child instanceof VNode) {
+    for (const child of this.childNodes) {
+      if (child.nodeType === 1 || child.nodeType === 3) {
         text += child.textContent;
       }
     }
     return text;
   }
 
+  set textContent(v) {
+    while (this.childNodes.length > 0) {
+      this._removeSingleChild(this.childNodes[this.childNodes.length - 1]);
+    }
+    if (v !== '' && v !== null && v !== undefined) {
+      this.appendChild(new DOMText(String(v), this.ownerDocument));
+    }
+  }
+
+  get innerHTML() {
+    let html = '';
+    for (const child of this.childNodes) {
+      if (child.nodeType === 3) {
+        html += child.textContent;
+      } else if (child.nodeType === 1) {
+        html += `<${child.localName}>${child.innerHTML}</${child.localName}>`;
+      }
+    }
+    return html;
+  }
+
+  set innerHTML(v) {
+    while (this.childNodes.length > 0) {
+      this._removeSingleChild(this.childNodes[this.childNodes.length - 1]);
+    }
+    if (typeof v === 'string' && v.length > 0 && !v.includes('<')) {
+      this.appendChild(new DOMText(v, this.ownerDocument));
+    }
+  }
+
+  focus() {
+    if (this.ownerDocument) {
+      this.ownerDocument.activeElement = this;
+    }
+  }
+
+  blur() {
+    if (this.ownerDocument && this.ownerDocument.activeElement === this) {
+      this.ownerDocument.activeElement = this.ownerDocument.body;
+    }
+  }
+
+  click() {
+    this.dispatchEvent(new DOMEvent('click', { bubbles: true, cancelable: true }));
+  }
+
   querySelector(selector) {
-    const results = this.querySelectorAll(selector);
-    return results.length > 0 ? results[0] : null;
+    const all = querySelectorAllFrom(this, selector);
+    return all.length > 0 ? all[0] : null;
   }
 
   querySelectorAll(selector) {
-    const results = [];
-    const walk = (node) => {
-      if (node instanceof VNode) {
-        let matches = false;
-        if (selector.startsWith('#')) {
-          const targetId = selector.slice(1);
-          if (node.props.id === targetId) matches = true;
-        } else if (selector.startsWith('.')) {
-          const targetClass = selector.slice(1);
-          if (node.className.split(/\s+/).includes(targetClass)) matches = true;
-        } else if (selector.startsWith('[')) {
-          const attrMatch = selector.match(/^\[([\w-]+)(?:=["']?([^"'\]]+)["']?)?\]$/);
-          if (attrMatch) {
-            const [, attr, val] = attrMatch;
-            const attrVal = node.getAttribute(attr);
-            if (val !== undefined ? attrVal === val : attrVal !== null) {
-              matches = true;
-            }
-          }
-        } else if (node.tag === selector) {
-          matches = true;
-        }
-
-        if (matches) results.push(node);
-
-        for (const c of node.children) {
-          walk(c);
-        }
-      }
-    };
-
-    for (const child of this.children) {
-      walk(child);
-    }
-    return results;
+    return querySelectorAllFrom(this, selector);
   }
 
   findByTestId(testId) {
@@ -402,11 +816,11 @@ export class VNode {
     let match = null;
     const walk = (node) => {
       if (match) return;
-      if (node instanceof VNode) {
+      if (node.nodeType === 1) {
         if (isMatch(node.textContent)) {
           let childMatches = false;
           for (const c of node.children) {
-            if (c instanceof VNode && isMatch(c.textContent)) {
+            if (isMatch(c.textContent)) {
               childMatches = true;
               break;
             }
@@ -432,7 +846,7 @@ export class VNode {
     let match = null;
     const walk = (node) => {
       if (match) return;
-      if (node instanceof VNode) {
+      if (node.nodeType === 1) {
         const ph = node.getAttribute('placeholder');
         if (ph && isMatch(ph)) {
           match = node;
@@ -448,174 +862,397 @@ export class VNode {
   }
 }
 
-/**
- * Evaluates React element tree recursively into VNode tree without swallowing render errors.
- */
-export function evaluateElement(element, contextValue = null, depth = 0, pathKey = 'root') {
-  if (element === null || element === undefined || typeof element === 'boolean') {
-    return null;
+export class DOMHTMLIFrameElement extends DOMElement {}
+
+export class DOMDocumentFragment extends DOMElement {
+  constructor(ownerDocument = null) {
+    super('#document-fragment', ownerDocument);
+    this.nodeType = 11;
+    this.nodeName = '#document-fragment';
+    this.tagName = undefined;
   }
-
-  if (typeof element === 'string' || typeof element === 'number') {
-    return String(element);
-  }
-
-  if (Array.isArray(element)) {
-    return element
-      .map((c, i) => evaluateElement(c, contextValue, depth, `${pathKey}.${i}`))
-      .filter((c) => c !== null);
-  }
-
-  if (typeof element !== 'object') {
-    return null;
-  }
-
-  const { type, props } = element;
-  const mergedProps = { ...props };
-  const rawChildren = props?.children;
-
-  // React Fragment
-  if (typeof type === 'symbol' || type === '' || type === undefined) {
-    const children = evaluateElement(rawChildren, contextValue, depth, `${pathKey}.frag`);
-    return Array.isArray(children) ? children : children ? [children] : [];
-  }
-
-  // Functional Component: run within instance scope and fail immediately on render exception
-  if (typeof type === 'function') {
-    const instanceKey = `${type.name || 'Component'}_${depth}_${element.key || props?.key || props?.['data-testid'] || pathKey}`;
-    const componentOutput = withComponentInstance(instanceKey, () => type(mergedProps));
-    return evaluateElement(componentOutput, contextValue, depth + 1, `${pathKey}.fn`);
-  }
-
-  // React.forwardRef
-  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.forward_ref')) {
-    const instanceKey = `${type.displayName || type.render?.name || 'ForwardRef'}_${depth}_${element.key || props?.key || pathKey}`;
-    const ref = mergedProps?.ref ?? null;
-    const componentOutput = withComponentInstance(instanceKey, () =>
-      type.render(mergedProps, ref)
-    );
-    return evaluateElement(componentOutput, contextValue, depth + 1, `${pathKey}.fwd`);
-  }
-
-  // React.memo
-  if (type && typeof type === 'object' && type.$$typeof === Symbol.for('react.memo')) {
-    return evaluateElement({ ...element, type: type.type }, contextValue, depth, `${pathKey}.memo`);
-  }
-
-  // Context Provider (React 18 react.provider or React 19 react.context with non-function children)
-  if (
-    type &&
-    typeof type === 'object' &&
-    (type.$$typeof === Symbol.for('react.provider') ||
-      (type.$$typeof === Symbol.for('react.context') && typeof rawChildren !== 'function'))
-  ) {
-    const ctx = type._context || type;
-    const prevValue = ctx._currentValue;
-    ctx._currentValue = mergedProps.value !== undefined ? mergedProps.value : prevValue;
-    try {
-      return evaluateElement(rawChildren, mergedProps.value, depth, `${pathKey}.ctx`);
-    } finally {
-      ctx._currentValue = prevValue;
-    }
-  }
-
-  // Context Consumer (React 18/19 react.consumer or react.context with function children)
-  if (
-    type &&
-    typeof type === 'object' &&
-    (type.$$typeof === Symbol.for('react.consumer') ||
-      (type.$$typeof === Symbol.for('react.context') && typeof rawChildren === 'function'))
-  ) {
-    const ctx = type._context || type;
-    const renderFn = typeof rawChildren === 'function' ? rawChildren : null;
-    if (renderFn) {
-      return evaluateElement(renderFn(ctx._currentValue), contextValue, depth, `${pathKey}.cons`);
-    }
-    return evaluateElement(rawChildren, contextValue, depth, `${pathKey}.cons`);
-  }
-
-  // Intrinsic DOM elements (div, button, span, etc.)
-  const tag = typeof type === 'string' ? type : 'div';
-  let processedChildren = [];
-  if (rawChildren !== undefined) {
-    const evaluated = evaluateElement(rawChildren, contextValue, depth, `${pathKey}.dom`);
-    if (Array.isArray(evaluated)) {
-      processedChildren = evaluated.flat(Infinity);
-    } else if (evaluated !== null) {
-      processedChildren = [evaluated];
-    }
-  }
-
-  return new VNode(tag, mergedProps, processedChildren);
 }
 
-let isRendering = false;
-let reRenderScheduled = false;
-const MAX_RENDER_PASSES = 10;
-
-function doReRender() {
-  if (isRendering) {
-    reRenderScheduled = true;
-    return;
+export class DOMDocument extends DOMNode {
+  constructor() {
+    super(9, '#document', null);
+    this.ownerDocument = this;
+    this.visibilityState = 'visible';
+    this.oninput = null;
+    this.onchange = null;
+    this.onclick = null;
+    this.onsubmit = null;
+    this.onkeydown = null;
+    this.onkeyup = null;
+    this.documentElement = new DOMElement('html', this);
+    this.head = new DOMElement('head', this);
+    this.body = new DOMElement('body', this);
+    this.activeElement = this.body;
+    super.insertBefore(this.documentElement, null);
+    this.documentElement.appendChild(this.head);
+    this.documentElement.appendChild(this.body);
   }
-  if (!currentRootUI) return;
 
-  isRendering = true;
-  try {
-    let pass = 0;
-    while (pass < MAX_RENDER_PASSES) {
-      pass++;
-      reRenderScheduled = false;
-      const vnode = evaluateElement(currentRootUI, currentRenderOptions?.context || null);
-      const container = new VNode('div', { id: '__test_container__' }, Array.isArray(vnode) ? vnode : [vnode]);
-      currentContainer = container;
-      const hadEffects = flushPendingEffects();
-      if (!hadEffects && !reRenderScheduled) {
-        break;
+  get defaultView() {
+    return globalThis.window;
+  }
+
+  createElement(tagName) {
+    return new DOMElement(tagName, this);
+  }
+
+  createElementNS(namespaceURI, qualifiedName) {
+    return new DOMElement(qualifiedName, this, namespaceURI);
+  }
+
+  createTextNode(text) {
+    return new DOMText(text, this);
+  }
+
+  createComment(data) {
+    return new DOMComment(data, this);
+  }
+
+  createDocumentFragment() {
+    return new DOMDocumentFragment(this);
+  }
+
+  getElementById(id) {
+    return this.querySelector(`#${id}`);
+  }
+
+  querySelector(selector) {
+    return this.documentElement.querySelector(selector);
+  }
+
+  querySelectorAll(selector) {
+    return this.documentElement.querySelectorAll(selector);
+  }
+}
+
+function createDefaultWindow(doc) {
+  const listeners = new Map();
+  const storageMap = new Map();
+  const historyEntries = [{ state: null, url: 'http://127.0.0.1:3000/' }];
+  let historyIndex = 0;
+
+  const win = {
+    document: doc,
+    event: undefined,
+    location: {
+      origin: 'http://127.0.0.1:3000',
+      protocol: 'http:',
+      host: '127.0.0.1:3000',
+      hostname: '127.0.0.1',
+      port: '3000',
+      pathname: '/',
+      search: '',
+      hash: '',
+      href: 'http://127.0.0.1:3000/',
+    },
+    history: {
+      get length() {
+        return historyEntries.length;
+      },
+      get state() {
+        return historyEntries[historyIndex]?.state ?? null;
+      },
+      pushState(state, _title, url = '') {
+        historyEntries.splice(historyIndex + 1);
+        historyEntries.push({ state: state ?? null, url: String(url || '') });
+        historyIndex = historyEntries.length - 1;
+      },
+      replaceState(state, _title, url = '') {
+        historyEntries[historyIndex] = {
+          state: state ?? null,
+          url: String(url || historyEntries[historyIndex]?.url || ''),
+        };
+      },
+      back() {
+        if (historyIndex > 0) {
+          historyIndex -= 1;
+          win.dispatchEvent(
+            new DOMEvent('popstate', {
+              bubbles: false,
+              cancelable: false,
+              state: historyEntries[historyIndex]?.state ?? null,
+            }),
+          );
+        }
+      },
+      forward() {
+        if (historyIndex < historyEntries.length - 1) {
+          historyIndex += 1;
+          win.dispatchEvent(
+            new DOMEvent('popstate', {
+              bubbles: false,
+              cancelable: false,
+              state: historyEntries[historyIndex]?.state ?? null,
+            }),
+          );
+        }
+      },
+      go(delta = 0) {
+        const nextIdx = Math.max(0, Math.min(historyEntries.length - 1, historyIndex + Number(delta)));
+        if (nextIdx !== historyIndex) {
+          historyIndex = nextIdx;
+          win.dispatchEvent(
+            new DOMEvent('popstate', {
+              bubbles: false,
+              cancelable: false,
+              state: historyEntries[historyIndex]?.state ?? null,
+            }),
+          );
+        }
+      },
+    },
+    navigator: { userAgent: 'Mozilla/5.0 (X11; Linux x86_64) OneiromancyTest/1.0' },
+    localStorage: {
+      get length() {
+        return storageMap.size;
+      },
+      key(i) {
+        return Array.from(storageMap.keys())[i] ?? null;
+      },
+      getItem(k) {
+        const key = String(k);
+        return storageMap.has(key) ? storageMap.get(key) : null;
+      },
+      setItem(k, v) {
+        storageMap.set(String(k), String(v));
+      },
+      removeItem(k) {
+        storageMap.delete(String(k));
+      },
+      clear() {
+        storageMap.clear();
+      },
+    },
+    innerWidth: 1280,
+    innerHeight: 800,
+    scrollX: 0,
+    scrollY: 0,
+    scrollTo() {},
+    requestAnimationFrame(cb) {
+      const id = setTimeout(() => cb(Date.now()), 0);
+      if (id && typeof id.unref === 'function') id.unref();
+      return id;
+    },
+    cancelAnimationFrame(id) {
+      clearTimeout(id);
+    },
+    matchMedia(query) {
+      return {
+        matches: false,
+        media: String(query || ''),
+        onchange: null,
+        addListener() {},
+        removeListener() {},
+        addEventListener() {},
+        removeEventListener() {},
+        dispatchEvent() {
+          return true;
+        },
+      };
+    },
+    getComputedStyle() {
+      return createStyleProxy();
+    },
+    addEventListener(type, listener, options) {
+      if (typeof listener !== 'function') return;
+      const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
+      if (!listeners.has(type)) listeners.set(type, []);
+      const list = listeners.get(type);
+      if (!list.some((e) => e.listener === listener && e.capture === capture)) {
+        list.push({ listener, capture });
       }
+    },
+    removeEventListener(type, listener, options) {
+      const list = listeners.get(type);
+      if (!list) return;
+      const capture = typeof options === 'boolean' ? options : Boolean(options?.capture);
+      for (let i = list.length - 1; i >= 0; i--) {
+        if (list[i].listener === listener && list[i].capture === capture) {
+          list.splice(i, 1);
+        }
+      }
+    },
+    dispatchEvent(event) {
+      if (!event) return true;
+      event.target = win;
+      event.currentTarget = win;
+      const prevEvent = win.event;
+      win.event = event;
+      try {
+        const list = listeners.get(event.type);
+        if (list) {
+          for (const entry of [...list]) {
+            if (event._immediatePropagationStopped) break;
+            entry.listener.call(win, event);
+          }
+        }
+        return !event.defaultPrevented;
+      } finally {
+        win.event = prevEvent;
+      }
+    },
+    Node: DOMNode,
+    Element: DOMElement,
+    HTMLElement: DOMElement,
+    HTMLIFrameElement: DOMHTMLIFrameElement,
+    SVGElement: DOMElement,
+    Text: DOMText,
+    Comment: DOMComment,
+    DocumentFragment: DOMDocumentFragment,
+    Document: DOMDocument,
+    Event: DOMEvent,
+    CustomEvent: DOMEvent,
+  };
+  win.window = win;
+  win.self = win;
+  win.top = win;
+  win.parent = win;
+  return win;
+}
+
+function installDomGlobals() {
+  if (!globalThis.document || typeof globalThis.document.createElement !== 'function') {
+    globalThis.document = new DOMDocument();
+  }
+  for (const evtProp of ['oninput', 'onchange', 'onclick', 'onsubmit', 'onkeydown', 'onkeyup']) {
+    if (!(evtProp in globalThis.document)) {
+      globalThis.document[evtProp] = null;
     }
-  } finally {
-    isRendering = false;
+  }
+  if (!globalThis.window || typeof globalThis.window !== 'object') {
+    globalThis.window = createDefaultWindow(globalThis.document);
+  } else {
+    if (!globalThis.window.document) globalThis.window.document = globalThis.document;
+    if (typeof globalThis.window.dispatchEvent !== 'function') {
+      globalThis.window.dispatchEvent = () => true;
+    }
+    if (globalThis.window.self === undefined) globalThis.window.self = globalThis.window;
+    if (globalThis.window.top === undefined) globalThis.window.top = globalThis.window;
+    if (globalThis.window.Node === undefined) globalThis.window.Node = DOMNode;
+    if (globalThis.window.Element === undefined) globalThis.window.Element = DOMElement;
+    if (globalThis.window.HTMLElement === undefined) globalThis.window.HTMLElement = DOMElement;
+    if (globalThis.window.HTMLIFrameElement === undefined) {
+      globalThis.window.HTMLIFrameElement = DOMHTMLIFrameElement;
+    }
+    if (globalThis.window.SVGElement === undefined) globalThis.window.SVGElement = DOMElement;
+    if (globalThis.window.Event === undefined) globalThis.window.Event = DOMEvent;
+  }
+  if (globalThis.Node === undefined) globalThis.Node = DOMNode;
+  if (globalThis.Element === undefined) globalThis.Element = DOMElement;
+  if (globalThis.HTMLElement === undefined) globalThis.HTMLElement = DOMElement;
+  if (globalThis.HTMLIFrameElement === undefined) {
+    globalThis.HTMLIFrameElement = DOMHTMLIFrameElement;
+  }
+  if (globalThis.SVGElement === undefined) globalThis.SVGElement = DOMElement;
+  if (globalThis.Text === undefined) globalThis.Text = DOMText;
+  if (globalThis.Comment === undefined) globalThis.Comment = DOMComment;
+  if (globalThis.DocumentFragment === undefined) {
+    globalThis.DocumentFragment = DOMDocumentFragment;
+  }
+  if (globalThis.Document === undefined) globalThis.Document = DOMDocument;
+  if (globalThis.Event === undefined) globalThis.Event = DOMEvent;
+  if (globalThis.CustomEvent === undefined) globalThis.CustomEvent = DOMEvent;
+  if (globalThis.navigator === undefined) {
+    globalThis.navigator = globalThis.window.navigator || {
+      userAgent: 'Mozilla/5.0 (X11; Linux x86_64) OneiromancyTest/1.0',
+    };
+  }
+  if (globalThis.localStorage === undefined && globalThis.window.localStorage) {
+    globalThis.localStorage = globalThis.window.localStorage;
+  }
+  if (globalThis.requestAnimationFrame === undefined && globalThis.window.requestAnimationFrame) {
+    globalThis.requestAnimationFrame = globalThis.window.requestAnimationFrame;
+  }
+  if (globalThis.cancelAnimationFrame === undefined && globalThis.window.cancelAnimationFrame) {
+    globalThis.cancelAnimationFrame = globalThis.window.cancelAnimationFrame;
   }
 }
 
-/**
- * Standard RTL render method with reactive stateful re-rendering
- */
-export function render(ui, options = {}) {
-  renderGeneration++;
-  clearHookStores();
-  currentRootUI = ui;
-  currentRenderOptions = options;
-  setReRenderListener(doReRender);
+installDomGlobals();
 
-  doReRender();
+const { createRoot } = await import('react-dom/client');
+const {
+  renderToStaticMarkup: realRenderToStaticMarkup,
+  renderToString: realRenderToString,
+} = await import('react-dom/server');
+
+export const renderToStaticMarkup = realRenderToStaticMarkup;
+export const renderToString = realRenderToString;
+
+// ============================================================================
+// Active React 19 Root Lifecycle (createRoot + React.act)
+// ============================================================================
+
+let currentContainer = null;
+let currentRoot = null;
+
+function teardownActiveRoot() {
+  if (currentRoot) {
+    const rootToUnmount = currentRoot;
+    currentRoot = null;
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        rootToUnmount.unmount();
+      });
+    });
+  }
+  if (currentContainer && currentContainer.parentNode) {
+    currentContainer.parentNode.removeChild(currentContainer);
+  }
+  currentContainer = null;
+}
+
+/**
+ * Standard RTL render method backed by React 19 `createRoot` and `React.act`
+ */
+export function render(ui, _options = {}) {
+  installDomGlobals();
+  teardownActiveRoot();
+
+  const container = globalThis.document.createElement('div');
+  globalThis.document.body.appendChild(container);
+  currentContainer = container;
+
+  const root = createRoot(container);
+  currentRoot = root;
+
+  runWithUnrefTimers(() => {
+    reactAct(() => {
+      root.render(ui);
+    });
+  });
+
   return {
     get container() {
-      return currentContainer;
+      return container;
     },
     getByTestId: (id) => {
-      const el = currentContainer.findByTestId(id);
+      const el = container.findByTestId(id);
       assert.ok(el, 'Unable to find element with data-testid="' + id + '"');
       return el;
     },
-    queryByTestId: (id) => currentContainer?.findByTestId(id),
-    getAllByTestId: (id) => currentContainer?.findAllByTestId(id) || [],
+    queryByTestId: (id) => container.findByTestId(id),
+    getAllByTestId: (id) => container.findAllByTestId(id) || [],
     getByText: (text) => {
-      const el = currentContainer.findByText(text);
+      const el = container.findByText(text);
       assert.ok(el, 'Unable to find element containing text: ' + text);
       return el;
     },
-    queryByText: (text) => currentContainer?.findByText(text),
+    queryByText: (text) => container.findByText(text),
     getByPlaceholderText: (text) => {
-      const el = currentContainer.findByPlaceholderText(text);
+      const el = container.findByPlaceholderText(text);
       assert.ok(el, 'Unable to find element with placeholder matching: ' + text);
       return el;
     },
-    queryByPlaceholderText: (text) => currentContainer?.findByPlaceholderText(text),
+    queryByPlaceholderText: (text) => container.findByPlaceholderText(text),
     getByRole: (role, opts = {}) => {
-      const els = currentContainer.querySelectorAll(role);
-      const withRole = currentContainer.querySelectorAll('[role="' + role + '"]');
+      const els = container.querySelectorAll(role);
+      const withRole = container.querySelectorAll('[role="' + role + '"]');
       const all = [...els, ...withRole];
       if (opts.name) {
         const matching = all.find((el) => {
@@ -629,15 +1266,25 @@ export function render(ui, options = {}) {
       return all[0];
     },
     rerender: (newUi) => {
-      currentRootUI = newUi;
-      doReRender();
+      runWithUnrefTimers(() => {
+        reactAct(() => {
+          root.render(newUi);
+        });
+      });
     },
     unmount: () => {
-      setReRenderListener(null);
-      cleanupEffects();
-      clearHookStores();
-      currentContainer = null;
-      currentRootUI = null;
+      if (currentRoot === root) {
+        teardownActiveRoot();
+      } else {
+        runWithUnrefTimers(() => {
+          reactAct(() => {
+            root.unmount();
+          });
+        });
+        if (container.parentNode) {
+          container.parentNode.removeChild(container);
+        }
+      }
     },
   };
 }
@@ -692,62 +1339,78 @@ export const screen = {
   },
 };
 
+function dispatchDomValueEvent(element, eventName, eventData = {}) {
+  const prevValue = element.value;
+  if (eventData.target && typeof eventData.target === 'object') {
+    for (const [k, v] of Object.entries(eventData.target)) {
+      element[k] = v;
+    }
+  }
+  const nextValue = element.value;
+  if (element._valueTracker && typeof element._valueTracker.setValue === 'function') {
+    element._valueTracker.setValue(prevValue !== nextValue ? prevValue : '__forced_change__');
+  }
+  const inputType = String(element.getAttribute?.('type') ?? '').toLowerCase();
+  const isTextControl =
+    eventName === 'change' &&
+    (element.localName === 'textarea' ||
+      (element.localName === 'input' && inputType !== 'checkbox' && inputType !== 'radio'));
+  runWithUnrefTimers(() => {
+    reactAct(() => {
+      if (isTextControl) {
+        element.dispatchEvent(
+          new DOMEvent('input', {
+            bubbles: true,
+            cancelable: true,
+            ...eventData,
+          }),
+        );
+      }
+      element.dispatchEvent(
+        new DOMEvent(eventName, {
+          bubbles: true,
+          cancelable: true,
+          ...eventData,
+        }),
+      );
+    });
+  });
+}
+
 /**
- * Standard RTL fireEvent
+ * Standard RTL fireEvent dispatching W3C DOM events through React 19 event delegation
  */
 export const fireEvent = {
   click: (element) => {
     assert.ok(element, 'fireEvent.click called on null/undefined element');
-    let curr = element;
-    while (curr) {
-      if (typeof curr.props?.onClick === 'function') {
-        curr.props.onClick({
-          preventDefault: () => {},
-          stopPropagation: () => {},
-          target: element,
-          currentTarget: curr,
-        });
-        break;
-      }
-      curr = curr.parentNode;
-    }
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        const evt = new DOMEvent('click', { bubbles: true, cancelable: true });
+        element.dispatchEvent(evt);
+        if (element.tagName === 'LABEL' && !evt.defaultPrevented) {
+          const control = element.querySelector('input, button, select, textarea');
+          if (control && control !== element) {
+            control.dispatchEvent(new DOMEvent('click', { bubbles: true, cancelable: true }));
+          }
+        }
+      });
+    });
   },
   change: (element, eventData = {}) => {
     assert.ok(element, 'fireEvent.change called on null/undefined element');
-    if (typeof element.props?.onChange === 'function') {
-      element.props.onChange({
-        preventDefault: () => {},
-        stopPropagation: () => {},
-        target: { ...element, ...(eventData.target || {}) },
-        currentTarget: element,
-        ...eventData,
-      });
-    }
+    dispatchDomValueEvent(element, 'change', eventData);
   },
   input: (element, eventData = {}) => {
     assert.ok(element, 'fireEvent.input called on null/undefined element');
-    if (typeof element.props?.onInput === 'function') {
-      element.props.onInput({
-        preventDefault: () => {},
-        stopPropagation: () => {},
-        target: { ...element, ...(eventData.target || {}) },
-        currentTarget: element,
-        ...eventData,
-      });
-    }
+    dispatchDomValueEvent(element, 'input', eventData);
   },
 };
 
 /**
- * Standard RTL act method
+ * Standard RTL act method backed by `React.act`
  */
-export async function act(callback) {
-  const result = callback();
-  if (result instanceof Promise) {
-    await result;
-  }
-  doReRender();
-  return result;
+export function act(callback) {
+  return runWithUnrefTimers(() => reactAct(callback));
 }
 
 /**
@@ -776,13 +1439,7 @@ export async function waitFor(callback, { timeout = 2000, interval = 50 } = {}) 
  * Standard RTL cleanup method
  */
 export function cleanup() {
-  renderGeneration++;
-  setReRenderListener(null);
-  cleanupEffects();
-  clearHookStores();
-  currentContainer = null;
-  currentRootUI = null;
-  currentRenderOptions = null;
+  teardownActiveRoot();
 }
 
 export default {

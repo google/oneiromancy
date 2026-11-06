@@ -209,6 +209,11 @@ export function createDefaultSleeperHandlers() {
     http.get(/https:\/\/api\.sleeper\.app\/v1\/players\/nfl$/, () => {
       return HttpResponse.json(getNflPlayersFixture());
     }),
+
+    // GET ESPN NFL scoreboard (queried during loadSeasonContext)
+    http.get(/https:\/\/site\.api\.espn\.com\/apis\/site\/v2\/sports\/football\/nfl\/scoreboard/, () => {
+      return HttpResponse.json({ events: [] });
+    }),
   ];
 }
 

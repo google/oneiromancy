@@ -5,8 +5,8 @@
   "description": "Celestial High-Tech Fantasy Football Mobile-First Next.js Draft Assistant",
   "scripts": {
     "clean": "rm -rf .next out .npm_runtime",
-    "dev": "rm -rf .next && next dev",
-    "build": "rm -rf .next out && next build && node scripts/copy_standalone_assets.mjs",
+    "dev": "next dev --webpack",
+    "build": "next build --webpack && node scripts/copy_standalone_assets.mjs",
     "start": "node server.js",
     "start:standalone": "node server.js",
     "lint": "eslint .",

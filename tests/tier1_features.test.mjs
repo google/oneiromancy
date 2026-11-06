@@ -1920,7 +1920,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
     });
 
     it('28.6 should verify MatchupsScreen renders selected week matchup data for active user', () => {
-      const html = renderWithProvider(React.createElement(MatchupsScreen));
+      const html = renderWithProvider(React.createElement(MatchupsScreen, { weeklyMatchup: mockData.mockWeeklyMatchup }));
       assert.ok(html.includes('AstralOracles') && html.includes('lunareclipse'), 'MatchupsScreen must bind active user vs Week 1 opponent');
     });
 

@@ -69,7 +69,7 @@ import {
   WeeklyMatchup,
   WeeklyPositionSlot,
 } from '../types/oneiromancy';
-import {dominantElements, teamStacks} from './oracle';
+import {dominantElements, getNextPlayWeek, INJURED_STATUSES, teamStacks} from './oracle';
 import {
   mock_oneiromancy_draft_2025,
   mockCompetitorTeams,
@@ -88,6 +88,7 @@ import {
   mockWeeklyMatchup,
 } from './mockData';
 import {
+  BASELINES,
   calculateHarmony,
   calculateNumericTier,
   calculateSnakePick,
@@ -104,6 +105,7 @@ import {
   generateAscensionPath,
   isNFLByeWeek,
   isPlayerOnByeWeek,
+  isPlayerSigned,
   NFL_BYE_WEEK_MAX,
   NFL_BYE_WEEK_MIN,
   recomputeDraftScores,
@@ -115,7 +117,14 @@ import {
 } from './seasonContext';
 
 export type { SeasonContext };
-export { getSeasonContext, isNFLByeWeek, isPlayerOnByeWeek, NFL_BYE_WEEK_MAX, NFL_BYE_WEEK_MIN };
+export {
+  getNextPlayWeek,
+  getSeasonContext,
+  isNFLByeWeek,
+  isPlayerOnByeWeek,
+  NFL_BYE_WEEK_MAX,
+  NFL_BYE_WEEK_MIN,
+};
 
 // ============================================================================
 // Constants & Rate Limiter Configuration
@@ -540,7 +549,19 @@ export async function fetchNFLState(): Promise<SleeperNFLState | null> {
  * Fetch weekly player projections from Sleeper: GET /v1/projections/nfl/regular/<season>/<week>
  */
 const PROJECTIONS_TTL_MS = 10 * 60 * 1000;
-const projectionsCache = new Map<string, {at: number; data: Record<string, any>}>();
+const projectionsCache = new Map<string, {at: number; data: Record<string, any> | null}>();
+const inFlightProjectionsCache = new Map<string, Promise<Record<string, any> | null>>();
+
+export function clearProjectionsCache(): void {
+  projectionsCache.clear();
+  inFlightProjectionsCache.clear();
+  scheduleCache.clear();
+  scheduleFetchedAt.clear();
+  matchupWeekCache.clear();
+  completedDraftIds.clear();
+  completedDraftPicksCache.clear();
+  playerDictionaryCache = null;
+}
 
 export async function fetchWeeklyProjections(
   season: string = '2026',
@@ -550,28 +571,161 @@ export async function fetchWeeklyProjections(
   // ten minutes instead of downloading them on every poll.
   const cacheKey = `${season}:${week}`;
   const cached = projectionsCache.get(cacheKey);
-  if (cached && Date.now() - cached.at < PROJECTIONS_TTL_MS) return cached.data;
+  if (cached && Date.now() - cached.at < PROJECTIONS_TTL_MS) {
+    return cached.data;
+  }
+  const inFlight = inFlightProjectionsCache.get(cacheKey);
+  if (inFlight) return inFlight;
   if (isRateLimited()) return null;
   checkRateLimit();
-  try {
-    const res = await fetchWithTimeout(
-      `${SLEEPER_BASE_URL}/projections/nfl/regular/${season}/${week}`,
-    );
-    if (res.status === 429) {
-      triggerRateLimitCooldown();
-      return null;
-    }
-    if (res.ok) {
-      const data = (await res.json()) as Record<string, any>;
-      if (data && typeof data === 'object') {
-        projectionsCache.set(cacheKey, {at: Date.now(), data});
+  const req = (async (): Promise<Record<string, any> | null> => {
+    try {
+      const res = await fetchWithTimeout(
+        `${SLEEPER_BASE_URL}/projections/nfl/regular/${season}/${week}`,
+      );
+      if (res.status === 429) {
+        triggerRateLimitCooldown();
+        return null;
       }
-      return data;
+      if (res.ok) {
+        const data = (await res.json()) as Record<string, any>;
+        if (data && typeof data === 'object') {
+          projectionsCache.set(cacheKey, {at: Date.now(), data});
+        }
+        return data;
+      }
+      const negativeCacheAt = Date.now() - (PROJECTIONS_TTL_MS - 60 * 1000);
+      projectionsCache.set(cacheKey, {at: negativeCacheAt, data: null});
+    } catch (err: unknown) {
+      logSleeperWarning('[Sleeper] fetchWeeklyProjections warning:', err);
+      const negativeCacheAt = Date.now() - (PROJECTIONS_TTL_MS - 60 * 1000);
+      projectionsCache.set(cacheKey, {at: negativeCacheAt, data: null});
     }
-  } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchWeeklyProjections warning:', err);
+    return null;
+  })();
+  inFlightProjectionsCache.set(cacheKey, req);
+  try {
+    return await req;
+  } finally {
+    if (inFlightProjectionsCache.get(cacheKey) === req) {
+      inFlightProjectionsCache.delete(cacheKey);
+    }
   }
-  return null;
+}
+
+async function fetchNextWeekProjectionsMap(params: {
+  season: string;
+  activeWeek: number;
+  picks?: SleeperPick[];
+  leagueRosters?: any[];
+  leagueMatchups?: any[];
+  weeklyProjections?: Record<string, any> | null;
+  playerDict?: Record<string, SleeperPlayerRecord>;
+}): Promise<Record<number, Record<string, any> | null>> {
+  const {
+    season,
+    activeWeek,
+    picks,
+    leagueRosters,
+    leagueMatchups,
+    weeklyProjections,
+    playerDict,
+  } = params;
+  const seasonCtx = getSeasonContext();
+  const seasonByeWeeks = seasonCtx?.byeWeeks;
+  if (!activeWeek || activeWeek >= 18) return {};
+
+  const nextWeeks = new Set<number>();
+  const checkedPlayerIds = new Set<string>();
+  const checkPlayer = (team?: string | null, byeWeek?: number | null) => {
+    const nextWk = getNextPlayWeek(team, activeWeek, seasonByeWeeks, byeWeek);
+    if (nextWk !== null) nextWeeks.add(nextWk);
+  };
+
+  if (Array.isArray(picks)) {
+    for (const pick of picks) {
+      if (!pick?.player_id) continue;
+      const pid = String(pick.player_id);
+      checkedPlayerIds.add(pid);
+      const rec = playerDict?.[pid];
+      const isReleasedOrUnsignedFA =
+        rec !== undefined &&
+        (!rec.team || !isPlayerSigned(rec.team) || rec.team === 'FA' || rec.team === 'NFL');
+      const liveTeam = isReleasedOrUnsignedFA
+        ? 'FA'
+        : rec?.team || pick.metadata?.team;
+      checkPlayer(liveTeam, isReleasedOrUnsignedFA ? null : rec?.bye_week);
+    }
+  }
+  if (Array.isArray(leagueRosters)) {
+    for (const r of leagueRosters) {
+      const ids = [
+        ...(Array.isArray(r?.players) ? r.players : []),
+        ...(Array.isArray(r?.reserve) ? r.reserve : []),
+      ];
+      for (const rawId of ids) {
+        if (!rawId) continue;
+        const pid = String(rawId);
+        if (checkedPlayerIds.has(pid)) continue;
+        checkedPlayerIds.add(pid);
+        const rec = playerDict?.[pid];
+        const isReleasedOrUnsignedFA =
+          rec !== undefined &&
+          (!rec.team || !isPlayerSigned(rec.team) || rec.team === 'FA' || rec.team === 'NFL');
+        const team = isReleasedOrUnsignedFA ? 'FA' : rec?.team;
+        checkPlayer(team, isReleasedOrUnsignedFA ? null : rec?.bye_week);
+      }
+    }
+  }
+  if (Array.isArray(leagueMatchups)) {
+    for (const m of leagueMatchups) {
+      const ids = Array.isArray(m?.players) ? m.players : [];
+      for (const rawId of ids) {
+        if (!rawId) continue;
+        const pid = String(rawId);
+        if (checkedPlayerIds.has(pid)) continue;
+        checkedPlayerIds.add(pid);
+        const rec = playerDict?.[pid];
+        const isReleasedOrUnsignedFA =
+          rec !== undefined &&
+          (!rec.team || !isPlayerSigned(rec.team) || rec.team === 'FA' || rec.team === 'NFL');
+        const team = isReleasedOrUnsignedFA ? 'FA' : rec?.team;
+        checkPlayer(team, isReleasedOrUnsignedFA ? null : rec?.bye_week);
+      }
+    }
+  }
+  if (weeklyProjections && playerDict) {
+    for (const pid of Object.keys(weeklyProjections)) {
+      if (checkedPlayerIds.has(pid)) continue;
+      checkedPlayerIds.add(pid);
+      const rec = playerDict[pid];
+      if (rec) {
+        const isReleasedOrUnsignedFA =
+          !rec.team || !isPlayerSigned(rec.team) || rec.team === 'FA' || rec.team === 'NFL';
+        const team = isReleasedOrUnsignedFA ? 'FA' : rec.team;
+        checkPlayer(team, isReleasedOrUnsignedFA ? null : rec.bye_week);
+      }
+    }
+  }
+  if (playerDict) {
+    for (const [pid, rec] of Object.entries(playerDict)) {
+      if (checkedPlayerIds.has(pid)) continue;
+      if (!rec || !isValidNFLPlayerRecord(pid, rec)) continue;
+      if (isSignedActiveNFLPlayer(pid, rec)) {
+        checkPlayer(rec.team, rec.bye_week);
+      }
+    }
+  }
+
+  if (nextWeeks.size === 0) return {};
+
+  const result: Record<number, Record<string, any> | null> = {};
+  await Promise.all(
+    Array.from(nextWeeks).map(async (wk) => {
+      result[wk] = await fetchWeeklyProjections(season, wk).catch(() => null);
+    }),
+  );
+  return result;
 }
 
 // ============================================================================
@@ -1390,6 +1544,42 @@ export function calculateActivePick(
 }
 
 /**
+ * Grounded replacement-level baseline per game based on position baselines.
+ */
+export function getGroundedPositionBaseline(
+  pos?: string,
+  options?: {
+    isDeepReserve?: boolean;
+    isMyTeam?: boolean;
+    searchRank?: number | null;
+    depthChartOrder?: number | null;
+    status?: string | null;
+  },
+): number {
+  const posKey = String(pos || '').toUpperCase();
+  const standardBaseline =
+    posKey in BASELINES
+      ? Math.round((BASELINES[posKey as keyof typeof BASELINES] / 17) * 10) / 10
+      : 8.0;
+
+  const isDeepReserve =
+    Boolean(options?.isDeepReserve) ||
+    (!options?.isMyTeam &&
+      typeof options?.searchRank === 'number' &&
+      options.searchRank > 250) ||
+    (typeof options?.depthChartOrder === 'number' &&
+      options.depthChartOrder > (posKey === 'QB' ? 2 : 3)) ||
+    options?.status === 'Practice Squad';
+
+  if (isDeepReserve) {
+    const reserveCap = posKey === 'QB' ? 5.0 : 4.0;
+    return Math.min(standardBaseline, reserveCap);
+  }
+
+  return standardBaseline;
+}
+
+/**
  * Enriches cosmic board players with live Sleeper NFL master dictionary updates
  * (status, injury_status, depth_chart_order, team, number) and appends any
  * active signed NFL players missing from the baseline board.
@@ -1429,6 +1619,56 @@ export function enrichCosmicBoardWithNFLPlayers(
     const position = record.position
       ? (record.position.toUpperCase() as NFLPosition)
       : player.position;
+    const recordBaseline = Number((record as any)?.baseline_projected_points ?? 0);
+    const pos = String(position || '').toUpperCase();
+    const searchRankRaw = (record as any)?.search_rank ?? (player as any)?.search_rank ?? null;
+    const searchRank =
+      searchRankRaw !== null &&
+      searchRankRaw !== undefined &&
+      Number.isFinite(Number(searchRankRaw))
+        ? Number(searchRankRaw)
+        : null;
+    const depthChartOrder =
+      'depth_chart_order' in record
+        ? (record.depth_chart_order ?? null)
+        : (player.depth_chart_order ?? null);
+    const isMyTeam = player.draft_status === 'my_team' || (player as any)?.is_my_team === true;
+    const groundedPosBaseline = getGroundedPositionBaseline(pos, {
+      searchRank: typeof searchRank === 'number' && searchRank > 0 ? searchRank : null,
+      depthChartOrder: typeof depthChartOrder === 'number' ? depthChartOrder : null,
+      status: record.status ?? player.status,
+      isMyTeam,
+    });
+    const isInjured = Boolean(
+      (record.injury_status && (INJURED_STATUSES as readonly string[]).includes(record.injury_status)) ||
+      (player.injury_status && (INJURED_STATUSES as readonly string[]).includes(player.injury_status)),
+    );
+    const baselineProjectedPoints =
+      typeof player.baseline_projected_points === 'number' &&
+      Number.isFinite(player.baseline_projected_points) &&
+      player.baseline_projected_points > 0
+        ? player.baseline_projected_points
+        : Number.isFinite(recordBaseline) && recordBaseline > 0
+          ? Math.round(recordBaseline * 100) / 100
+          : isInjured && isPlayerSigned(record)
+            ? groundedPosBaseline
+            : player.baseline_projected_points;
+    const recordAvg = Number((record as any)?.average_projected_points ?? 0);
+    const recordSeason = Number((record as any)?.season_projected_points ?? 0);
+    const averageProjectedPoints =
+      typeof player.average_projected_points === 'number' &&
+      Number.isFinite(player.average_projected_points) &&
+      player.average_projected_points > 0
+        ? player.average_projected_points
+        : Number.isFinite(recordAvg) && recordAvg > 0
+          ? Math.round(recordAvg * 100) / 100
+          : Number.isFinite(recordSeason) && recordSeason > 0
+            ? Math.round((recordSeason / 17) * 100) / 100
+            : baselineProjectedPoints !== undefined
+              ? baselineProjectedPoints
+              : isInjured && isPlayerSigned(record)
+                ? groundedPosBaseline
+                : undefined;
 
     return {
       ...player,
@@ -1436,12 +1676,21 @@ export function enrichCosmicBoardWithNFLPlayers(
       last_name: lastName,
       name,
       position,
+      ...(baselineProjectedPoints !== undefined
+        ? {baseline_projected_points: baselineProjectedPoints}
+        : {}),
+      ...(averageProjectedPoints !== undefined
+        ? {average_projected_points: averageProjectedPoints}
+        : {}),
       status: record.status ?? player.status,
       injury_status:
         record.injury_status !== undefined
           ? record.injury_status
           : player.injury_status,
-      depth_chart_order: record.depth_chart_order ?? player.depth_chart_order,
+      depth_chart_order:
+        'depth_chart_order' in record
+          ? (record.depth_chart_order ?? null)
+          : player.depth_chart_order,
       fantasy_positions: Array.isArray(record.fantasy_positions)
         ? record.fantasy_positions
         : player.fantasy_positions,
@@ -1571,6 +1820,7 @@ export const KNOWN_ROSTERED_NFL_PLAYERS: Record<
     position: NFLPosition;
     team: string;
     number: number;
+    depth_chart_order?: number;
   }
 > = {
   '421': {
@@ -1684,6 +1934,7 @@ export const KNOWN_ROSTERED_NFL_PLAYERS: Record<
     position: 'QB',
     team: 'SEA',
     number: 14,
+    depth_chart_order: 2,
   },
   '5012': {
     first_name: 'Mark',
@@ -2616,6 +2867,30 @@ export function synthesizeCosmicPlayerFromId(
 
   const searchRank = Number((record as any)?.search_rank || 0);
   const isDeepFreeAgent = !isMyTeam && searchRank > 250;
+  const isInjured = Boolean(
+    (record?.injury_status && (INJURED_STATUSES as readonly string[]).includes(record.injury_status)) ||
+    (meta?.injury_status && (INJURED_STATUSES as readonly string[]).includes(meta.injury_status)),
+  );
+  const depthChartOrder = record?.depth_chart_order ?? (meta as any)?.depth_chart_order ?? null;
+  const groundedPosBaseline = getGroundedPositionBaseline(position, {
+    isDeepReserve: isDeepFreeAgent,
+    isMyTeam,
+    searchRank: searchRank > 0 ? searchRank : null,
+    depthChartOrder: typeof depthChartOrder === 'number' ? depthChartOrder : null,
+    status: record?.status ?? meta?.status,
+  });
+
+  const rawBaseline = Number(
+    (record as any)?.baseline_projected_points ??
+      (meta as any)?.baseline_projected_points ??
+      0,
+  );
+  const baselinePts =
+    Number.isFinite(rawBaseline) && rawBaseline > 0
+      ? Math.round(rawBaseline * 100) / 100
+      : isInjured && isPlayerSigned(record || { team })
+        ? groundedPosBaseline
+        : undefined;
 
   const baseWeekly = isDeepFreeAgent
     ? 4.0 + (absHash % 35) / 10
@@ -2630,7 +2905,28 @@ export function synthesizeCosmicPlayerFromId(
             : position === 'K'
               ? 8.0 + (absHash % 30) / 10
               : 7.0 + (absHash % 30) / 10;
-  const weeklyPts = Math.round(baseWeekly * 10) / 10;
+  const weeklyPts = isInjured ? 0 : Math.round(baseWeekly * 10) / 10;
+  const rawAvg = Number(
+    (record as any)?.average_projected_points ??
+      (meta as any)?.average_projected_points ??
+      0,
+  );
+  const rawSeason = Number(
+    (record as any)?.season_projected_points ??
+      (meta as any)?.season_projected_points ??
+      0,
+  );
+
+  const avgPts =
+    Number.isFinite(rawAvg) && rawAvg > 0
+      ? Math.round(rawAvg * 100) / 100
+      : Number.isFinite(rawSeason) && rawSeason > 0
+        ? Math.round((rawSeason / 17) * 100) / 100
+        : baselinePts !== undefined
+          ? baselinePts
+          : isInjured && isPlayerSigned(record || { team })
+            ? groundedPosBaseline
+            : undefined;
   const vorNormalized = isMyTeam ? 75.0 : isDeepFreeAgent ? 25.0 : 62.0;
   const marketVor = isMyTeam ? 5.0 : isDeepFreeAgent ? -2.0 : 2.5;
   const draftScore =
@@ -2644,14 +2940,34 @@ export function synthesizeCosmicPlayerFromId(
     position,
     team,
     jersey_number: jerseyNumber,
-    bye_week: getTeamByeWeek(team) ?? 0,
-    depth_chart_order: (record && 'depth_chart_order' in record) ? (record.depth_chart_order ?? undefined) : undefined,
+    bye_week:
+      getTeamByeWeek(team) ??
+      (Number.isFinite(Number((record as any)?.bye_week)) && Number((record as any)?.bye_week) > 0
+        ? Number((record as any)?.bye_week)
+        : Number.isFinite(Number((meta as any)?.bye_week)) && Number((meta as any)?.bye_week) > 0
+          ? Number((meta as any)?.bye_week)
+          : 0),
+    depth_chart_order:
+      (record && 'depth_chart_order' in record)
+        ? (record.depth_chart_order ?? null)
+        : (meta && 'depth_chart_order' in meta && (meta as any).depth_chart_order != null)
+          ? (meta as any).depth_chart_order
+          : undefined,
     fantasy_positions: (record && 'fantasy_positions' in record && Array.isArray(record.fantasy_positions)) ? record.fantasy_positions : undefined,
     adp: 0, // unknown; drafted players get their real pick number
     projected_points: weeklyPts,
     weekly_projected_points: weeklyPts,
     sleeper_projected_points: weeklyPts,
     nfl_projected_points: weeklyPts,
+    ...(baselinePts !== undefined
+      ? {baseline_projected_points: baselinePts}
+      : {}),
+    ...(avgPts !== undefined && avgPts > 0
+      ? {average_projected_points: avgPts}
+      : {}),
+    ...(rawSeason > 0
+      ? {season_projected_points: Math.round(rawSeason * 100) / 100}
+      : {}),
     market_vor: marketVor,
     vor_normalized: vorNormalized,
     draft_score: draftScore,
@@ -4464,6 +4780,7 @@ export function deriveWeeklyMatchup(
       player_name: p.name,
       position: p.position,
       fantasy_positions: p.fantasy_positions,
+      depth_chart_order: p.depth_chart_order,
       team: p.team || 'NFL',
       nfl_team: p.team || 'NFL',
       bye_week: teamBye || p.bye_week || 0,
@@ -4905,6 +5222,7 @@ export function transformToDraftState(
   leagueDetails?: any,
   activeWeek?: number,
   weeklyProjections?: Record<string, any> | null,
+  nextWeekProjectionsByWeek?: Record<number, Record<string, any> | null> | null,
 ): DraftState {
   const isSyntheticOrLive =
     userSettings?.mode === 'live' ||
@@ -4990,6 +5308,7 @@ export function transformToDraftState(
 
   // 1. Gather all unique players from draft picks, league rosters, and weekly projections
   const playerMap = new Map<string, CosmicPlayer>();
+  const syntheticBaselineIds = new Set<string>();
 
   // Seed baseline board only in explicit mock mode
   const baseBoard = isExplicitMock ? mockCosmicBoard : [];
@@ -5041,6 +5360,9 @@ export function transformToDraftState(
           hasCompletedRosterSync ? false : Boolean(isMyPick),
           pick.metadata,
         );
+        if (player.baseline_projected_points === undefined) {
+          syntheticBaselineIds.add(pid);
+        }
       }
       const firstName = pick.metadata?.first_name || player.first_name;
       const lastName = pick.metadata?.last_name || player.last_name;
@@ -5051,12 +5373,21 @@ export function transformToDraftState(
         : player.position;
       const liveRecord = playerDict?.[pid];
       const liveTeam =
-        liveRecord?.team && liveRecord.team !== 'FA' && liveRecord.team !== 'NFL'
+        liveRecord?.team &&
+        liveRecord.team !== 'FA' &&
+        liveRecord.team !== 'NFL'
           ? liveRecord.team
           : undefined;
       const team = liveTeam || pick.metadata?.team || player.team;
       const jerseyNumber =
         Number(pick.metadata?.number) || player.jersey_number;
+      const rawPickBaseline = Number(
+        (pick.metadata as any)?.baseline_projected_points ?? 0,
+      );
+      const pickBaseline =
+        Number.isFinite(rawPickBaseline) && rawPickBaseline > 0
+          ? Math.round(rawPickBaseline * 100) / 100
+          : player.baseline_projected_points;
 
       player = {
         ...player,
@@ -5066,7 +5397,16 @@ export function transformToDraftState(
         position,
         team,
         jersey_number: jerseyNumber,
-        bye_week: getTeamByeWeek(team) ?? player.bye_week,
+        bye_week:
+          getTeamByeWeek(team) ??
+          (Number.isFinite(Number((pick.metadata as any)?.bye_week)) && Number((pick.metadata as any)?.bye_week) > 0
+            ? Number((pick.metadata as any)?.bye_week)
+            : Number.isFinite(Number((liveRecord as any)?.bye_week)) && Number((liveRecord as any)?.bye_week) > 0
+              ? Number((liveRecord as any)?.bye_week)
+              : player.bye_week || 0),
+        ...(pickBaseline !== undefined
+          ? {baseline_projected_points: pickBaseline}
+          : {}),
         draft_status: hasCompletedRosterSync
           ? 'available'
           : isMyPick
@@ -5111,6 +5451,9 @@ export function transformToDraftState(
               playerDict,
               Boolean(isUserRoster),
             );
+            if (player.baseline_projected_points === undefined) {
+              syntheticBaselineIds.add(pid);
+            }
           }
           if (isUserRoster) {
             player = {
@@ -5151,6 +5494,9 @@ export function transformToDraftState(
             playerDict,
             false,
           );
+          if (synthesized.baseline_projected_points === undefined) {
+            syntheticBaselineIds.add(pid);
+          }
           playerMap.set(pid, {
             ...synthesized,
             draft_status: 'drafted',
@@ -5214,6 +5560,9 @@ export function transformToDraftState(
 
       if (effectiveProj > 0) {
         const p = synthesizeCosmicPlayerFromId(pid, playerDict, false);
+        if (p.baseline_projected_points === undefined) {
+          syntheticBaselineIds.add(pid);
+        }
         p.draft_status = 'available';
         p.nfl_projected_points = Math.round(nflProj * 100) / 100;
         p.sleeper_projected_points = Math.round(effectiveProj * 100) / 100;
@@ -5255,20 +5604,57 @@ export function transformToDraftState(
 
     for (const cand of availableCandidates) {
       const p = synthesizeCosmicPlayerFromId(cand.id, playerDict, false);
+      if (p.baseline_projected_points === undefined) {
+        syntheticBaselineIds.add(cand.id);
+      }
       p.draft_status = 'available';
       playerMap.set(cand.id, p);
     }
   }
 
   playerMap.forEach((player, pid) => {
-    const baselinePts = Number(
+    const explicitBaselineRaw = Number(
       (player as any).baseline_projected_points ??
-        player.sleeper_projected_points ??
-        player.projected_points ??
+        (playerDict?.[pid] as any)?.baseline_projected_points ??
         0,
     );
-    if (baselinePts > 0) {
-      (player as any).baseline_projected_points = baselinePts;
+    const hasExplicitPositiveBaseline =
+      Number.isFinite(explicitBaselineRaw) && explicitBaselineRaw > 0;
+    const legacyBaselineRaw = Number(
+      player.sleeper_projected_points ?? player.projected_points ?? 0,
+    );
+    const baselineForMatchup = hasExplicitPositiveBaseline
+      ? explicitBaselineRaw
+      : !syntheticBaselineIds.has(pid) && Number.isFinite(legacyBaselineRaw) && legacyBaselineRaw > 0
+        ? legacyBaselineRaw
+        : 0;
+    if (baselineForMatchup > 0) {
+      (player as any).baseline_projected_points =
+        Math.round(baselineForMatchup * 100) / 100;
+    } else {
+      delete (player as any).baseline_projected_points;
+    }
+
+    const explicitAvgRaw = Number(
+      (player as any).average_projected_points ??
+        (playerDict?.[pid] as any)?.average_projected_points ??
+        0,
+    );
+    const hasExplicitPositiveAvg =
+      Number.isFinite(explicitAvgRaw) &&
+      explicitAvgRaw > 0;
+    const avgForMatchup = hasExplicitPositiveAvg
+      ? explicitAvgRaw
+      : baselineForMatchup > 0
+        ? baselineForMatchup
+        : Number(player.season_projected_points) > 0
+          ? Number(player.season_projected_points) / 17
+          : 0;
+    if (avgForMatchup > 0) {
+      (player as any).average_projected_points =
+        Math.round(avgForMatchup * 100) / 100;
+    } else {
+      delete (player as any).average_projected_points;
     }
     const proj = weeklyProjections?.[pid];
     let nflPts = 0;
@@ -5322,6 +5708,65 @@ export function transformToDraftState(
         ),
       );
     }
+    const seasonCtx = getSeasonContext();
+    const effectiveActiveWeek =
+      typeof activeWeek === 'number' ? activeWeek : seasonCtx?.currentWeek;
+    const liveRec = playerDict?.[pid];
+    const isReleasedFreeAgent =
+      liveRec !== undefined &&
+      (!liveRec.team || liveRec.team === 'FA' || liveRec.team === 'NFL');
+    const lookaheadTeam = isReleasedFreeAgent ? 'FA' : player.team;
+    const lookaheadByeWeek = isReleasedFreeAgent ? null : player.bye_week;
+    const nextPlayWk = getNextPlayWeek(
+      lookaheadTeam,
+      effectiveActiveWeek,
+      seasonCtx?.byeWeeks,
+      lookaheadByeWeek,
+    );
+    if (nextPlayWk !== null) {
+      player.next_play_week = nextPlayWk;
+      const nextProj = nextWeekProjectionsByWeek?.[nextPlayWk]?.[pid];
+      let nextProjPts = 0;
+      if (nextProj) {
+        const nflNext = Number(
+          nextProj.pts_ppr ?? nextProj.pts_half_ppr ?? nextProj.pts_std ?? 0,
+        );
+        const leagueNext = calculateSleeperLeagueProjection(
+          nextProj,
+          scoringSettings,
+        );
+        nextProjPts = leagueNext > 0 ? leagueNext : nflNext;
+      }
+      const fallbackLookaheadBaseline = hasExplicitPositiveBaseline
+        ? Math.round(explicitBaselineRaw * 100) / 100
+        : !syntheticBaselineIds.has(pid) &&
+            typeof player.baseline_projected_points === 'number' &&
+            Number.isFinite(player.baseline_projected_points) &&
+            player.baseline_projected_points > 0
+          ? player.baseline_projected_points
+          : undefined;
+      if (
+        !(Number.isFinite(nextProjPts) && nextProjPts > 0) &&
+        fallbackLookaheadBaseline !== undefined
+      ) {
+        nextProjPts = fallbackLookaheadBaseline;
+      }
+      player.next_week_projected_points =
+        Number.isFinite(nextProjPts) && nextProjPts > 0
+          ? Math.round(nextProjPts * 100) / 100
+          : undefined;
+      if (
+        player.next_week_projected_points &&
+        player.next_week_projected_points > 0 &&
+        !hasExplicitPositiveAvg
+      ) {
+        player.average_projected_points = player.next_week_projected_points;
+      }
+    } else {
+      delete player.next_play_week;
+      delete player.next_week_projected_points;
+    }
+
     playerMap.set(pid, player);
   });
 
@@ -6971,6 +7416,16 @@ export async function fetchSleeperDraft(
           }
         }
 
+        const nextWeekProjectionsByWeek = await fetchNextWeekProjectionsMap({
+          season,
+          activeWeek,
+          picks,
+          leagueRosters,
+          leagueMatchups,
+          weeklyProjections,
+          playerDict: activeDict,
+        });
+
         const state = transformToDraftState(
           metadata,
           picks,
@@ -6982,6 +7437,7 @@ export async function fetchSleeperDraft(
           leagueDetails,
           activeWeek,
           weeklyProjections,
+          nextWeekProjectionsByWeek,
         );
         return {
           ...state,
@@ -7221,6 +7677,15 @@ export async function fetchSleeperDraft(
         // Continue with available cached data
       }
     }
+    const nextWeekProjectionsByWeek = await fetchNextWeekProjectionsMap({
+      season,
+      activeWeek,
+      picks,
+      leagueRosters,
+      leagueMatchups,
+      weeklyProjections,
+      playerDict: activeDict,
+    });
     const state = transformToDraftState(
       metadata,
       picks,
@@ -7232,6 +7697,7 @@ export async function fetchSleeperDraft(
       leagueDetails,
       activeWeek,
       weeklyProjections,
+      nextWeekProjectionsByWeek,
     );
     return {
       ...state,

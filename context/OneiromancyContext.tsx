@@ -193,6 +193,8 @@ export interface OneiromancyContextState {
   userSlot: number;
   /** Active user team name */
   userTeamName: string;
+  /** Selected player IDs for multi-player comparison across board views (max 6) */
+  comparedPlayerIds: string[];
 }
 
 export interface OneiromancyContextActions {
@@ -234,6 +236,10 @@ export interface OneiromancyContextActions {
   syncLeagues: (username: string) => Promise<AvailableLeague[]>;
   /** Centralized predicate to check if a team, roster ID, or draft slot belongs to the user */
   isUserTeam: (teamOrId: CompetitorTeam | number | string) => boolean;
+  /** Toggles multi-player comparison state for a player (capped at MAX_COMPARE = 6) */
+  toggleComparePlayer: (id: string) => void;
+  /** Clears all compared players */
+  clearComparedPlayers: () => void;
 }
 
 export type OneiromancyContextValue = OneiromancyContextState & OneiromancyContextActions;
@@ -277,12 +283,19 @@ export interface OneiromancyProviderProps {
   initialDraftState?: DraftState;
 }
 
+export const MAX_COMPARE_PLAYERS = 6;
+
 export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   children,
   initialDraftState = mock_oneiromancy_draft_2025,
 }) => {
   // Core reactive state
   const [draftState, setDraftState] = useState<DraftState>(initialDraftState);
+  const draftStateRef = useRef<DraftState>(draftState);
+  useEffect(() => {
+    draftStateRef.current = draftState;
+  }, [draftState]);
+
   const [selectedPlayer, setSelectedPlayer] = useState<CosmicPlayer | null>(null);
   const [activeTab, setActiveTabState] = useState<OneiromancyTab>('oneiromancy');
   const [isSettingsOpen, setIsSettingsOpen] = useState<boolean>(false);
@@ -293,20 +306,45 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   const [statusType, setStatusType] = useState<SyncStatusType>('live');
   const [isLoading, setIsLoading] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
-  const [mode, setModeState] = useState<'live' | 'mock'>('live');
+  const hasExplicitInitialState = initialDraftState !== mock_oneiromancy_draft_2025;
+  const [mode, setModeState] = useState<'live' | 'mock'>(
+    hasExplicitInitialState && initialDraftState.settings?.mode
+      ? initialDraftState.settings.mode
+      : 'live'
+  );
   const [syncError, setSyncError] = useState<string | null>(null);
   const [syncWarning, setSyncWarning] = useState<string | null>(null);
   const [hasHydrated, setHasHydrated] = useState<boolean>(false);
+  const [comparedPlayerIds, setComparedPlayerIds] = useState<string[]>([]);
+
+  const toggleComparePlayer = useCallback((id: string) => {
+    setComparedPlayerIds((prev) => {
+      const sId = String(id);
+      const board = draftStateRef.current?.cosmic_board;
+      const validIds = board && board.length > 0
+        ? new Set(board.map((p) => String(p.id)))
+        : null;
+      const activePrev = validIds ? prev.filter((p) => validIds.has(p)) : prev;
+      if (activePrev.includes(sId)) {
+        return activePrev.filter((p) => p !== sId);
+      }
+      if (validIds && !validIds.has(sId)) {
+        return activePrev;
+      }
+      if (activePrev.length >= MAX_COMPARE_PLAYERS) {
+        return activePrev;
+      }
+      return [...activePrev, sId];
+    });
+  }, []);
+
+  const clearComparedPlayers = useCallback(() => {
+    setComparedPlayerIds([]);
+  }, []);
 
   useEffect(() => {
     setHasHydrated(true);
   }, []);
-
-  // Mutable ref to capture latest draftState inside timers and callbacks
-  const draftStateRef = useRef<DraftState>(draftState);
-  useEffect(() => {
-    draftStateRef.current = draftState;
-  }, [draftState]);
 
   const modeRef = useRef<'live' | 'mock'>(mode);
   const syncEpochRef = useRef<number>(0);
@@ -319,6 +357,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   const applyMode = useCallback((newMode: 'live' | 'mock') => {
     setModeState(newMode);
     modeRef.current = newMode;
+    setComparedPlayerIds([]);
     syncEpochRef.current++;
     inFlightSyncRef.current = null;
     inFlightSyncKeyRef.current = '';
@@ -550,6 +589,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   // Action: setDraftId
   // --------------------------------------------------------------------------
   const setDraftId = useCallback((draftId: string) => {
+    setComparedPlayerIds([]);
     setDraftState((prev) => ({
       ...prev,
       draft_id: draftId,
@@ -637,6 +677,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
           },
         }));
       } else if (
+        !hasExplicitInitialState &&
         window.location &&
         typeof window.location.origin === 'string' &&
         window.location.origin.startsWith('http') &&
@@ -666,7 +707,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     } catch {
       // Ignore localStorage access failures
     }
-  }, [setUserSlot, applyMode]);
+  }, [setUserSlot, applyMode, hasExplicitInitialState]);
 
   // --------------------------------------------------------------------------
   // Action: setUserId
@@ -755,6 +796,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
   // --------------------------------------------------------------------------
   const setLeagueId = useCallback((leagueId: string) => {
     const cleanLeagueId = leagueId.trim();
+    setComparedPlayerIds([]);
     setDraftState((prev) => ({
       ...prev,
       settings: { ...prev.settings, league_id: cleanLeagueId },
@@ -855,8 +897,12 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       const rosterSig = (state.my_roster || [])
         .map(
           (s) =>
-            `${s.slot_id}:${s.player?.id ?? 'none'}:${s.player?.projected_points ?? 0}:${s.player?.injury_status ?? ''}`
+            `${s.slot_id}:${s.player?.id ?? 'none'}:${s.player?.projected_points ?? 0}:${s.player?.injury_status ?? ''}:${s.player?.next_play_week ?? ''}:${s.player?.next_week_projected_points ?? ''}`
         )
+        .join(',');
+      const boardLookaheadSig = (state.cosmic_board || [])
+        .filter((p) => p.next_play_week !== undefined || p.next_week_projected_points !== undefined)
+        .map((p) => `${p.id}:${p.next_play_week ?? ''}:${p.next_week_projected_points ?? ''}`)
         .join(',');
       const waiverSig = (state.waiver_upgrades || [])
         .map((w) => `${w.id}:${w.net_score_delta}:${w.recommended_drop_id}`)
@@ -864,7 +910,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       const tradeSig = (state.trade_proposals || [])
         .map((t) => `${t.proposal_id}:${t.net_vor_delta}`)
         .join(',');
-      return `${draftId}|${status}|${pickNo}|${boardLen}|${wk}:${matchupId}:${userPts}:${oppId}:${oppPts}|${rosterSig}|${waiverSig}|${tradeSig}`;
+      return `${draftId}|${status}|${pickNo}|${boardLen}|${wk}:${matchupId}:${userPts}:${oppId}:${oppPts}|${rosterSig}|${boardLookaheadSig}|${waiverSig}|${tradeSig}`;
     },
     []
   );
@@ -1056,6 +1102,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
                     draft_score: fresh.draft_score,
                     favorability_score: fresh.favorability_score,
                     favorability_verdict: fresh.favorability_verdict,
+                    next_play_week: fresh.next_play_week,
+                    next_week_projected_points: fresh.next_week_projected_points,
                   },
                 }
               : slot;
@@ -1629,14 +1677,16 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
     }
   }, [refreshDraft]);
 
-  // Trigger immediate live refresh on mount
+  // Trigger immediate live refresh on mount unless caller supplied an explicit mock snapshot
   const mountedInitialRef = useRef(false);
   useEffect(() => {
     if (!mountedInitialRef.current) {
       mountedInitialRef.current = true;
-      refreshDraft();
+      if (!hasExplicitInitialState || modeRef.current === 'live') {
+        refreshDraft();
+      }
     }
-  }, [refreshDraft]);
+  }, [refreshDraft, hasExplicitInitialState]);
 
   // Trigger immediate refreshDraft() when draft_id, username, or league_id changes (user_slot is managed locally)
   useEffect(() => {
@@ -1826,6 +1876,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       userRosterId,
       userSlot,
       userTeamName,
+      comparedPlayerIds,
       setTab,
       selectPlayer,
       updateChaosLambda,
@@ -1845,6 +1896,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       setMode,
       syncLeagues,
       isUserTeam,
+      toggleComparePlayer,
+      clearComparedPlayers,
     }),
     [
       draftState,
@@ -1863,6 +1916,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       userRosterId,
       userSlot,
       userTeamName,
+      comparedPlayerIds,
       setTab,
       selectPlayer,
       updateChaosLambda,
@@ -1882,6 +1936,8 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
       setMode,
       syncLeagues,
       isUserTeam,
+      toggleComparePlayer,
+      clearComparedPlayers,
     ]
   );
 

@@ -21,12 +21,12 @@ import { useOneiromancy } from '@/context/OneiromancyContext';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
 import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
-import { getSeasonContext } from '@/lib/sleeper';
 import {
   computeByeOutlook,
   computeLineupCheck,
   computeTradePartners,
   computeWaiverMoves,
+  resolveActiveWeek,
   type LineupSwap,
 } from '@/lib/oracle';
 
@@ -96,10 +96,12 @@ export const WeeklyMoves: React.FC = () => {
   const roster = draftState.my_roster ?? NO_MY_ROSTER;
   const board = draftState.cosmic_board ?? NO_COSMIC_BOARD;
   const teams = draftState.competitor_teams ?? NO_COMPETITOR_TEAMS;
-  const season = getSeasonContext();
-  const currentWeek = season?.currentWeek ?? draftState.weekly_matchup?.week;
+  const currentWeek = resolveActiveWeek(draftState);
 
-  const swaps = useMemo(() => computeLineupCheck(roster, lambda), [roster, lambda]);
+  const swaps = useMemo(
+    () => computeLineupCheck(roster, lambda, currentWeek),
+    [roster, lambda, currentWeek],
+  );
   const waiver = useMemo(
     () => computeWaiverMoves(board, roster, lambda, currentWeek, 1)[0],
     [board, roster, lambda, currentWeek],
@@ -109,8 +111,8 @@ export const WeeklyMoves: React.FC = () => {
     [roster, currentWeek],
   );
   const trade = useMemo(
-    () => computeTradePartners(teams, board, roster, lambda)[0],
-    [teams, board, roster, lambda],
+    () => computeTradePartners(teams, board, roster, lambda, { currentWeek })[0],
+    [teams, board, roster, lambda, currentWeek],
   );
 
   const tabButton = (label: string, tab: string) => (
@@ -216,6 +218,7 @@ export const WeeklyMoves: React.FC = () => {
         isOpen={inspected !== null}
         onClose={() => setInspected(null)}
         roster={roster}
+        activeWeek={currentWeek}
       />
     </section>
   );

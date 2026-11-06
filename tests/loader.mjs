@@ -81,10 +81,13 @@ export function ensureCompiled() {
 ensureCompiled();
 
 function getFallbackPackageBases() {
-  const user = process.env.USER || 'default';
+  const user = process.env.USER || process.env.LOGNAME || 'default';
   const bases = [path.resolve(clientRoot, 'package.json')];
   if (process.env.TEST_TMPDIR) {
     bases.push(path.join(process.env.TEST_TMPDIR, 'package.json'));
+  }
+  if (process.env.ONEIROMANCY_SANDBOX_DIR) {
+    bases.push(path.join(process.env.ONEIROMANCY_SANDBOX_DIR, 'package.json'));
   }
   bases.push(`/tmp/oneiromancy_runner_${user}/package.json`);
   return bases;
@@ -205,6 +208,7 @@ export async function resolve(specifier, context, nextResolve) {
     }
   }
 
+
   if (!cleanSpecifier.startsWith('.') && !cleanSpecifier.startsWith('/') && !cleanSpecifier.startsWith('node:')) {
     const fallbackBases = getFallbackPackageBases();
     for (const basePkg of fallbackBases) {
@@ -225,6 +229,12 @@ export async function resolve(specifier, context, nextResolve) {
   try {
     return await nextResolve(specifier, context);
   } catch (err) {
+    if (cleanSpecifier === 'lucide-react') {
+      const fallbackPath = path.join(testsDir, 'helpers', 'lucide_react_fallback.mjs');
+      if (fs.existsSync(fallbackPath)) {
+        return { url: pathToFileURL(fallbackPath).href + querySuffix, shortCircuit: true };
+      }
+    }
     const fallbackBases = getFallbackPackageBases();
     for (const basePkg of fallbackBases) {
       if (fs.existsSync(basePkg) && fs.existsSync(path.join(path.dirname(basePkg), 'node_modules'))) {

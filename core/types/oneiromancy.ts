@@ -79,6 +79,10 @@ export interface CosmicPlayer {
   weekly_projected_points?: number; // Weekly matchup projection
   sleeper_projected_points?: number; // Custom League-Scoring weekly projection (e.g. 6pt pass TD, Superflex)
   nfl_projected_points?: number; // Baseline NFL standard PPR projection
+  baseline_projected_points?: number; // Pre-zeroing seasonal/baseline PPR projection fallback
+  average_projected_points?: number; // Player's average projected points per game (placeholder when on bye or 0 pts)
+  next_play_week?: number; // Next regular-season NFL week this bye-week player plays
+  next_week_projected_points?: number; // Projected points for next_play_week (lookahead only)
   market_vor: number; // Value Over Replacement (raw)
   vor_normalized: number; // 0-100 scale
   draft_score: number; // Blended Chaos Dial score (0-100)
@@ -342,6 +346,7 @@ export interface PlayerMatchupFavorability {
   player_name: string;
   position: NFLPosition;
   fantasy_positions?: string[];
+  depth_chart_order?: number | null;
   team: string;
   opponent?: string;
   opponent_team?: string;
@@ -739,6 +744,8 @@ export interface SleeperPlayerRecord {
   search_full_name?: string;
   search_rank?: number | null;
   age?: number | null;
+  bye_week?: number | null;
+  baseline_projected_points?: number;
 }
 
 export interface SleeperNFLState {

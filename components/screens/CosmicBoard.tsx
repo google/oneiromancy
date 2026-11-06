@@ -23,10 +23,21 @@ import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
-import { useOneiromancy } from '@/context/OneiromancyContext';
+import { MAX_COMPARE_PLAYERS, useOneiromancy } from '@/context/OneiromancyContext';
 import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, isPlayerSigned } from '@/lib/scoring';
 import { deriveEligiblePositions, getSeasonContext } from '@/lib/sleeper';
-import { TONE_LABEL, TONE_PILL, computeTradePartners, computeWaiverMoves, favorabilityTone, oracleScore, starsScore, statsPoints } from '@/lib/oracle';
+import {
+  TONE_LABEL,
+  TONE_PILL,
+  computeTradePartners,
+  computeWaiverMoves,
+  favorabilityTone,
+  oraclePlaceholderInfo,
+  oracleScore,
+  resolveActiveWeek,
+  starsScore,
+  statsPoints,
+} from '@/lib/oracle';
 import { CosmicPlayer, NFLPosition } from '@/types/oneiromancy';
 import { RefreshCw } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -49,14 +60,15 @@ export function comparePlayersForBoard(
   sortField: BoardSortField,
   direction: BoardSortDirection = 'desc',
   lambda: number = DEFAULT_CHAOS_LAMBDA,
+  activeWeek?: number,
 ): number {
   const multiplier = direction === 'desc' ? -1 : 1;
   let primaryDiff = 0;
 
   switch (sortField) {
-    case 'oracle': primaryDiff = oracleScore(a, lambda) - oracleScore(b, lambda); break;
+    case 'oracle': primaryDiff = oracleScore(a, lambda, { currentWeek: activeWeek }) - oracleScore(b, lambda, { currentWeek: activeWeek }); break;
     case 'stars':
-    case 'favorability_score': primaryDiff = starsScore(a) - starsScore(b); break;
+    case 'favorability_score': primaryDiff = starsScore(a, { currentWeek: activeWeek }) - starsScore(b, { currentWeek: activeWeek }); break;
     case 'draft_score': primaryDiff = a.draft_score - b.draft_score; break;
     case 'projected_points': primaryDiff = statsPoints(a) - statsPoints(b); break;
     case 'spirit_score': primaryDiff = a.spirit_score - b.spirit_score; break;
@@ -111,6 +123,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
 
   const [inspectedPlayer, setInspectedPlayer] = useState<CosmicPlayer | null>(null);
   const [inspectedVs, setInspectedVs] = useState<CosmicPlayer | null>(null);
+  const [inspectedCandidates, setInspectedCandidates] = useState<CosmicPlayer[] | null>(null);
 
   const leagueEligiblePositions = useMemo(
     () =>
@@ -121,12 +134,24 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
     [context.draftState?.roster_positions, context.draftState?.settings?.roster_positions, context.draftState?.my_roster],
   );
 
+  const activeWeek = resolveActiveWeek(context.draftState);
+  const comparedPlayerIds = context?.comparedPlayerIds ?? [];
+  const toggleComparePlayer = context?.toggleComparePlayer ?? (() => {});
+  const clearComparedPlayers = context?.clearComparedPlayers ?? (() => {});
+
+  const pinnedPlayers = useMemo(() => {
+    const byId = new Map(allPlayers.map((p) => [String(p.id), p]));
+    return comparedPlayerIds
+      .map((id) => byId.get(String(id)))
+      .filter((p): p is CosmicPlayer => Boolean(p));
+  }, [allPlayers, comparedPlayerIds]);
+
   const waiverMap = useMemo(() => {
     const moves = computeWaiverMoves(
       allPlayers,
       context.draftState?.my_roster || [],
       lambda,
-      getSeasonContext()?.currentWeek ?? context.draftState?.weekly_matchup?.week,
+      activeWeek,
       40,
     );
     const map = new Map<string, { drop: CosmicPlayer; oracleGain: number; wouldStart: boolean }>();
@@ -139,7 +164,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
       });
     }
     return map;
-  }, [allPlayers, context.draftState?.my_roster, lambda, context.draftState?.weekly_matchup?.week, leagueEligiblePositions]);
+  }, [allPlayers, context.draftState?.my_roster, lambda, activeWeek, leagueEligiblePositions]);
 
   const tradeMap = useMemo(() => {
     const partners = computeTradePartners(
@@ -147,6 +172,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
       allPlayers,
       context.draftState?.my_roster || [],
       lambda,
+      { currentWeek: activeWeek },
     );
     const map = new Map<string, { partnerName: string; give?: CosmicPlayer; gain?: number }>();
     for (const p of partners) {
@@ -177,7 +203,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
       });
     }
     return map;
-  }, [context.draftState?.competitor_teams, context.draftState?.trade_proposals, context.draftState?.my_roster, allPlayers, lambda]);
+  }, [context.draftState?.competitor_teams, context.draftState?.trade_proposals, context.draftState?.my_roster, allPlayers, lambda, activeWeek]);
 
   const handleDraft = useCallback(
     (playerId: string) => {
@@ -191,11 +217,12 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
   );
 
   const handleInspect = useCallback(
-    (player: CosmicPlayer, vs?: CosmicPlayer | null) => {
+    (player: CosmicPlayer, vs?: CosmicPlayer | null, candidates?: CosmicPlayer[] | null) => {
       if (propOnInspectPlayer) {
         propOnInspectPlayer(player);
       } else {
         setInspectedVs(vs ?? null);
+        setInspectedCandidates(candidates ?? null);
         setInspectedPlayer(player);
         context.selectPlayer(player);
       }
@@ -246,10 +273,28 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
         const tB = tradeMap.get(String(b.id))?.gain ?? -Infinity;
         if (tA !== tB) return tB - tA;
       }
-      return comparePlayersForBoard(a, b, sortField, sortDirection, lambda);
+      return comparePlayersForBoard(a, b, sortField, sortDirection, lambda, activeWeek);
     });
-  }, [allPlayers, modeFilter, hideDrafted, leagueEligiblePositions, positionFilter, searchQuery, sortField, sortDirection, lambda, waiverMap, tradeMap]);
-  const pagePlayers = processedPlayers.slice(0, visibleCount);
+  }, [allPlayers, modeFilter, hideDrafted, leagueEligiblePositions, positionFilter, searchQuery, sortField, sortDirection, lambda, waiverMap, tradeMap, activeWeek]);
+
+  const processedIdSet = useMemo(
+    () => new Set(processedPlayers.map((p) => String(p.id))),
+    [processedPlayers],
+  );
+  const pinnedInFilter = useMemo(
+    () => pinnedPlayers.filter((p) => processedIdSet.has(String(p.id))),
+    [pinnedPlayers, processedIdSet],
+  );
+  const pinnedOutsideFilter = useMemo(
+    () => pinnedPlayers.filter((p) => !processedIdSet.has(String(p.id))),
+    [pinnedPlayers, processedIdSet],
+  );
+
+  const unpinnedProcessedPlayers = useMemo(() => {
+    const pinnedSet = new Set(comparedPlayerIds.map(String));
+    return processedPlayers.filter((p) => !pinnedSet.has(String(p.id)));
+  }, [processedPlayers, comparedPlayerIds]);
+  const pagePlayers = unpinnedProcessedPlayers.slice(0, visibleCount);
 
   return (
     <div className={`flex flex-col gap-4 w-full max-w-5xl mx-auto ${className}`}>
@@ -286,6 +331,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
         totalVisibleCount={processedPlayers.length}
       />
 
+
       {/* Single Unified Player Directory Table & Card List Across All 4 Modes */}
       {context.isLoading && processedPlayers.length === 0 ? (
         <GlassCard
@@ -299,7 +345,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
             </span>
           </div>
         </GlassCard>
-      ) : processedPlayers.length === 0 ? (
+      ) : processedPlayers.length === 0 && pinnedPlayers.length === 0 ? (
         <GlassCard variant="panel" className="p-8 text-center space-y-2">
           <p className="text-sm font-serif text-slate-300">
             No celestial players found matching filter
@@ -312,6 +358,19 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
         <>
           {/* Mobile Card-Row List (<768px) */}
           <div className="flex flex-col gap-2 md:hidden">
+            {pinnedPlayers.map((player, idx) => (
+              <PlayerCardRow
+                key={`pinned-${player.id}`}
+                player={player}
+                rank={idx + 1}
+                lambda={lambda}
+                activeWeek={activeWeek}
+                isCompared={true}
+                onToggleCompare={toggleComparePlayer}
+                onInspect={(p) => handleInspect(p)}
+                onDraft={handleDraft}
+              />
+            ))}
             {pagePlayers.map((player, idx) => {
               const wHint = waiverMap.get(String(player.id));
               const tHint = tradeMap.get(String(player.id));
@@ -319,8 +378,12 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                 <PlayerCardRow
                   key={`${player.id}-${player.draft_status}-${idx}`}
                   player={player}
-                  rank={idx + 1}
+                  rank={pinnedPlayers.length + idx + 1}
                   lambda={lambda}
+                  activeWeek={activeWeek}
+                  isCompared={false}
+                  isCompareDisabled={pinnedPlayers.length >= MAX_COMPARE_PLAYERS}
+                  onToggleCompare={toggleComparePlayer}
                   onInspect={(p) => handleInspect(p, wHint?.drop ?? tHint?.give ?? null)}
                   onDraft={handleDraft}
                   waiverHint={
@@ -345,7 +408,8 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
               className="w-full table-fixed text-left font-mono text-xs border-collapse">
               <thead className="sticky top-[49px] z-10">
                 <tr className="border-b border-white/10 bg-[#1a1a24] text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th className="py-3 px-3 w-12 text-center">#</th>
+                  <th data-testid="compare-col-header" className="py-3 px-2 w-14 text-center">Compare</th>
+                  <th className="py-3 px-2 w-10 text-center">#</th>
                   <th className="py-3 px-4">Player</th>
                   <th className="py-3 px-3 w-16">Pos</th>
                   <th className="py-3 px-3 w-32">Team · Bye</th>
@@ -355,15 +419,134 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                   <th className="py-3 px-4 w-32 text-center">Status</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-white/5">
+              {pinnedPlayers.length > 0 && (
+                <tbody data-testid="compare-pinned" className="divide-y divide-amber-500/20 bg-amber-500/5">
+                  {pinnedPlayers.map((player, idx) => {
+                    const isAvailable = player.draft_status === 'available';
+                    const isMyTeam = player.draft_status === 'my_team';
+                    const seasonCtx = getSeasonContext();
+                    const onBye = isPlayerOnByeWeek(activeWeek, player.bye_week, player.team, seasonCtx?.byeWeeks);
+                    const placeholder = oraclePlaceholderInfo(player, activeWeek);
+                    const stats = statsPoints(player);
+                    const stars = starsScore(player, { currentWeek: activeWeek });
+                    const oracle = oracleScore(player, lambda, { currentWeek: activeWeek });
+                    const tone = favorabilityTone(stars);
+                    return (
+                      <tr
+                        key={`pinned-${player.id}`}
+                        onClick={() => handleInspect(player)}
+                        data-bye={onBye ? 'true' : undefined}
+                        className="bg-amber-500/10 hover:bg-amber-500/15 border-b border-amber-500/30 transition-colors cursor-pointer"
+                      >
+                        <td className="py-2.5 px-2 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                          <input
+                            type="checkbox"
+                            checked={true}
+                            onChange={() => {}}
+                            onClick={(e: React.MouseEvent) => {
+                              e.stopPropagation();
+                              toggleComparePlayer(String(player.id));
+                            }}
+                            aria-label={`Compare ${player.name}`}
+                            className="w-4 h-4 rounded border-amber-500/50 bg-slate-900 text-amber-500 focus:ring-amber-500/50 cursor-pointer"
+                          />
+                        </td>
+                        <td className="py-2.5 px-2 text-center text-amber-300 font-bold">{idx + 1}</td>
+                        <td className="py-2.5 px-4 font-sans font-semibold text-slate-100">
+                          <div className="flex items-center gap-2 min-w-0 flex-wrap">
+                            <PlayerHeadshot player={player} size="sm" />
+                            <span className="truncate">{player.name}</span>
+                            <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/40">
+                              PINNED
+                            </span>
+                            {player.injury_status && player.injury_status !== 'Healthy' && (
+                              <span
+                                className={`text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border shrink-0 ${
+                                  ['Out', 'IR', 'NA', 'Doubtful', 'PUP', 'Sus'].includes(player.injury_status)
+                                    ? 'text-rose-300 bg-rose-950/70 border-rose-500/50'
+                                    : 'text-amber-300 bg-amber-950/70 border-amber-500/50'
+                                }`}
+                              >
+                                {player.injury_status.toUpperCase()}
+                              </span>
+                            )}
+                            {onBye && (
+                              <>
+                                <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border shrink-0 text-amber-300 bg-amber-950/70 border-amber-500/50">
+                                  {`BYE WK ${player.bye_week || activeWeek}`}
+                                </span>
+                                <span className="text-[10px] font-mono text-slate-500 shrink-0">On Bye</span>
+                              </>
+                            )}
+                          </div>
+                        </td>
+                        <td className="py-2.5 px-3">
+                          <PositionalBadge position={player.position} size="sm" depth={player.depth_chart_order} />
+                        </td>
+                        <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
+                          <TeamLogo team={player.team} className="mr-1.5" />
+                          {player.team} · Bye {player.bye_week || '-'}
+                        </td>
+                        <td
+                          className="py-2.5 px-3 text-right text-slate-100 font-bold tabular-nums"
+                          title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}
+                        >
+                          {stats.toFixed(1)}
+                        </td>
+                        <td
+                          className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums whitespace-nowrap"
+                          title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
+                        >
+                          {oracle.toFixed(1)}
+                          {placeholder.hasPlaceholder && (
+                            <span
+                              data-testid="oracle-placeholder-marker"
+                              title={placeholder.tooltipText}
+                              className="ml-0.5 text-amber-300 font-bold"
+                            >
+                              ~
+                            </span>
+                          )}
+                        </td>
+                        <td className="py-2.5 px-3 text-center">
+                          <span
+                            title={TONE_LABEL[tone]}
+                            className={`inline-block min-w-[2.5rem] px-1.5 py-0.5 rounded border text-[11px] font-bold ${TONE_PILL[tone]}`}
+                          >
+                            {stars.toFixed(0)}
+                          </span>
+                        </td>
+                        <td className="py-2.5 px-4 text-center">
+                          <span
+                            className={`inline-block max-w-[110px] truncate px-2 py-0.5 text-[10px] rounded border ${
+                              isMyTeam
+                                ? 'text-purple-200 bg-purple-950/70 border-purple-500/50 font-bold'
+                                : isAvailable
+                                ? 'text-emerald-300 bg-emerald-950/60 border-emerald-500/30'
+                                : 'text-cyan-200 bg-slate-900 border-cyan-500/30'
+                            }`}
+                          >
+                            {isMyTeam ? 'My Roster' : isAvailable ? 'Free agent' : player.drafted_by || 'Rostered'}
+                          </span>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              )}
+              <tbody data-testid="cosmic-board-body" className="divide-y divide-white/5">
                 {pagePlayers.map((player, idx) => {
                   const isAvailable = player.draft_status === 'available';
                   const isMyTeam = player.draft_status === 'my_team';
-                  const stars = starsScore(player);
-                  const tone = favorabilityTone(stars);
                   const wHint = waiverMap.get(String(player.id));
                   const tHint = tradeMap.get(String(player.id));
-                  const onBye = isPlayerOnByeWeek(getSeasonContext()?.currentWeek, player.bye_week, player.team, getSeasonContext()?.byeWeeks);
+                  const seasonCtx = getSeasonContext();
+                  const onBye = isPlayerOnByeWeek(activeWeek, player.bye_week, player.team, seasonCtx?.byeWeeks);
+                  const placeholder = oraclePlaceholderInfo(player, activeWeek);
+                  const stats = statsPoints(player);
+                  const stars = starsScore(player, { currentWeek: activeWeek });
+                  const oracle = oracleScore(player, lambda, { currentWeek: activeWeek });
+                  const tone = favorabilityTone(stars);
                   return (
                     <tr
                       key={`${player.id}-${player.draft_status}-${idx}`}
@@ -372,7 +555,26 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                       className={`hover:bg-slate-900/80 transition-colors cursor-pointer ${
                         isMyTeam ? 'bg-purple-950/25 border-l-2 border-l-purple-500' : ''
                       } ${onBye ? 'opacity-50 grayscale bg-slate-950/60' : ''}`}>
-                      <td className="py-2.5 px-3 text-center text-slate-500 font-bold">{idx + 1}</td>
+                      <td className="py-2.5 px-2 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          checked={false}
+                          disabled={pinnedPlayers.length >= MAX_COMPARE_PLAYERS}
+                          title={pinnedPlayers.length >= MAX_COMPARE_PLAYERS ? `Maximum of ${MAX_COMPARE_PLAYERS} players compared` : undefined}
+                          onChange={() => {}}
+                          onClick={(e: React.MouseEvent) => {
+                            e.stopPropagation();
+                            if (pinnedPlayers.length < MAX_COMPARE_PLAYERS) {
+                              toggleComparePlayer(String(player.id));
+                            }
+                          }}
+                          aria-label={`Compare ${player.name}`}
+                          className={`w-4 h-4 rounded border-slate-700 bg-slate-900 text-cyan-500 focus:ring-cyan-500/50 ${
+                            pinnedPlayers.length >= MAX_COMPARE_PLAYERS ? 'opacity-40 cursor-not-allowed' : 'cursor-pointer'
+                          }`}
+                        />
+                      </td>
+                      <td className="py-2.5 px-2 text-center text-slate-500 font-bold">{pinnedPlayers.length + idx + 1}</td>
                       <td className="py-2.5 px-4 font-sans font-semibold text-slate-100">
                         <div className="flex items-center gap-2 min-w-0 flex-wrap">
                           <PlayerHeadshot player={player} size="sm" />
@@ -389,7 +591,9 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                           )}
                           {onBye && (
                             <>
-                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border shrink-0 text-amber-300 bg-amber-950/70 border-amber-500/50">BYE WK {getSeasonContext()?.currentWeek}</span>
+                              <span className="text-[9px] font-mono font-bold px-1.5 py-0.5 rounded border shrink-0 text-amber-300 bg-amber-950/70 border-amber-500/50">
+                                {`BYE WK ${player.bye_week || activeWeek}`}
+                              </span>
                               <span className="text-[10px] font-mono text-slate-500 shrink-0">On Bye</span>
                             </>
                           )}
@@ -408,17 +612,32 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                         </div>
                       </td>
                       <td className="py-2.5 px-3">
-                        <PositionalBadge position={player.position} size="sm" />
+                        <PositionalBadge position={player.position} size="sm" depth={player.depth_chart_order} />
                       </td>
                       <td className="py-2.5 px-3 text-slate-400 whitespace-nowrap">
                         <TeamLogo team={player.team} className="mr-1.5" />
                         {player.team} · Bye {player.bye_week || '-'}
                       </td>
-                      <td className="py-2.5 px-3 text-right text-slate-100 font-bold tabular-nums">
-                        {statsPoints(player).toFixed(1)}
+                      <td
+                        className="py-2.5 px-3 text-right text-slate-100 font-bold tabular-nums"
+                        title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}
+                      >
+                        {stats.toFixed(1)}
                       </td>
-                      <td className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums">
-                        {oracleScore(player, lambda).toFixed(1)}
+                      <td
+                        className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums whitespace-nowrap"
+                        title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
+                      >
+                        {oracle.toFixed(1)}
+                        {placeholder.hasPlaceholder && (
+                          <span
+                            data-testid="oracle-placeholder-marker"
+                            title={placeholder.tooltipText}
+                            className="ml-0.5 text-amber-300 font-bold"
+                          >
+                            ~
+                          </span>
+                        )}
                       </td>
                       <td className="py-2.5 px-3 text-center">
                         <span
@@ -459,30 +678,74 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
 
           <div className="flex flex-col items-center gap-2 pt-2">
             <span className="text-[11px] font-mono text-slate-400">
-              Showing {pagePlayers.length} of {processedPlayers.length} NFL players
+              Showing {pinnedInFilter.length + pagePlayers.length} of {processedPlayers.length} NFL players
+              {pinnedOutsideFilter.length > 0 && ` (+${pinnedOutsideFilter.length} pinned across filters)`}
             </span>
-            {processedPlayers.length > visibleCount && (
+            {unpinnedProcessedPlayers.length > visibleCount && (
               <button
                 type="button"
                 onClick={() => setVisibleCount((n) => n + PAGE_SIZE)}
                 className="self-center px-4 py-2 rounded-lg border border-white/15 text-xs font-mono text-slate-200 hover:border-cyan-400/60 transition-colors">
-                Show {Math.min(PAGE_SIZE, processedPlayers.length - visibleCount)} more of{' '}
-                {processedPlayers.length - visibleCount}
+                Show {Math.min(PAGE_SIZE, unpinnedProcessedPlayers.length - visibleCount)} more of{' '}
+                {unpinnedProcessedPlayers.length - visibleCount}
               </button>
             )}
           </div>
         </>
       )}
 
+      {/* Comparison Action Bar (Sticky at bottom of viewport when candidates are pinned) */}
+      {pinnedPlayers.length > 0 && (
+        <div
+          data-testid="compare-action-bar"
+          className="sticky bottom-4 z-30 flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-xl bg-[#161622]/95 backdrop-blur border border-amber-500/40 shadow-2xl font-mono text-xs"
+        >
+          <div className="flex items-center gap-2.5">
+            <span className="text-amber-300 font-bold">
+              Comparing {pinnedPlayers.length} / {MAX_COMPARE_PLAYERS} celestial candidates
+            </span>
+            {pinnedPlayers.length >= 2 && (
+              <button
+                type="button"
+                data-testid="head-to-head-btn"
+                onClick={() => {
+                  if (pinnedPlayers.length === 2) {
+                    handleInspect(pinnedPlayers[0], pinnedPlayers[1]);
+                  } else {
+                    handleInspect(pinnedPlayers[0], pinnedPlayers[1], pinnedPlayers);
+                  }
+                }}
+                className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-100 font-bold transition-colors cursor-pointer"
+              >
+                {pinnedPlayers.length === 2
+                  ? 'Compare Head-to-Head'
+                  : `Compare ${pinnedPlayers.length} Candidates`}
+              </button>
+            )}
+          </div>
+          <button
+            type="button"
+            data-testid="clear-compare-btn"
+            onClick={clearComparedPlayers}
+            className="text-slate-400 hover:text-slate-200 underline cursor-pointer"
+          >
+            Clear All
+          </button>
+        </div>
+      )}
+
       {/* Inspection Modal */}
       <PlayerDetailModal
         player={inspectedPlayer}
         compareWith={inspectedVs}
+        compareCandidates={inspectedCandidates}
         isOpen={Boolean(inspectedPlayer)}
         roster={context.draftState?.my_roster}
+        activeWeek={activeWeek}
         onClose={() => {
           setInspectedPlayer(null);
           setInspectedVs(null);
+          setInspectedCandidates(null);
           context.selectPlayer(null);
         }}
       />

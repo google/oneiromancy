@@ -23,7 +23,7 @@ import PositionalBadge from '@/components/common/PositionalBadge';
 import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import { CosmicPlayer } from '@/types/oneiromancy';
 import { DEFAULT_CHAOS_LAMBDA, DIVINATION_PILLARS, starsVerdictLabel } from '@/lib/scoring';
-import { oracleScore, starsScore, statsPoints } from '@/lib/oracle';
+import { oraclePlaceholderInfo, oracleScore, resolveActiveWeek, starsScore, statsPoints } from '@/lib/oracle';
 import { Sparkles, ChevronDown, ChevronUp } from 'lucide-react';
 
 export interface RecommendedPickHeroProps {
@@ -33,6 +33,7 @@ export interface RecommendedPickHeroProps {
   onSelectPlayer?: (player: CosmicPlayer) => void;
   isDrafting?: boolean;
   className?: string;
+  activeWeek?: number;
 }
 
 export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
@@ -40,8 +41,10 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
   onInspect,
   onSelectPlayer,
   className = '',
+  activeWeek: propActiveWeek,
 }) => {
   const ctx = useOptionalOneiromancy();
+  const activeWeek = resolveActiveWeek(ctx?.draftState, propActiveWeek);
   const lambda = ctx?.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const [isDossierOpen, setIsDossierOpen] = useState(false);
 
@@ -81,7 +84,7 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
       ? '💨'
       : '💧';
 
-  const stars = starsScore(player);
+  const stars = starsScore(player, { currentWeek: activeWeek });
 
   return (
     <GlassCard
@@ -91,7 +94,7 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
     >
       <div className="flex justify-between items-center border-b border-white/10 pb-3">
         <div className="flex items-center gap-2">
-          <PositionalBadge position={player.position} size="md" />
+          <PositionalBadge position={player.position} size="md" depth={player.depth_chart_order} />
           <span className="text-xs font-mono text-slate-300 bg-slate-900/80 px-2 py-0.5 rounded border border-white/10">
             {elementIcon} {player.elemental_traits?.element || 'Celestial'} • {player.elemental_traits?.sun_sign || 'Astra'}
           </span>
@@ -122,25 +125,47 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
 
       {/* Strictly 3 Canonical Player Metrics: Stats, Oracle, Stars */}
       <div className="mt-4 grid grid-cols-3 gap-2.5 p-3 rounded-xl bg-slate-950/80 border border-white/10">
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono text-slate-400 uppercase font-bold tracking-wider">
-            Stats
-          </span>
-          <span className="font-mono text-2xl font-bold text-slate-100 tabular-nums">
-            {statsPoints(player).toFixed(1)}
-          </span>
-          <span className="text-[9px] font-mono text-slate-500">Projected Points</span>
-        </div>
+        {(() => {
+          const placeholder = oraclePlaceholderInfo(player, activeWeek);
+          return (
+            <>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-mono text-slate-400 uppercase font-bold tracking-wider">
+                  Stats
+                </span>
+                <span
+                  title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}
+                  className="font-mono text-2xl font-bold text-slate-100 tabular-nums"
+                >
+                  {statsPoints(player).toFixed(1)}
+                </span>
+                <span className="text-[9px] font-mono text-slate-500">Projected Points</span>
+              </div>
 
-        <div className="flex flex-col">
-          <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold tracking-wider">
-            Oracle
-          </span>
-          <span className="font-mono text-2xl font-bold text-cyan-300 tabular-nums">
-            {oracleScore(player, lambda).toFixed(1)}
-          </span>
-          <span className="text-[9px] font-mono text-slate-500">Blended Stats &amp; Stars</span>
-        </div>
+              <div className="flex flex-col">
+                <span className="text-[10px] font-mono text-cyan-400 uppercase font-bold tracking-wider">
+                  Oracle
+                </span>
+                <span
+                  title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
+                  className="font-mono text-2xl font-bold text-cyan-300 tabular-nums flex items-center"
+                >
+                  {oracleScore(player, lambda, { currentWeek: activeWeek }).toFixed(1)}
+                  {placeholder.hasPlaceholder && (
+                    <span
+                      data-testid="oracle-placeholder-marker"
+                      title={placeholder.tooltipText}
+                      className="ml-1 text-amber-300 font-bold"
+                    >
+                      ~
+                    </span>
+                  )}
+                </span>
+                <span className="text-[9px] font-mono text-slate-500">Blended Stats &amp; Stars</span>
+              </div>
+            </>
+          );
+        })()}
 
         <div className="flex flex-col">
           <span className="text-[10px] font-mono text-teal-300 uppercase font-bold tracking-wider">

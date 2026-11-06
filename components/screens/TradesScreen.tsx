@@ -32,19 +32,38 @@ import {
   dominantElements,
   elementRelation,
   favorabilityTone,
+  oraclePlaceholderInfo,
   oracleScore,
+  resolveActiveWeek,
   starsScore,
   statsPoints,
 } from '@/lib/oracle';
 import { DEFAULT_CHAOS_LAMBDA, isPlayerSigned } from '@/lib/scoring';
 import type { CompetitorTeam, CosmicPlayer, ElementType, RosterSlot } from '@/types/oneiromancy';
 
-const ValueLine: React.FC<{ p: CosmicPlayer; lambda: number }> = ({ p, lambda }) => {
-  const stars = starsScore(p);
+const ValueLine: React.FC<{ p: CosmicPlayer; lambda: number; activeWeek?: number }> = ({ p, lambda, activeWeek }) => {
+  const stars = starsScore(p, { currentWeek: activeWeek });
+  const placeholder = oraclePlaceholderInfo(p, activeWeek);
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-slate-400">
-      <span className="text-purple-200 font-semibold">Oracle {oracleScore(p, lambda).toFixed(1)}</span>
-      <span>· {statsPoints(p).toFixed(1)} pts ·</span>
+      <span
+        title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
+        className="text-purple-200 font-semibold inline-flex items-center"
+      >
+        Oracle {oracleScore(p, lambda, { currentWeek: activeWeek }).toFixed(1)}
+        {placeholder.hasPlaceholder && (
+          <span
+            data-testid="oracle-placeholder-marker"
+            title={placeholder.tooltipText}
+            className="ml-0.5 text-amber-300 font-bold"
+          >
+            ~
+          </span>
+        )}
+      </span>
+      <span title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}>
+        · {statsPoints(p).toFixed(1)} pts ·
+      </span>
       <span className={`px-1 rounded border ${TONE_PILL[favorabilityTone(stars)]}`}>Stars {stars.toFixed(0)}</span>
     </span>
   );
@@ -68,12 +87,13 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
   const board = draftState.cosmic_board ?? NO_COSMIC_BOARD;
   const roster = draftState.my_roster ?? NO_MY_ROSTER;
   const lambda = draftState.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
+  const activeWeek = resolveActiveWeek(draftState);
   const [openTeam, setOpenTeam] = useState<number | null>(null);
   const [inspected, setInspected] = useState<InspectTarget | null>(null);
 
   const partners = useMemo(
     () =>
-      computeTradePartners(teams, board, roster, lambda).filter((p) => {
+      computeTradePartners(teams, board, roster, lambda, { currentWeek: activeWeek }).filter((p) => {
         const givesSigned = p.give?.player ? isPlayerSigned(p.give.player) : false;
         const receivesUnsigned = p.get?.player ? !isPlayerSigned(p.get.player) : false;
         if (givesSigned && receivesUnsigned) return false;
@@ -95,7 +115,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
         }
         return true;
       }),
-    [teams, board, roster, lambda, positionFilter, searchQuery],
+    [teams, board, roster, lambda, positionFilter, searchQuery, activeWeek],
   );
   const byId = useMemo(() => new Map(board.map((p) => [String(p.id), p])), [board]);
   const me = teams.find((t) => t.is_user);
@@ -132,7 +152,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
             const rosterPlayers = (p.team.players ?? [])
               .map((id) => byId.get(String(id)))
               .filter((x): x is CosmicPlayer => Boolean(x))
-              .sort((a, b) => a.position.localeCompare(b.position) || oracleScore(b, lambda) - oracleScore(a, lambda));
+              .sort((a, b) => a.position.localeCompare(b.position) || oracleScore(b, lambda, { currentWeek: activeWeek }) - oracleScore(a, lambda, { currentWeek: activeWeek }));
             const netGain = (p.give?.gain ?? 0) + (p.get?.gain ?? 0);
             const side = (
               kind: 'send' | 'receive',
@@ -149,13 +169,13 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
                   <span className={`text-[9px] uppercase tracking-wider font-bold ${kind === 'send' ? 'text-purple-300' : 'text-cyan-400'}`}>
                     {kind === 'send' ? 'You send' : 'You receive'}
                   </span>
-                  <HealthTag player={piece.player} />
+                  <HealthTag player={piece.player} activeWeek={activeWeek} />
                 </div>
                 <div className="flex items-center gap-2 min-w-0">
                   <PlayerHeadshot player={piece.player} size="sm" />
                   <div className="min-w-0 flex-1 space-y-0.5">
                     <div className="flex items-center gap-1.5 min-w-0">
-                      <PositionalBadge position={piece.player.position} size="sm" />
+                      <PositionalBadge position={piece.player.position} size="sm" depth={piece.player.depth_chart_order} />
                       <span className="font-serif font-bold text-slate-100 text-sm truncate">
                         <PlayerLink player={piece.player} vs={piece.replaces} onOpen={setInspected} />
                       </span>
@@ -226,10 +246,10 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
                     <ul className="grid grid-cols-1 sm:grid-cols-2 gap-1.5 pt-2 border-t border-white/10">
                       {rosterPlayers.map((pl) => (
                         <li key={pl.id} className="flex flex-wrap items-center gap-x-2 gap-y-0.5 text-xs">
-                          <PositionalBadge position={pl.position} size="sm" />
+                          <PositionalBadge position={pl.position} size="sm" depth={pl.depth_chart_order} />
                           <PlayerLink player={pl} onOpen={setInspected} className="text-slate-200 truncate min-w-0" />
                           <span className="ml-auto">
-                            <ValueLine p={pl} lambda={lambda} />
+                            <ValueLine p={pl} lambda={lambda} activeWeek={activeWeek} />
                           </span>
                         </li>
                       ))}
@@ -248,6 +268,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
         isOpen={inspected !== null}
         onClose={() => setInspected(null)}
         roster={roster}
+        activeWeek={activeWeek}
       />
     </div>
   );

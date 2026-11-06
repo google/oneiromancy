@@ -29,8 +29,8 @@ import {
   mockMyRoster,
 } from '@/lib/mockData';
 import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
-import { deriveEligiblePositions, getSeasonContext } from '@/lib/sleeper';
-import { computeWaiverMoves, elementRelation } from '@/lib/oracle';
+import { deriveEligiblePositions } from '@/lib/sleeper';
+import { computeWaiverMoves, elementRelation, resolveActiveWeek } from '@/lib/oracle';
 import {
   CosmicPlayer,
   NFLPosition,
@@ -59,6 +59,7 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
   searchQuery = '',
 }) => {
   const context = useOneiromancy();
+  const activeWeek = resolveActiveWeek(context.draftState);
   const isLiveMode = Boolean(
     context.draftState?.isLive || context.draftState?.mode === 'live',
   );
@@ -101,10 +102,10 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
         allPlayers,
         allRoster,
         oracleLambda,
-        getSeasonContext()?.currentWeek ?? context.draftState?.weekly_matchup?.week,
+        activeWeek,
         40,
       ),
-    [allPlayers, allRoster, oracleLambda, context.draftState?.weekly_matchup?.week],
+    [allPlayers, allRoster, oracleLambda, activeWeek],
   );
 
   const visibleMoves = useMemo(
@@ -180,7 +181,7 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
                         <Tag tone={move.wouldStart ? 'cyan' : 'slate'}>
                           {move.wouldStart ? 'Would start' : 'Bench depth'}
                         </Tag>
-                        <PositionalBadge position={move.add.position} size="sm" />
+                        <PositionalBadge position={move.add.position} size="sm" depth={move.add.depth_chart_order} />
                       </div>
                       <div className="flex flex-wrap items-center gap-1.5">
                         <DeltaBadge value={move.oracleGain} unit="ORACLE" tone="emerald" />
@@ -195,13 +196,13 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
                           <span className="text-[9px] uppercase tracking-wider text-purple-300 font-bold">
                             Your Bench Drop
                           </span>
-                          <HealthTag player={move.drop} />
+                          <HealthTag player={move.drop} activeWeek={activeWeek} />
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
                           <PlayerHeadshot player={move.drop} size="sm" />
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              <PositionalBadge position={move.drop.position} size="sm" />
+                              <PositionalBadge position={move.drop.position} size="sm" depth={move.drop.depth_chart_order} />
                               <span className="font-serif font-bold text-slate-200 text-sm truncate">
                                 <PlayerLink player={move.drop} vs={move.add} onOpen={openTarget} />
                               </span>
@@ -220,13 +221,13 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
                           <span className="text-[9px] uppercase tracking-wider text-emerald-400 font-bold">
                             Free Agent Add
                           </span>
-                          <HealthTag player={move.add} />
+                          <HealthTag player={move.add} activeWeek={activeWeek} />
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
                           <PlayerHeadshot player={move.add} size="sm" />
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <div className="flex items-center gap-1.5 min-w-0">
-                              <PositionalBadge position={move.add.position} size="sm" />
+                              <PositionalBadge position={move.add.position} size="sm" depth={move.add.depth_chart_order} />
                               <span className="font-serif font-bold text-slate-100 text-sm truncate">
                                 <PlayerLink player={move.add} vs={move.drop} onOpen={openTarget} />
                               </span>
@@ -265,6 +266,7 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
         player={inspectedPlayer}
         compareWith={inspectedVs}
         isOpen={Boolean(inspectedPlayer)}
+        activeWeek={activeWeek}
         onClose={() => {
           setInspectedPlayer(null);
           setInspectedVs(null);

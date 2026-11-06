@@ -51,11 +51,23 @@ describe('Tier 7: Mock Service Worker (MSW) Network Interception', () => {
     if (typeof sleeper.resetRateLimit === 'function') {
       sleeper.resetRateLimit();
     }
+    if (typeof sleeper.clearProjectionsCache === 'function') {
+      sleeper.clearProjectionsCache();
+    }
+    if (typeof sleeper.setSeasonContext === 'function') {
+      sleeper.setSeasonContext(null);
+    }
   });
 
   afterEach(() => {
     if (typeof sleeper.resetRateLimit === 'function') {
       sleeper.resetRateLimit();
+    }
+    if (typeof sleeper.clearProjectionsCache === 'function') {
+      sleeper.clearProjectionsCache();
+    }
+    if (typeof sleeper.setSeasonContext === 'function') {
+      sleeper.setSeasonContext(null);
     }
   });
 
@@ -201,6 +213,395 @@ describe('Tier 7: Mock Service Worker (MSW) Network Interception', () => {
       assert.ok(count > 0, 'Server must record all intercepted calls');
       const reqs = server.getInterceptedRequests();
       assert.ok(reqs.every((r) => r.url.includes('api.sleeper.app')));
+    });
+  });
+
+  // ==========================================================================
+  // Suite 7.3: Bye-Week Next-Play-Week Projections Interception & Caching
+  // ==========================================================================
+  describe('7.3 Bye-Week Next-Play-Week Projections Interception & Caching', () => {
+    const controlledDict = {
+      '4984': {
+        player_id: '4984',
+        full_name: 'Josh Allen',
+        first_name: 'Josh',
+        last_name: 'Allen',
+        position: 'QB',
+        team: 'BUF',
+        active: true,
+        status: 'Active',
+        bye_week: 7,
+        search_rank: 1,
+      },
+      '4046': {
+        player_id: '4046',
+        full_name: 'Patrick Mahomes',
+        first_name: 'Patrick',
+        last_name: 'Mahomes',
+        position: 'QB',
+        team: 'KC',
+        active: true,
+        status: 'Active',
+        bye_week: 10,
+        search_rank: 2,
+      },
+    };
+
+    test('7.3.1 loads next-week projections once per TTL when a player is on bye and enriches next_play_week and next_week_projected_points without mutating current-week projected_points', async () => {
+      let nextWeekFetchCount = 0;
+      server.use(
+        http.get('https://api.sleeper.app/v1/state/nfl', () =>
+          HttpResponse.json({ season: '2026', week: 7, season_type: 'regular' }),
+        ),
+        http.get('https://api.sleeper.app/schedule/nfl/regular/2026', () =>
+          HttpResponse.json([
+            { week: 7, date: '2026-10-18', home: 'KC', away: 'MIA' },
+            { week: 8, date: '2026-10-25', home: 'BUF', away: 'MIA' },
+            { week: 10, date: '2026-11-08', home: 'BUF', away: 'IND' },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2026/7', () =>
+          HttpResponse.json({ '4046': { pts_ppr: 20.5 } }),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2026/8', () => {
+          nextWeekFetchCount += 1;
+          return HttpResponse.json({ '4984': { pts_ppr: 22.8 }, '4046': { pts_ppr: 19.1 } });
+        }),
+      );
+
+      const settings = {
+        sleeper_username: 'OneiroVanguard',
+        league_id: '9000000000000000001',
+        draft_id: '9000000000000000002',
+        user_id: FIXTURES.user.user_id,
+        user_slot: 7,
+      };
+
+      const state1 = await sleeper.fetchSleeperDraft(
+        '9000000000000000002',
+        settings,
+        controlledDict,
+        { throwOnError: true },
+      );
+      const josh1 = state1.cosmic_board.find((p) => p.id === '4984');
+      assert.equal(nextWeekFetchCount, 1, 'Next-week projections must be fetched once for active Week 7 bye');
+      assert.equal(josh1?.projected_points, 0, 'Current-week projected_points must stay 0 on bye');
+      assert.equal(josh1?.next_play_week, 8, 'Week-7 bye player must resolve next_play_week = 8');
+      assert.equal(josh1?.next_week_projected_points, 22.8, 'Week-7 bye player must receive Week-8 next_week_projected_points');
+
+      // Second call within 10-minute TTL must hit projectionsCache instead of making a second HTTP call
+      const state2 = await sleeper.fetchSleeperDraft(
+        '9000000000000000002',
+        settings,
+        controlledDict,
+        { throwOnError: true },
+      );
+      const josh2 = state2.cosmic_board.find((p) => p.id === '4984');
+      assert.equal(nextWeekFetchCount, 1, 'Subsequent fetch within TTL must reuse cached next-week projections');
+      assert.equal(josh2?.next_week_projected_points, 22.8);
+    });
+
+    test('7.3.2 skips next-week projections request completely when zero players are on bye in active week', async () => {
+      server.use(
+        http.get('https://api.sleeper.app/v1/state/nfl', () =>
+          HttpResponse.json({ season: '2025', week: 2, season_type: 'regular' }),
+        ),
+        http.get('https://api.sleeper.app/schedule/nfl/regular/2025', () =>
+          HttpResponse.json([
+            { week: 2, date: '2025-09-14', home: 'BUF', away: 'KC' },
+            { week: 3, date: '2025-09-21', home: 'BUF', away: 'MIA' },
+            { week: 7, date: '2025-10-19', home: 'KC', away: 'LV' },
+            { week: 10, date: '2025-11-09', home: 'BUF', away: 'IND' },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2025/2', () =>
+          HttpResponse.json({ '4984': { pts_ppr: 24.0 }, '4046': { pts_ppr: 21.5 } }),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2025/3', () => {
+          throw new Error('Next-week projections endpoint must not be called when zero players are on bye');
+        }),
+      );
+
+      const state = await sleeper.fetchSleeperDraft(
+        '9000000000000000002',
+        {
+          sleeper_username: 'OneiroVanguard',
+          league_id: '9000000000000000001',
+          draft_id: '9000000000000000002',
+          user_id: FIXTURES.user.user_id,
+          user_slot: 7,
+        },
+        controlledDict,
+        { throwOnError: true },
+      );
+
+      const nextWeekCalls = server
+        .getInterceptedRequests()
+        .filter((r) => r.url.includes('/projections/nfl/regular/2025/3'));
+      assert.equal(nextWeekCalls.length, 0, 'Must make 0 requests for next-week projections when no player is on bye');
+      const josh = state.cosmic_board.find((p) => p.id === '4984');
+      assert.equal(josh?.next_play_week, undefined);
+      assert.equal(josh?.next_week_projected_points, undefined);
+    });
+
+    test('7.3.3 handles HTTP 500 error on next-week projections non-fatally, falling back only to explicit positive baseline_projected_points and never synthetic hashes', async () => {
+      let failedEndpointHits = 0;
+      const dictWithBaseline = {
+        ...controlledDict,
+        '5859': {
+          player_id: '5859',
+          full_name: 'James Cook',
+          first_name: 'James',
+          last_name: 'Cook',
+          position: 'RB',
+          team: 'BUF',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          search_rank: 15,
+          baseline_projected_points: 19.4,
+        },
+        '7526': {
+          player_id: '7526',
+          full_name: 'Khalil Shakir',
+          first_name: 'Khalil',
+          last_name: 'Shakir',
+          position: 'WR',
+          team: 'BUF',
+          active: true,
+          status: 'Active',
+          bye_week: 7,
+          search_rank: 35,
+          baseline_projected_points: -2.5,
+        },
+      };
+
+      server.use(
+        http.get('https://api.sleeper.app/v1/state/nfl', () =>
+          HttpResponse.json({ season: '2024', week: 7, season_type: 'regular' }),
+        ),
+        http.get('https://api.sleeper.app/schedule/nfl/regular/2024', () =>
+          HttpResponse.json([
+            { week: 7, date: '2024-10-20', home: 'KC', away: 'MIA' },
+            { week: 8, date: '2024-10-27', home: 'BUF', away: 'SEA' },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2024/7', () =>
+          HttpResponse.json({ '4046': { pts_ppr: 18.0 } }),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2024/8', () => {
+          failedEndpointHits += 1;
+          return HttpResponse.json({ error: 'Upstream unavailable' }, { status: 500 });
+        }),
+        http.get('https://api.sleeper.app/v1/league/9000000000000000001/matchups/8', () =>
+          HttpResponse.json([]),
+        ),
+      );
+
+      const settings = {
+        sleeper_username: 'OneiroVanguard',
+        league_id: '9000000000000000001',
+        draft_id: '9000000000000000002',
+        user_id: FIXTURES.user.user_id,
+        user_slot: 7,
+      };
+      const state = await sleeper.fetchSleeperDraft(
+        '9000000000000000002',
+        settings,
+        dictWithBaseline,
+        { throwOnError: true },
+      );
+
+      assert.equal(state.isLive, true, 'HTTP 500 on next-week projections must not abort live sync');
+      assert.equal(failedEndpointHits, 1, 'Failed endpoint must be queried once');
+      const josh = state.cosmic_board.find((p) => p.id === '4984');
+      assert.equal(josh?.projected_points, 0, 'Current-week projected_points remains 0 on bye');
+      assert.equal(josh?.next_play_week, 8, 'next_play_week still resolves from schedule');
+      assert.equal(
+        josh?.next_week_projected_points,
+        undefined,
+        'HTTP 500 without explicit baseline_projected_points must leave next_week_projected_points undefined rather than copying synthetic hash defaults',
+      );
+      assert.equal(
+        josh?.baseline_projected_points,
+        undefined,
+        'Synthetic baseline_projected_points must not be retained on board when no verified baseline projection exists',
+      );
+
+      const cook = state.cosmic_board.find((p) => p.id === '5859');
+      assert.equal(cook?.projected_points, 0, 'Current-week projected_points remains 0 on bye even with baseline');
+      assert.equal(cook?.next_play_week, 8);
+      assert.equal(
+        cook?.next_week_projected_points,
+        19.4,
+        'HTTP 500 must fall back to explicit positive baseline_projected_points when available',
+      );
+
+      const shakir = state.cosmic_board.find((p) => p.id === '7526');
+      assert.equal(
+        shakir?.next_week_projected_points,
+        undefined,
+        'Non-positive baseline_projected_points must not produce lookahead points',
+      );
+
+      // Re-fetching within TTL must hit negative cache and not hammer failing endpoint
+      await sleeper.fetchSleeperDraft('9000000000000000002', settings, dictWithBaseline, { throwOnError: true });
+      assert.equal(failedEndpointHits, 1, 'Negative cache must prevent repeated HTTP 500 retries within TTL');
+
+      // Future-week deriveWeeklyMatchup must still retain per-player synthetic baseline_projected_points
+      const week8Preview = sleeper.deriveWeeklyMatchup(
+        2,
+        [
+          { roster_id: 2, owner_id: FIXTURES.user.user_id, name: 'My Team', slot: 7, is_user: true, players: ['4984'], starters: ['4984'] },
+          { roster_id: 3, owner_id: 'opp', name: 'Opp', slot: 1, is_user: false, players: ['4046'], starters: ['4046'] },
+        ],
+        [],
+        state.cosmic_board,
+        [],
+        8,
+      );
+      const joshWeek8Fav = week8Preview.player_favorabilities.find((pf) => pf.player_id === '4984');
+      assert.equal(
+        joshWeek8Fav?.projected_points,
+        12.5,
+        'Future-week deriveWeeklyMatchup must fall back to starter default when baseline_projected_points is undefined',
+      );
+    });
+
+    test('7.3.4 prioritizes live playerDict team over stale draft pick metadata team and excludes released Free Agents from bye lookahead', async () => {
+      const { bye_week: _ignoredBye, ...tradedJoshBase } = controlledDict['4984'];
+      const tradedDict = {
+        ...controlledDict,
+        '4984': {
+          ...tradedJoshBase,
+          team: 'KC',
+        },
+        '9999': {
+          player_id: '9999',
+          full_name: 'Released Veteran',
+          first_name: 'Released',
+          last_name: 'Veteran',
+          position: 'WR',
+          team: 'FA',
+          active: false,
+          status: 'Inactive',
+          bye_week: 7,
+          search_rank: 999,
+        },
+      };
+      server.use(
+        http.get('https://api.sleeper.app/v1/state/nfl', () =>
+          HttpResponse.json({ season: '2026', week: 7, season_type: 'regular' }),
+        ),
+        http.get('https://api.sleeper.app/schedule/nfl/regular/2026', () =>
+          HttpResponse.json([
+            { week: 7, date: '2026-10-18', home: 'KC', away: 'MIA' },
+            { week: 8, date: '2026-10-25', home: 'BUF', away: 'NYJ' },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/draft/9000000000000000002/picks', () =>
+          HttpResponse.json([
+            {
+              player_id: '4984',
+              picked_by: FIXTURES.user.user_id,
+              roster_id: 2,
+              draft_slot: 7,
+              round: 1,
+              pick_no: 1,
+              metadata: {
+                team: 'BUF',
+                first_name: 'Josh',
+                last_name: 'Allen',
+                position: 'QB',
+              },
+            },
+            {
+              player_id: '9999',
+              picked_by: FIXTURES.user.user_id,
+              roster_id: 2,
+              draft_slot: 7,
+              round: 2,
+              pick_no: 14,
+              metadata: {
+                team: 'BUF',
+                first_name: 'Released',
+                last_name: 'Veteran',
+                position: 'WR',
+                baseline_projected_points: '11.5',
+              },
+            },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/league/9000000000000000001/rosters', () =>
+          HttpResponse.json([
+            {
+              roster_id: 2,
+              owner_id: FIXTURES.user.user_id,
+              starters: ['4984'],
+              players: ['4984', '9999'],
+            },
+          ]),
+        ),
+        http.get('https://api.sleeper.app/v1/league/9000000000000000001/matchups/7', () =>
+          HttpResponse.json([]),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2026/7', () =>
+          HttpResponse.json({ '4984': { pts_ppr: 22.1 } }),
+        ),
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2026/8', () =>
+          HttpResponse.json({ '4984': { pts_ppr: 23.0 }, '9999': { pts_ppr: 12.0 } }),
+        ),
+      );
+
+      const state = await sleeper.fetchSleeperDraft(
+        '9000000000000000002',
+        {
+          sleeper_username: 'OneiroVanguard',
+          league_id: '9000000000000000001',
+          draft_id: '9000000000000000002',
+          user_id: FIXTURES.user.user_id,
+          user_slot: 7,
+        },
+        tradedDict,
+        { throwOnError: true },
+      );
+
+      const lookaheadCalls = server
+        .getInterceptedRequests()
+        .filter((r) => /\/projections\/nfl\/regular\/2026\/(?!7\b)\d+/.test(r.url));
+      assert.equal(lookaheadCalls.length, 0, 'Must make 0 requests for lookahead weeks (e.g. Week 8) when live team KC plays and released FA has no NFL team');
+      const tradedJosh = state.cosmic_board.find((p) => p.id === '4984');
+      assert.equal(tradedJosh?.team, 'KC');
+      assert.equal(tradedJosh?.next_play_week, undefined);
+      assert.equal(tradedJosh?.next_week_projected_points, undefined);
+
+      const releasedWr = state.cosmic_board.find((p) => p.id === '9999');
+      assert.equal(releasedWr?.team, 'BUF', 'Base player record team must remain immutable from drafted pick metadata');
+      assert.equal(releasedWr?.bye_week, 7, 'Base player record bye_week must remain immutable from season bye weeks');
+      assert.equal(releasedWr?.next_play_week, undefined, 'Released FA must not inherit stale draft-pick bye lookahead week');
+      assert.equal(releasedWr?.next_week_projected_points, undefined, 'Released FA must not inherit lookahead projected points');
+    });
+
+    test('7.3.5 concurrent fetchWeeklyProjections calls share a single in-flight request', async () => {
+      let fetchHits = 0;
+      server.use(
+        http.get('https://api.sleeper.app/v1/projections/nfl/regular/2026/10', async () => {
+          fetchHits += 1;
+          await new Promise((r) => setTimeout(r, 15));
+          return HttpResponse.json({ '4984': { pts_ppr: 24.6 } });
+        }),
+      );
+
+      const [r1, r2, r3] = await Promise.all([
+        sleeper.fetchWeeklyProjections('2026', 10),
+        sleeper.fetchWeeklyProjections('2026', 10),
+        sleeper.fetchWeeklyProjections('2026', 10),
+      ]);
+
+      assert.equal(fetchHits, 1, 'Concurrent callers for the same week must share 1 in-flight network request');
+      assert.equal(r1?.['4984']?.pts_ppr, 24.6);
+      assert.deepEqual(r2, r1);
+      assert.deepEqual(r3, r1);
     });
   });
 });

@@ -228,6 +228,75 @@ describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 T
       assert.ok(glowHtml.includes('shadow-['), 'showGlow=true must include glow shadow class');
       assert.ok(!noGlowHtml.includes('shadow-['), 'showGlow=false must omit glow shadow class');
     });
+
+    it('4.6 should verify badge with position QB and depth 2 outputs superscript depth 2 and accessible label', () => {
+      const html = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'QB', depth: 2 }));
+      assert.ok(html.includes('>QB<sup'), 'Must render QB base followed by sup');
+      assert.ok(html.includes('>2</sup>'), 'Must render ASCII digit 2 in sup');
+      assert.ok(html.includes('title="QB · depth chart #2"'), 'Must include descriptive title');
+      assert.ok(html.includes('depth chart 2</span>'), 'Must include accessible sr-only label');
+    });
+
+    it('4.7 should verify component call with WR and depth 1 outputs superscript depth 1', () => {
+      const html = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'WR', depth: 1 }));
+      assert.ok(html.includes('>WR<sup'), 'Must render WR base followed by sup');
+      assert.ok(html.includes('>1</sup>'), 'Must render ASCII digit 1 in sup');
+      assert.ok(html.includes('title="WR · depth chart #1"'), 'Must include title for WR depth 1');
+      assert.ok(html.includes('depth chart 1</span>'), 'Must include accessible label for depth 1');
+    });
+
+    it('4.8 should verify double-digit depths such as QB with depth 10 format cleanly', () => {
+      const html = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'QB', depth: 10 }));
+      assert.ok(html.includes('>QB<sup'), 'Must render QB base followed by sup');
+      assert.ok(html.includes('>10</sup>'), 'Must render ASCII digits 10 in sup');
+      assert.ok(html.includes('title="QB · depth chart #10"'), 'Must include title for double-digit depth');
+      assert.ok(html.includes('depth chart 10</span>'), 'Must include accessible label for depth 10');
+    });
+
+    it('4.9 should verify non-positive depths (0, -1) output standard TE without superscripts', () => {
+      const zeroHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'TE', depth: 0 }));
+      const negHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'TE', depth: -1 }));
+      assert.ok(zeroHtml.includes('>TE<'), 'depth=0 must render plain TE');
+      assert.ok(!zeroHtml.includes('<sup'), 'depth=0 must not render sup tag');
+      assert.ok(!zeroHtml.includes('sr-only'), 'depth=0 must not render sr-only text');
+      assert.ok(negHtml.includes('>TE<'), 'depth=-1 must render plain TE');
+      assert.ok(!negHtml.includes('<sup'), 'depth=-1 must not render sup tag');
+      assert.ok(!negHtml.includes('sr-only'), 'depth=-1 must not render sr-only text');
+    });
+
+    it('4.10 should verify null or undefined depths output standard RB without superscripts', () => {
+      const nullHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'RB', depth: null }));
+      const undefHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'RB', depth: undefined }));
+      assert.ok(nullHtml.includes('>RB<'), 'depth=null must render plain RB');
+      assert.ok(!nullHtml.includes('<sup'), 'depth=null must not render sup tag');
+      assert.ok(!nullHtml.includes('sr-only'), 'depth=null must not render sr-only text');
+      assert.ok(undefHtml.includes('>RB<'), 'depth=undefined must render plain RB');
+      assert.ok(!undefHtml.includes('<sup'), 'depth=undefined must not render sup tag');
+      assert.ok(!undefHtml.includes('sr-only'), 'depth=undefined must not render sr-only text');
+    });
+
+    it('4.11 should verify non-integer (1.5) and out-of-range (100) depths output standard badges without superscripts', () => {
+      const floatHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'QB', depth: 1.5 }));
+      const outOfRangeHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'WR', depth: 100 }));
+      assert.ok(floatHtml.includes('>QB<'), 'depth=1.5 must render plain QB');
+      assert.ok(!floatHtml.includes('<sup'), 'depth=1.5 must not render sup tag');
+      assert.ok(!floatHtml.includes('sr-only'), 'depth=1.5 must not render sr-only text');
+      assert.ok(outOfRangeHtml.includes('>WR<'), 'depth=100 must render plain WR');
+      assert.ok(!outOfRangeHtml.includes('<sup'), 'depth=100 must not render sup tag');
+      assert.ok(!outOfRangeHtml.includes('sr-only'), 'depth=100 must not render sr-only text');
+    });
+
+    it('4.12 should verify numeric string ("2") parses to superscript 2 and whitespace/empty strings fall back to plain badge', () => {
+      const strHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'QB', depth: '2' }));
+      const emptyHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'TE', depth: '' }));
+      const spaceHtml = renderToStaticMarkup(React.createElement(PositionalBadge, { position: 'TE', depth: '   ' }));
+      assert.ok(strHtml.includes('>QB<sup'), 'depth="2" must render QB with sup tag');
+      assert.ok(strHtml.includes('>2</sup>'), 'depth="2" must render ASCII digit 2 in sup');
+      assert.ok(emptyHtml.includes('>TE<'), 'depth="" must render plain TE');
+      assert.ok(!emptyHtml.includes('<sup'), 'depth="" must not render sup tag');
+      assert.ok(spaceHtml.includes('>TE<'), 'depth="   " must render plain TE');
+      assert.ok(!spaceHtml.includes('<sup'), 'depth="   " must not render sup tag');
+    });
   });
 
   // ============================================================================
@@ -743,6 +812,9 @@ describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 T
     });
 
     it('16.5 should execute 1,000 player score recalculations in <10ms', () => {
+      for (let i = 0; i < 50; i++) {
+        oracle.computeDraftScore(50 + (i % 50), 60 + (i % 40), 0.35);
+      }
       const start = performance.now();
       for (let i = 0; i < 1000; i++) {
         oracle.computeDraftScore(50 + (i % 50), 60 + (i % 40), 0.35);

@@ -24,9 +24,18 @@
 
 import React from 'react';
 import { Droplet, Flame, Mountain, Wind } from 'lucide-react';
-import { favorabilityTone, oracleScore, starsScore, statsPoints, type Tone } from '@/lib/oracle';
+import {
+  favorabilityTone,
+  oraclePlaceholderInfo,
+  oracleScore,
+  resolveActiveWeek,
+  starsScore,
+  statsPoints,
+  type Tone,
+} from '@/lib/oracle';
 import { isPlayerOnByeWeek } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
+import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import type { CosmicPlayer } from '@/types/oneiromancy';
 
 const TONE_TEXT: Record<Tone, string> = {
@@ -75,22 +84,46 @@ export const Tag: React.FC<{ tone: TagTone; children: React.ReactNode; className
 );
 
 /** Injury tag; "Healthy" in green when there is none, or "BYE WK N" tag + muted "On Bye" label when on bye. */
-export const HealthTag: React.FC<{ player: CosmicPlayer }> = ({ player }) => {
+export const HealthTag: React.FC<{ player: CosmicPlayer; activeWeek?: number }> = ({
+  player,
+  activeWeek,
+}) => {
   const s = player.injury_status;
   const severe = Boolean(s && ['Out', 'IR', 'NA', 'PUP', 'Sus', 'Doubtful'].includes(s));
-  if (s && severe) return <Tag tone="rose">{s}</Tag>;
   const ctx = getSeasonContext();
-  const activeWk = ctx?.currentWeek;
-  if (isPlayerOnByeWeek(activeWk, player.bye_week, player.team, ctx?.byeWeeks)) {
+  const oneiromancy = useOptionalOneiromancy();
+  const activeWk = resolveActiveWeek(oneiromancy?.draftState, activeWeek);
+  const onBye = isPlayerOnByeWeek(activeWk, player.bye_week, player.team, ctx?.byeWeeks);
+
+  const byeBadge = onBye ? (
+    <span className="inline-flex items-center gap-1.5">
+      <Tag tone="amber">
+        {`BYE WK ${player.bye_week || activeWk}`}
+      </Tag>
+      <span className="text-[10px] font-mono text-slate-500">On Bye</span>
+    </span>
+  ) : null;
+
+  if (s && severe) {
     return (
       <span className="inline-flex items-center gap-1.5">
-        <Tag tone="amber">BYE WK {activeWk}</Tag>
-        <span className="text-[10px] font-mono text-slate-500">On Bye</span>
+        <Tag tone="rose">{s}</Tag>
+        {byeBadge}
       </span>
     );
   }
-  if (!s || s === 'Healthy') return <Tag tone="emerald">Healthy</Tag>;
-  return <Tag tone="amber">{s}</Tag>;
+  if (s && s !== 'Healthy') {
+    return (
+      <span className="inline-flex items-center gap-1.5">
+        <Tag tone="amber">{s}</Tag>
+        {byeBadge}
+      </span>
+    );
+  }
+  if (onBye) {
+    return byeBadge;
+  }
+  return <Tag tone="emerald">Healthy</Tag>;
 };
 
 /** A signed delta badge such as "+12.4 ORACLE". */
@@ -112,18 +145,31 @@ export const DeltaBadge: React.FC<{ value: number; unit: string; tone: TagTone; 
  * 2. Spirit / Oracle (combined divinity weight score at λ)
  * 3. Stars (upcoming week astrological alignment, 0-100)
  */
-export const StatTiles: React.FC<{ player: CosmicPlayer; lambda: number; muted?: boolean }> = ({
+export const StatTiles: React.FC<{
+  player: CosmicPlayer;
+  lambda: number;
+  muted?: boolean;
+  activeWeek?: number;
+}> = ({
   player,
   lambda,
   muted = false,
+  activeWeek,
 }) => {
-  const stars = starsScore(player);
+  const oneiromancy = useOptionalOneiromancy();
+  const activeWk = resolveActiveWeek(oneiromancy?.draftState, activeWeek);
+  const placeholder = oraclePlaceholderInfo(player, activeWk);
+  const stars = starsScore(player, activeWk);
   const tone = favorabilityTone(stars);
   const tile = `${muted ? 'bg-slate-950/80' : 'bg-slate-900/80'} p-1.5 rounded border border-white/5`;
+  const oracleVal = oracleScore(player, lambda, { currentWeek: activeWk });
   return (
     <div className="space-y-1.5">
       <div className="grid grid-cols-3 gap-1.5 text-center font-mono text-[10px]">
-        <div className={tile} title="Stats: baseline projected fantasy points">
+        <div
+          className={tile}
+          title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : 'Stats: baseline projected fantasy points'}
+        >
           <span className="text-slate-500 block text-[9px]">Stats</span>
           <span className={`font-bold ${muted ? 'text-slate-300' : 'text-cyan-300'}`}>
             {statsPoints(player).toFixed(1)}
@@ -131,14 +177,34 @@ export const StatTiles: React.FC<{ player: CosmicPlayer; lambda: number; muted?:
         </div>
         <div
           className={tile}
-          title={`Oracle at λ ${lambda.toFixed(2)} (Spirit ${(player.spirit_score ?? 0).toFixed(1)})`}
+          title={
+            placeholder.hasPlaceholder
+              ? placeholder.tooltipText
+              : `Oracle at λ ${lambda.toFixed(2)} (Spirit ${(player.spirit_score ?? 0).toFixed(1)})`
+          }
         >
           <span className="text-slate-500 block text-[9px]">Oracle</span>
           <span className={`font-bold ${muted ? 'text-slate-300' : 'text-purple-300'}`}>
-            {oracleScore(player, lambda).toFixed(1)}
+            {oracleVal.toFixed(1)}
+            {placeholder.hasPlaceholder && (
+              <span
+                data-testid="oracle-placeholder-marker"
+                title={placeholder.tooltipText}
+                className="ml-0.5 text-amber-300 font-bold"
+              >
+                ~
+              </span>
+            )}
           </span>
         </div>
-        <div className={tile} title="Stars: upcoming week astrological alignment (0-100)">
+        <div
+          className={tile}
+          title={
+            placeholder.hasPlaceholder
+              ? placeholder.tooltipText
+              : 'Stars: upcoming week astrological alignment (0-100)'
+          }
+        >
           <span className="text-slate-500 block text-[9px]">Stars</span>
           <span className={`font-bold ${TONE_TEXT[tone]}`}>{stars.toFixed(0)}</span>
         </div>
