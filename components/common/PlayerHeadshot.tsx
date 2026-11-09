@@ -30,7 +30,7 @@ export function headshotUrl(id?: string | number | null): string | null {
   return /^\d+$/.test(s) ? `https://sleepercdn.com/content/nfl/players/thumb/${s}.jpg` : null;
 }
 
-const SIZES = { sm: 'w-7 h-7', md: 'w-10 h-10', lg: 'w-16 h-16' } as const;
+const SIZES = { sm: 'w-7 h-7', md: 'w-10 h-10', matchup: 'w-12 h-12 sm:w-16 sm:h-16', lg: 'w-16 h-16' } as const;
 
 /**
  * Round headshot. Defenses (and players whose photo fails to load) fall back
@@ -56,8 +56,9 @@ export const PlayerHeadshot: React.FC<{
       .join('')
       .slice(0, 2)
       .toUpperCase();
+    const initialsSize = size === 'matchup' || size === 'lg' ? 'text-sm sm:text-base font-bold' : 'text-[10px]';
     return (
-      <span aria-hidden="true" className={`${box} flex items-center justify-center text-[10px] font-mono text-slate-400 ${className}`}>
+      <span aria-hidden="true" className={`${box} flex items-center justify-center ${initialsSize} font-mono text-slate-400 ${className}`}>
         {initials}
       </span>
     );

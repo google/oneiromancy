@@ -20,19 +20,18 @@
 import React, { useMemo, useState } from 'react';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import UserAvatar from '@/components/common/UserAvatar';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import CelestialLeaderboardGraph from '@/components/oneiromancy/CelestialLeaderboardGraph';
 import { TONE_LABEL, TONE_PILL, favorabilityTone, oraclePlaceholderInfo, oracleScore, resolveActiveWeek, starsScore, statsPoints } from '@/lib/oracle';
-import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, stripUserSuffix } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
 import type { CompetitorTeam, CosmicPlayer } from '@/types/oneiromancy';
 
 const NO_COSMIC_BOARD: CosmicPlayer[] = [];
 const NO_COMPETITOR_TEAMS: CompetitorTeam[] = [];
-
-const SLOT_LABEL: Record<string, string> = { SUPER_FLEX: 'SF', FLEX: 'FLEX', REC_FLEX: 'FLEX', WRRB_FLEX: 'FLEX' };
 
 export const LeagueScreen: React.FC = () => {
   const { draftState } = useOneiromancy();
@@ -61,7 +60,7 @@ export const LeagueScreen: React.FC = () => {
     if (!p) {
       return (
         <li key={key} className="flex items-center gap-2 py-1.5 text-xs text-slate-500">
-          <span className="w-8 sm:w-10 shrink-0 font-mono">{label}</span> Empty
+          <RosterSlotBadge slotId={label} size="sm" /> Empty
         </li>
       );
     }
@@ -76,7 +75,7 @@ export const LeagueScreen: React.FC = () => {
         onClick={() => setInspectedPlayer(p)}
         className={`flex items-center gap-2 py-1.5 text-xs cursor-pointer hover:bg-slate-800/40 rounded px-1 transition-colors ${onBye ? 'opacity-50 grayscale' : ''}`}
       >
-        <span className="w-8 sm:w-10 shrink-0 font-mono text-slate-500">{label}</span>
+        <RosterSlotBadge slotId={label} size="sm" />
         <PlayerHeadshot player={p} size="sm" />
         <PositionalBadge position={p.position} size="sm" depth={p.depth_chart_order} />
         <span className="text-slate-100 min-w-0 truncate font-medium">{p.name}</span>
@@ -164,14 +163,16 @@ export const LeagueScreen: React.FC = () => {
           >
             {teams.map((t) => (
               <option key={t.roster_id} value={t.roster_id}>
-                {t.name}
+                {stripUserSuffix(t.name, 'Team')}
                 {typeof t.wins === 'number' ? ` (${t.wins}-${t.losses}${t.ties ? `-${t.ties}` : ''})` : ''}
               </option>
             ))}
           </select>
         </label>
 
-        {team && (
+        {team && (() => {
+          const cleanTeamName = stripUserSuffix(team.name, 'Team');
+          return (
           <div
             data-testid={team.is_user ? 'user-competitor-card' : 'competitor-card'}
             className={`p-4 rounded-xl flex flex-col gap-3 border ${
@@ -181,9 +182,9 @@ export const LeagueScreen: React.FC = () => {
             }`}
           >
             <div className="flex items-center gap-2.5">
-              <UserAvatar src={team.avatar_url || team.avatar} alt={`${team.name} avatar`} fallbackText={team.name} size="md" isUser={team.is_user} />
+              <UserAvatar src={team.avatar_url || team.avatar} alt={`${cleanTeamName} avatar`} fallbackText={cleanTeamName} size="md" isUser={team.is_user} />
               <div className="min-w-0">
-                <div className="font-semibold text-slate-100 truncate">{team.name}</div>
+                <div className="font-semibold text-slate-100 truncate">{cleanTeamName}</div>
                 <div className="text-[11px] font-mono text-slate-400">
                   {team.owner_name ? `${team.owner_name} · ` : ''}
                   {typeof team.points_for === 'number' ? `${team.points_for.toFixed(1)} PF` : ''}
@@ -199,7 +200,7 @@ export const LeagueScreen: React.FC = () => {
               </div>
               <ul className="divide-y divide-white/5">
                 {starters.length > 0
-                  ? starters.map((p, i) => row(p, SLOT_LABEL[slots[i]] ?? slots[i] ?? '', `s-${i}`))
+                  ? starters.map((p, i) => row(p, slots[i] ?? '', `s-${i}`))
                   : (team.picks || []).slice(0, 8).map((pk, i) =>
                       row(byId.get(String(pk.player_id)) ?? null, `Rd ${pk.round}`, `p-${i}`),
                     )}
@@ -214,7 +215,8 @@ export const LeagueScreen: React.FC = () => {
               </div>
             )}
           </div>
-        )}
+          );
+        })()}
       </section>
 
       <PlayerDetailModal

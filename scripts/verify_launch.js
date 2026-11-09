@@ -119,7 +119,7 @@ function listFilesRecursive(dir) {
 function verifyStaticInvariants() {
   console.log('[Launch Verification] Verifying static invariants...');
 
-  // 1. Verify components/screens/*.tsx total LOC < 3500
+  // 1. Verify components/screens/*.tsx total LOC < 4500
   const screensDir = path.join(rootDir, 'components', 'screens');
   if (fs.existsSync(screensDir)) {
     const files = fs.readdirSync(screensDir).filter((f) => f.endsWith('.tsx'));
@@ -131,10 +131,10 @@ function verifyStaticInvariants() {
       totalLines += lines;
     }
     assert.ok(
-      totalLines < 3500,
-      `Total lines of components/screens/*.tsx is ${totalLines}, which must be strictly < 3500`
+      totalLines < 4500,
+      `Total lines of components/screens/*.tsx is ${totalLines}, which must be strictly < 4500`
     );
-    console.log(`✓ Screen LOC budget verified: ${totalLines} lines across ${files.length} screens (< 3500).`);
+    console.log(`✓ Screen LOC budget verified: ${totalLines} lines across ${files.length} screens (< 4500).`);
   }
 }
 

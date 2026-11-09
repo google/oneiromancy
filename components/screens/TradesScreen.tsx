@@ -26,6 +26,7 @@ import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
 import GlassCard from '@/components/common/GlassCard';
 import { DeltaBadge, HealthTag, StatTiles, Tag } from '@/components/common/PlayerTiles';
 import { useOneiromancy } from '@/context/OneiromancyContext';
+import { stripUserSuffix } from '@/lib/scoring';
 import {
   TONE_PILL,
   computeTradePartners,
@@ -139,7 +140,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
       ) : (
         <ol className="flex flex-col gap-3" data-testid="trade-partners">
           {partners.map((p) => {
-            const name = p.team.name.replace(/\s*\(You\)$/, '');
+            const name = stripUserSuffix(p.team.name, 'Team');
             const starters = (p.team.starters ?? [])
               .map((id) => byId.get(String(id)))
               .filter((x): x is CosmicPlayer => Boolean(x));

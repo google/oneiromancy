@@ -74,7 +74,7 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
               <Compass className="w-5 h-5 text-purple-300" /> Oracle &amp; Weights
             </h2>
             <p className="text-xs text-slate-400 mt-1">
-              Control how football stats and astrological alignment blend across every player card, lineup check, and trade.
+              Blends projected fantasy points (Stats) with astrological alignment (Stars) into a single Oracle rating. Use the dial to set your mix from pure statistics to pure cosmic alignment.
             </p>
           </div>
           <button
@@ -153,7 +153,16 @@ export const OraclePanel: React.FC<OraclePanelProps> = ({ isOpen, onClose }) => 
               </button>
             ))}
           </div>
-          <p className="text-[11px] font-mono text-slate-400">Oracle = (1 − λ) × Stats + λ × Stars</p>
+
+          <div className="space-y-1.5 pt-1 border-t border-white/5 font-mono text-[11px] text-slate-400">
+            <p className="text-purple-300 font-bold">Oracle = (1 − λ) × Stats + λ × Stars</p>
+            <p className="font-sans">
+              <strong className="text-slate-300">Unit Conversion:</strong> Raw projected fantasy points (Stats) are rescaled to a 0–100 index (where 25 points = 100) before blending with Stars (0–100).
+            </p>
+            <p className="font-sans">
+              <strong className="text-slate-300">Worked Example (Ja&apos;Marr Chase):</strong> 19.8 projected points rescales to 79.2 Stats. With 85 Stars and the dial set to 75% Stars (λ = 0.75): (1 − 0.75) × 79.2 + 0.75 × 85 = 19.8 + 63.75 = 83.55 (rounds to 83.6 Oracle).
+            </p>
+          </div>
         </section>
 
         {/* Star weights and the astrology reference are always shown (owner preference). */}

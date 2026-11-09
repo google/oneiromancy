@@ -1356,8 +1356,9 @@ describe('Tier 10: Oracle model and recommendations', () => {
         for (const name of ['Malachi Fields', 'Jameis Winston', 'Mac Jones', 'Isaiah Likely', 'Chris Olave']) {
           assert.ok(byeCalloutW8.textContent.includes(name), `Week 8 bye callout must include benched bye player ${name}`);
         }
-        assert.ok(byeCalloutW8.textContent.includes('YOU · BN'), 'Week 8 bye callout must tag user bench bye players with YOU · BN');
-        assert.ok(byeCalloutW8.textContent.includes('OPP · BN'), 'Week 8 bye callout must tag opponent bench bye players with OPP · BN');
+        assert.ok(!byeCalloutW8.textContent.includes('· YOU'), 'Week 8 bye callout must not render YOU label');
+        assert.ok(!byeCalloutW8.textContent.includes('· OPP'), 'Week 8 bye callout must not render OPP label');
+        assert.ok(byeCalloutW8.textContent.includes(' · BN)'), 'Week 8 bye callout must preserve BN role tag');
         matchupViewW8.unmount();
 
         // 3. OneiromancyDashboard grays out benched bye players and renders both BYE WK 8 tag and muted "On Bye" label

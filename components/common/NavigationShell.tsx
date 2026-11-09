@@ -133,7 +133,10 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
       : '';
 
   return (
-    <div className="min-h-screen flex flex-col bg-[#131318] text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200">
+    <div
+      data-testid="navigation-shell-root"
+      className="min-h-screen flex flex-col bg-transparent relative isolate text-slate-100 selection:bg-cyan-500/30 selection:text-cyan-200"
+    >
       {/* Sticky Header */}
       <header className="sticky top-0 z-30 bg-[#131318]/90 backdrop-blur-md border-b border-white/10 px-3 sm:px-4 py-2 flex items-center justify-between gap-1.5 sm:gap-2">
         <div className="flex items-center gap-1.5 sm:gap-2 min-w-0">

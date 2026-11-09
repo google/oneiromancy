@@ -20,6 +20,7 @@
 import React, { useMemo, useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import { type InspectTarget } from '@/components/common/PlayerLink';
 import { ElementIcon, HealthTag } from '@/components/common/PlayerTiles';
@@ -42,6 +43,8 @@ import {
 import {
   DEFAULT_CHAOS_LAMBDA,
   computeRosterHarmony,
+  hasUserSuffix,
+  stripUserSuffix,
   computeRosterHarmonyBreakdown,
   isNFLByeWeek,
   isPlayerOnByeWeek,
@@ -266,7 +269,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
   const userTeam = useMemo(
     () =>
       competitorTeams.find((t) => t.is_user === true) ||
-      competitorTeams.find((t) => t.name.includes('(You)')) ||
+      competitorTeams.find((t) => hasUserSuffix(t.name)) ||
       competitorTeams.find((t) => t.slot === (draftState?.settings?.user_slot || 7)) ||
       competitorTeams[0],
     [competitorTeams, draftState?.settings?.user_slot],
@@ -324,7 +327,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
           key={slot.slot_id}
           className="p-3 rounded-xl bg-slate-900/40 border border-dashed border-white/10 flex items-center justify-between text-xs font-mono text-slate-500"
         >
-          <span>{slot.slot_name}</span>
+          <RosterSlotBadge slotId={slot.slot_id} slotName={slot.slot_name} size="sm" className="shrink-0" />
           <span>Empty Slot</span>
         </div>
       );
@@ -382,7 +385,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
             </div>
             <div data-testid="roster-card-text-col" className="min-w-0 flex-1 space-y-0.5">
               <div className="flex items-center gap-1.5 whitespace-nowrap overflow-hidden min-w-0">
-                <span className="text-[10px] font-mono font-bold px-1.5 py-0.5 rounded bg-purple-950/80 text-purple-200 border border-purple-500/40 shrink min-w-0 truncate">{slot.slot_name}</span>
+                <RosterSlotBadge slotId={slot.slot_id} slotName={slot.slot_name} size="sm" className="shrink-0" />
                 <PositionalBadge position={p.position} size="sm" showGlow={false} className="shrink-0" depth={p.depth_chart_order} />
                 {starterSwap && (() => {
                   const gain = Number(starterSwap.oracleGain || 0).toFixed(1);
@@ -442,7 +445,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
             </div>
             <div
               className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-purple-500/30"
-              title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Combined Divinity / Oracle Score at λ ${lambda.toFixed(2)}`}
+              title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Combined Oracle Score at λ ${lambda.toFixed(2)}`}
             >
               <span className="text-[8px] text-purple-300/80 block uppercase">
                 Oracle
@@ -509,7 +512,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
               </div>
             </div>
             <h2 className="font-serif text-2xl sm:text-3xl font-bold text-slate-100 flex flex-wrap items-center gap-2">
-              <span>{userTeam?.name?.replace(/\s*\(You\)$/, '') || 'My Roster'}</span>
+              <span>{stripUserSuffix(userTeam?.name, 'My Roster')}</span>
             </h2>
           </div>
 
@@ -541,7 +544,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
               <Trophy className="w-4 h-4 text-amber-400 shrink-0" />
               <div>
                 <span className="text-[9px] text-slate-400 block uppercase">Squad Harmony</span>
-                <span className="text-amber-300 font-bold">{harmonyScore}%</span>
+                <span className="text-amber-300 font-bold">{harmonyScore} pts</span>
               </div>
             </div>
           </div>
@@ -566,89 +569,109 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
                 key={part.label}
                 className="px-2 py-0.5 rounded-full bg-slate-900 border border-amber-500/30 text-amber-200"
               >
-                {part.label}: +{part.points}%
+                {part.label}: +{part.points} pts
               </span>
             ))}
           </div>
         </div>
 
         {/* Interactive Constellation Map (5-Spoke Elemental & Aspect Balance Radar + Active Trine/Stack Summary) */}
-        <div className="bg-slate-950/70 rounded-xl p-3 border border-white/5 overflow-x-auto">
-          <svg
-            viewBox="0 0 760 190"
-            className="w-full min-w-[560px] h-44 overflow-visible"
-            data-testid="synergy-constellation-svg"
-            role="img"
-            aria-label="Team Alignment Radar and Stack Constellation Graph"
-          >
-            {/* Left: 5-Spoke Elemental & Aspect Balance Web */}
-            {[0.33, 0.66, 1.0].map((level, idx) => (
-              <circle
-                key={`grid-${idx}`}
-                cx={radarPoints.cx}
-                cy={radarPoints.cy}
-                r={radarPoints.maxR * level}
-                fill="none"
-                stroke="rgba(255,255,255,0.08)"
-                strokeDasharray="2,3"
-              />
-            ))}
-            <polygon
-              points={radarPoints.polygonString}
-              fill="rgba(168, 85, 247, 0.24)"
-              stroke="#06b6d4"
-              strokeWidth="2"
-            />
-            <text x="115" y="20" textAnchor="middle" fill="#f87171" fontSize="9" fontFamily="monospace">
-              Fire ({elementalDistribution.Fire})
-            </text>
-            <text x="200" y="76" textAnchor="start" fill="#38bdf8" fontSize="9" fontFamily="monospace">
-              Air ({elementalDistribution.Air})
-            </text>
-            <text x="170" y="176" textAnchor="middle" fill="#60a5fa" fontSize="9" fontFamily="monospace">
-              Water ({elementalDistribution.Water})
-            </text>
-            <text x="60" y="176" textAnchor="middle" fill="#2dd4bf" fontSize="9" fontFamily="monospace">
-              Earth ({elementalDistribution.Earth})
-            </text>
-            <text x="26" y="76" textAnchor="end" fill="#c084fc" fontSize="9" fontFamily="monospace">
-              Aspects ({activeAspects.length})
-            </text>
+        <div className="bg-slate-950/70 rounded-xl p-3 sm:p-4 border border-white/5">
+          <div className="flex flex-col md:flex-row items-center md:items-start gap-4">
+            <div className="flex justify-center w-full md:w-auto shrink-0">
+              <svg
+                viewBox="-45 0 300 190"
+                className="w-full max-w-[280px] sm:max-w-[300px] h-48 overflow-visible"
+                data-testid="synergy-constellation-svg"
+                role="img"
+                aria-label="Team Alignment Radar and Stack Constellation Graph"
+              >
+                {/* 5-Spoke Elemental & Aspect Balance Web */}
+                {[0.33, 0.66, 1.0].map((level, idx) => (
+                  <circle
+                    key={`grid-${idx}`}
+                    cx={radarPoints.cx}
+                    cy={radarPoints.cy}
+                    r={radarPoints.maxR * level}
+                    fill="none"
+                    stroke="rgba(255,255,255,0.08)"
+                    strokeDasharray="2,3"
+                  />
+                ))}
+                <polygon
+                  points={radarPoints.polygonString}
+                  fill="rgba(168, 85, 247, 0.24)"
+                  stroke="#06b6d4"
+                  strokeWidth="2"
+                />
+                <text x="115" y="20" textAnchor="middle" fill="#f87171" fontSize="9" fontFamily="monospace">
+                  Fire ({elementalDistribution.Fire})
+                </text>
+                <text x="200" y="76" textAnchor="start" fill="#38bdf8" fontSize="9" fontFamily="monospace">
+                  Air ({elementalDistribution.Air})
+                </text>
+                <text x="170" y="176" textAnchor="middle" fill="#60a5fa" fontSize="9" fontFamily="monospace">
+                  Water ({elementalDistribution.Water})
+                </text>
+                <text x="60" y="176" textAnchor="middle" fill="#2dd4bf" fontSize="9" fontFamily="monospace">
+                  Earth ({elementalDistribution.Earth})
+                </text>
+                <text x="26" y="76" textAnchor="end" fill="#c084fc" fontSize="9" fontFamily="monospace">
+                  Aspects ({activeAspects.length})
+                </text>
+              </svg>
+            </div>
 
-            {/* Right: Active Elemental Harmony & Passing Stack Telemetry */}
-            <text x="270" y="24" fill="#c084fc" fontSize="9" fontFamily="monospace" fontWeight="bold">
-              ELEMENTAL HARMONY THRESHOLDS (3+ STARTERS = +12% STACK BONUS)
-            </text>
-            {(['Fire', 'Earth', 'Air', 'Water'] as const).map((el, i) => {
-              const count = elementalDistribution[el];
-              const isTrine = count >= 3;
-              const y = 44 + i * 22;
-              const stroke = ELEMENT_STROKE[el];
-              const barW = Math.min(220, (count / 8) * 220);
-              return (
-                <g key={el}>
-                  <text x="270" y={y + 9} fill={stroke} fontSize="8.5" fontFamily="monospace" fontWeight="bold">
-                    {el}
-                  </text>
-                  <rect x="315" y={y} width="220" height="10" rx="5" fill="#0f172a" stroke="rgba(255,255,255,0.08)" />
-                  <rect x="315" y={y} width={Math.max(6, barW)} height="10" rx="5" fill={stroke} fillOpacity={isTrine ? 0.85 : 0.45} />
-                  <text x="545" y={y + 8.5} fill={isTrine ? '#34d399' : '#94a3b8'} fontSize="8" fontFamily="monospace">
-                    {count}/8 {isTrine ? '★ TRINE ACTIVE' : `(need ${Math.max(0, 3 - count)} more)`}
-                  </text>
-                </g>
-              );
-            })}
-            <line x1="270" y1="138" x2="735" y2="138" stroke="rgba(255,255,255,0.08)" strokeDasharray="4,4" />
-            <text x="270" y="156" fill="#fbbf24" fontSize="8.5" fontFamily="monospace" fontWeight="bold">
-              CORRELATION STACKS:{' '}
-              {activeAspects.length > 0
-                ? activeAspects.map((a) => `${a.team} 3.0x (${a.qb.name.split(' ').slice(-1)[0]} ☌ ${a.passCatchers.map((pc) => pc.name.split(' ').slice(-1)[0]).join('/')})`).join(' · ')
-                : 'No active QB + WR/TE same-team starter stack'}
-            </text>
-            <text x="270" y="174" fill="#94a3b8" fontSize="8" fontFamily="monospace">
-              Squad Harmony: {harmonyScore}% · Click any starter or bench card below to compare roles
-            </text>
-          </svg>
+            {/* Right column: Linear Elemental Harmony Bars & Correlation Stack Telemetry */}
+            <div className="flex-1 w-full space-y-3 font-mono">
+              <div className="text-[10px] text-purple-300 font-bold uppercase tracking-wider">
+                ELEMENTAL HARMONY THRESHOLDS (3+ STARTERS = +12 PTS TRINE BONUS)
+              </div>
+              <div className="space-y-2">
+                {(['Fire', 'Earth', 'Air', 'Water'] as const).map((el) => {
+                  const count = elementalDistribution[el];
+                  const isTrine = count >= 3;
+                  const stroke = ELEMENT_STROKE[el];
+                  const percent = Math.min(100, (count / 8) * 100);
+                  return (
+                    <div key={el} className="space-y-1">
+                      <div className="flex items-center justify-between text-xs">
+                        <span style={{ color: stroke }} className="font-bold">
+                          {el}
+                        </span>
+                        <span className={isTrine ? 'text-emerald-400 text-[10px]' : 'text-slate-400 text-[10px]'}>
+                          {count}/8 {isTrine ? '★ TRINE ACTIVE' : `(need ${Math.max(0, 3 - count)} more)`}
+                        </span>
+                      </div>
+                      <div className="h-2 w-full bg-slate-900 rounded-full overflow-hidden border border-white/10">
+                        <div
+                          className="h-full rounded-full transition-all duration-300"
+                          style={{
+                            width: `${Math.max(5, percent)}%`,
+                            backgroundColor: stroke,
+                            opacity: isTrine ? 0.9 : 0.45,
+                          }}
+                        />
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="pt-2 border-t border-white/10 space-y-1 text-xs">
+                <div className="text-amber-400 text-[11px] font-bold">
+                  CORRELATION STACKS:{' '}
+                  <span className="font-normal text-amber-200">
+                    {activeAspects.length > 0
+                      ? activeAspects.map((a) => `${a.team} 3.0x (${a.qb.name.split(' ').slice(-1)[0]} ☌ ${a.passCatchers.map((pc) => pc.name.split(' ').slice(-1)[0]).join('/')})`).join(' · ')
+                      : 'No active QB + WR/TE same-team starter stack'}
+                  </span>
+                </div>
+                <div className="text-[10px] text-slate-400">
+                  Squad Harmony: {harmonyScore} pts · Click any starter or bench card below to compare roles
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* Active Starters & Bench Player Aura Field (Single Cohesive Roster View) */}
@@ -764,15 +787,15 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
             <div className="mt-1.5 p-2.5 rounded-lg bg-slate-950/80 border border-white/10 text-[11px] text-slate-300 space-y-1">
               <div>
                 <Flame className="w-3 h-3 text-rose-400 inline mr-1" />
-                <strong>1. Elemental Trine:</strong> 3 starters of one element (+12%), 4+ (+18%) amplify ceiling and floor.
+                <strong>1. Elemental Trine:</strong> 3 starters of one element (+12 points), 4+ (+18 points) added to base 50 to amplify ceiling and floor.
               </div>
               <div>
                 <Zap className="w-3 h-3 text-amber-400 inline mr-1" />
-                <strong>2. QB Stacks:</strong> Starting a pass catcher with his NFL QB (+18% to +27% Astral Stack Conjunction).
+                <strong>2. QB Stacks:</strong> Starting a QB with 1 receiver (+18 points) or 2 receivers (+9 points each), capped at +30 points total added to base 50 (Astral Stack Conjunction).
               </div>
               <div>
                 <CheckCircle2 className="w-3 h-3 text-teal-400 inline mr-1" />
-                <strong>3. Four-Element Balance:</strong> All 4 elements represented (+10%).
+                <strong>3. Four-Element Balance:</strong> All 4 elements represented (+10 points) added to base 50.
               </div>
             </div>
           </details>

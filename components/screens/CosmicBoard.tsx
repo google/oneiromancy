@@ -24,7 +24,7 @@ import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { MAX_COMPARE_PLAYERS, useOneiromancy } from '@/context/OneiromancyContext';
-import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, isPlayerSigned } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, isPlayerSigned, stripUserSuffix } from '@/lib/scoring';
 import { deriveEligiblePositions, getSeasonContext } from '@/lib/sleeper';
 import {
   TONE_LABEL,
@@ -39,7 +39,7 @@ import {
   statsPoints,
 } from '@/lib/oracle';
 import { CosmicPlayer, NFLPosition } from '@/types/oneiromancy';
-import { RefreshCw } from 'lucide-react';
+import { RefreshCw, Scale } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 
 export interface CosmicBoardProps {
@@ -123,7 +123,6 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
 
   const [inspectedPlayer, setInspectedPlayer] = useState<CosmicPlayer | null>(null);
   const [inspectedVs, setInspectedVs] = useState<CosmicPlayer | null>(null);
-  const [inspectedCandidates, setInspectedCandidates] = useState<CosmicPlayer[] | null>(null);
 
   const leagueEligiblePositions = useMemo(
     () =>
@@ -181,7 +180,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
       if (givesSigned && receivesUnsigned) continue;
       if (p.get?.player) {
         map.set(String(p.get.player.id), {
-          partnerName: (p.team?.name || '').replace(/\s*\(You\)$/, ''),
+          partnerName: stripUserSuffix(p.team?.name),
           give: p.give?.player,
           gain: p.get.gain,
         });
@@ -197,7 +196,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
         context.draftState?.my_roster?.find((s) => String(s.player?.id) === String(give?.player_id))?.player ||
         undefined;
       map.set(String(rec.player_id), {
-        partnerName: (recPlayer?.drafted_by || tp.target_team_name || '').replace(/\s*\(You\)$/, ''),
+        partnerName: stripUserSuffix(recPlayer?.drafted_by || tp.target_team_name),
         give: givePlayer,
         gain: tp.net_vor_delta,
       });
@@ -217,12 +216,11 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
   );
 
   const handleInspect = useCallback(
-    (player: CosmicPlayer, vs?: CosmicPlayer | null, candidates?: CosmicPlayer[] | null) => {
+    (player: CosmicPlayer, vs?: CosmicPlayer | null) => {
       if (propOnInspectPlayer) {
         propOnInspectPlayer(player);
       } else {
         setInspectedVs(vs ?? null);
-        setInspectedCandidates(candidates ?? null);
         setInspectedPlayer(player);
         context.selectPlayer(player);
       }
@@ -408,7 +406,10 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
               className="w-full table-fixed text-left font-mono text-xs border-collapse">
               <thead className="sticky top-[49px] z-10">
                 <tr className="border-b border-white/10 bg-[#1a1a24] text-slate-400 text-[11px] uppercase tracking-wider">
-                  <th data-testid="compare-col-header" className="py-3 px-2 w-14 text-center">Compare</th>
+                  <th data-testid="compare-col-header" className="py-3 px-1 w-8 text-center tracking-normal" title="Compare">
+                    <Scale aria-hidden="true" className="w-3.5 h-3.5 inline-block" />
+                    <span className="sr-only">Compare</span>
+                  </th>
                   <th className="py-3 px-2 w-10 text-center">#</th>
                   <th className="py-3 px-4">Player</th>
                   <th className="py-3 px-3 w-16">Pos</th>
@@ -438,7 +439,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                         data-bye={onBye ? 'true' : undefined}
                         className="bg-amber-500/10 hover:bg-amber-500/15 border-b border-amber-500/30 transition-colors cursor-pointer"
                       >
-                        <td className="py-2.5 px-2 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                        <td className="py-2.5 px-1 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
                           <input
                             type="checkbox"
                             checked={true}
@@ -526,7 +527,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                                 : 'text-cyan-200 bg-slate-900 border-cyan-500/30'
                             }`}
                           >
-                            {isMyTeam ? 'My Roster' : isAvailable ? 'Free agent' : player.drafted_by || 'Rostered'}
+                            {isMyTeam ? 'My Roster' : isAvailable ? 'Free agent' : stripUserSuffix(player.drafted_by, 'Rostered')}
                           </span>
                         </td>
                       </tr>
@@ -555,7 +556,7 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                       className={`hover:bg-slate-900/80 transition-colors cursor-pointer ${
                         isMyTeam ? 'bg-purple-950/25 border-l-2 border-l-purple-500' : ''
                       } ${onBye ? 'opacity-50 grayscale bg-slate-950/60' : ''}`}>
-                      <td className="py-2.5 px-2 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
+                      <td className="py-2.5 px-1 text-center" onClick={(e: React.MouseEvent) => e.stopPropagation()}>
                         <input
                           type="checkbox"
                           checked={false}
@@ -660,13 +661,13 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                               ? 'My Roster'
                               : isAvailable
                               ? 'Free agent'
-                              : player.drafted_by || tHint?.partnerName || 'Rostered'
+                              : stripUserSuffix(player.drafted_by) || stripUserSuffix(tHint?.partnerName) || 'Rostered'
                           }>
                           {isMyTeam
                             ? 'My Roster'
                             : isAvailable
                             ? 'Free agent'
-                            : player.drafted_by || tHint?.partnerName || 'Rostered'}
+                            : stripUserSuffix(player.drafted_by) || stripUserSuffix(tHint?.partnerName) || 'Rostered'}
                         </span>
                       </td>
                     </tr>
@@ -704,24 +705,6 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
             <span className="text-amber-300 font-bold">
               Comparing {pinnedPlayers.length} / {MAX_COMPARE_PLAYERS} celestial candidates
             </span>
-            {pinnedPlayers.length >= 2 && (
-              <button
-                type="button"
-                data-testid="head-to-head-btn"
-                onClick={() => {
-                  if (pinnedPlayers.length === 2) {
-                    handleInspect(pinnedPlayers[0], pinnedPlayers[1]);
-                  } else {
-                    handleInspect(pinnedPlayers[0], pinnedPlayers[1], pinnedPlayers);
-                  }
-                }}
-                className="px-3 py-1 rounded-lg bg-cyan-600 hover:bg-cyan-500 text-slate-100 font-bold transition-colors cursor-pointer"
-              >
-                {pinnedPlayers.length === 2
-                  ? 'Compare Head-to-Head'
-                  : `Compare ${pinnedPlayers.length} Candidates`}
-              </button>
-            )}
           </div>
           <button
             type="button"
@@ -738,14 +721,12 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
       <PlayerDetailModal
         player={inspectedPlayer}
         compareWith={inspectedVs}
-        compareCandidates={inspectedCandidates}
         isOpen={Boolean(inspectedPlayer)}
         roster={context.draftState?.my_roster}
         activeWeek={activeWeek}
         onClose={() => {
           setInspectedPlayer(null);
           setInspectedVs(null);
-          setInspectedCandidates(null);
           context.selectPlayer(null);
         }}
       />

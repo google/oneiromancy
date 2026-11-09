@@ -20,7 +20,7 @@ import React, { useMemo, useState } from 'react';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
-import { DEFAULT_CHAOS_LAMBDA } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, stripUserSuffix } from '@/lib/scoring';
 import {
   computeByeOutlook,
   computeLineupCheck,
@@ -196,11 +196,11 @@ export const WeeklyMoves: React.FC = () => {
               {trade.give && trade.get ? (
                 <>
                   Offer <PlayerLink player={trade.give.player} vs={trade.get.player} onOpen={setInspected} /> to{' '}
-                  {trade.team.name.replace(/\s*\(You\)$/, '')} for{' '}
+                  {stripUserSuffix(trade.team.name, 'Team')} for{' '}
                   <PlayerLink player={trade.get.player} vs={trade.give.player} onOpen={setInspected} />
                 </>
               ) : (
-                `${trade.team.name.replace(/\s*\(You\)$/, '')} is short at ${trade.youCanOffer.join(' and ')}`
+                `${stripUserSuffix(trade.team.name, 'Team')} is short at ${trade.youCanOffer.join(' and ')}`
               )}
             </span>
             <span className="text-xs text-slate-400">

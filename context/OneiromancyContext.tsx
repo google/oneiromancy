@@ -61,6 +61,7 @@ import {
   calculateHarmony,
   calculateSnakePick,
   clamp,
+  classifySpiritScoreTier,
   computeDraftScore,
   computeRosterHarmony,
   computeSpiritScore,
@@ -1193,14 +1194,7 @@ export const OneiromancyProvider: React.FC<OneiromancyProviderProps> = ({
             const avgDraft = Math.round(meanDr * 10) / 10;
 
             const comp = Math.round((avgSpirit * 0.4 + avgDraft * 0.3 + harmScore * 0.3) * 10) / 10;
-            const favTier: 'Favorable' | 'Harmonic' | 'Discordant' =
-              comp >= 85.0 ? 'Favorable' : comp >= 74.0 ? 'Harmonic' : 'Discordant';
-            const favLabel =
-              favTier === 'Favorable'
-                ? '✨ Favorable (Apex)'
-                : favTier === 'Harmonic'
-                  ? '⚖️ Harmonic (Stable)'
-                  : '⚠️ Discordant (At Risk)';
+            const { tier: favTier, badgeLabel: favLabel } = classifySpiritScoreTier(comp);
 
             return {
               ...t,

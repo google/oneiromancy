@@ -17,7 +17,7 @@
 
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useId, useRef, useState } from 'react';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import { CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
@@ -25,10 +25,12 @@ import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import {
   DEFAULT_CHAOS_LAMBDA,
   DEFAULT_ORACLE_WEIGHTS,
+  DIVINATION_PILLARS,
   starsVerdictLabel,
   haversineDistance,
   isPlayerOnByeWeek,
   normalizeOracleWeights,
+  stripUserSuffix,
 } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
 import {
@@ -40,7 +42,7 @@ import {
   starsScore,
   statsPoints,
 } from '@/lib/oracle';
-import { X, Sparkles, Compass, Shield, ArrowRightLeft } from 'lucide-react';
+import { X, Sparkles, Compass, Shield, ArrowRightLeft, ChevronDown } from 'lucide-react';
 
 type ModalHistoryEntry = {
   isOpen: boolean;
@@ -282,10 +284,16 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
   compareCandidates = null,
   activeWeek: propActiveWeek,
 }) => {
+  const rawContentId = useId();
+  const contentId = `roster-role-comp-content-${rawContentId.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+  const [isRoleCompOpen, setIsRoleCompOpen] = useState(true);
   const ctx = useOptionalOneiromancy();
   const [showRoster, setShowRoster] = useState(false);
   const comparisonKey = `${player?.id ?? ''}|${compareWith?.id ?? ''}|${(compareCandidates ?? []).map((c) => c.id).join(',')}`;
-  useEffect(() => setShowRoster(false), [comparisonKey]);
+  useEffect(() => {
+    setShowRoster(false);
+    setIsRoleCompOpen(true);
+  }, [comparisonKey, isOpen]);
   const modalLambda = ctx?.draftState?.settings?.chaos_lambda ?? DEFAULT_CHAOS_LAMBDA;
   const pillarWeights = normalizeOracleWeights(
     ctx?.draftState?.settings?.oracle_weights ?? DEFAULT_ORACLE_WEIGHTS,
@@ -506,7 +514,8 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
     if (isUserMine) return 'Roster';
     if (p.draft_status === 'available') return 'Free Agent';
     if (p.draft_status === 'drafted' || p.drafted_by) {
-      return p.drafted_by ? `Rostered (${p.drafted_by})` : 'Opponent';
+      const ownerLabel = stripUserSuffix(p.drafted_by);
+      return ownerLabel ? `Rostered (${ownerLabel})` : 'Rostered';
     }
     return defaultLabel;
   };
@@ -693,10 +702,10 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
     >
       <div
         onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
-        className="w-full max-w-2xl max-h-[90vh] overflow-y-auto rounded-t-2xl sm:rounded-2xl bg-[#161622] border border-purple-500/40 p-5 sm:p-6 shadow-[0_0_30px_rgba(109,40,217,0.3)] space-y-4"
+        className="w-full max-w-2xl max-h-[90vh] flex flex-col rounded-t-2xl sm:rounded-2xl bg-[#161622] border border-purple-500/40 shadow-[0_0_30px_rgba(109,40,217,0.3)] overflow-hidden"
       >
         {/* Modal Top Header */}
-        <div className="sticky top-0 z-10 bg-[#161622] flex justify-between items-start border-b border-white/10 pb-3 pt-1">
+        <div className="sticky top-0 z-10 flex-shrink-0 bg-[#161622] border-b border-white/10 px-5 sm:px-6 pt-5 pb-3 flex justify-between items-start">
           <div className="flex items-start gap-3 min-w-0">
             <PlayerHeadshot key={String(player.id)} player={player} size="lg" />
             <div className="space-y-1 min-w-0">
@@ -751,8 +760,10 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </button>
         </div>
 
-        {/* Strictly 3 Canonical Player Metrics: Stats, Oracle, Stars */}
-        <div className="grid grid-cols-3 gap-2.5 text-center font-mono">
+        {/* Scrollable Content Body */}
+        <div className="flex-1 min-h-0 overflow-y-auto p-5 sm:p-6 space-y-4 [&::-webkit-scrollbar-track]:bg-transparent [scrollbar-width:thin] [scrollbar-color:#242436_transparent]">
+          {/* Strictly 3 Canonical Player Metrics: Stats, Oracle, Stars */}
+          <div className="grid grid-cols-3 gap-2.5 text-center font-mono">
           <div
             className="p-3 rounded-xl bg-slate-950/80 border border-white/10"
             title={candidateMetrics.placeholder.hasPlaceholder ? candidateMetrics.placeholder.statsTooltipText : undefined}
@@ -824,27 +835,90 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </div>
         </div>
 
+        {/* 5 Divination Tiers Breakdown */}
+        <div className="space-y-2 p-3.5 rounded-xl bg-slate-950/90 border border-white/10 font-mono text-xs">
+          <span className="text-xs uppercase font-bold text-purple-300 tracking-wider flex items-center gap-1.5">
+            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
+            The 5 Divination Pillars
+          </span>
+
+          <div className="space-y-2 pt-1">
+            {DIVINATION_PILLARS.map((pillar) => (
+              <div key={pillar.key} className="space-y-1">
+                <div className="flex justify-between text-[11px]">
+                  <span className="text-slate-300">{pillar.name} ({pct(pillarWeights[pillar.key])})</span>
+                  <span className="text-white font-bold">{Number(breakdown[pillar.key] ?? 0).toFixed(1)}</span>
+                </div>
+                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
+                  <div
+                    className={`h-full ${pillar.color} transition-all duration-300`}
+                    style={{ width: `${Math.min(100, Math.max(0, Number(breakdown[pillar.key] ?? 0)))}%` }}
+                  />
+                </div>
+                <span className="text-[10px] text-slate-500 block">{pillar.desc}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* Astrocartography Stadium Coordinates */}
+        <div className="p-3.5 rounded-xl bg-slate-950/90 border border-white/10 font-mono text-xs space-y-2">
+          <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider flex items-center gap-1.5">
+            <Compass className="w-3.5 h-3.5 text-cyan-400" />
+            Astrocartography Geodesic Coordinates
+          </span>
+          <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
+            <div className="p-2 rounded bg-slate-900/80 border border-white/5">
+              <span className="text-slate-500 text-[9px] block uppercase">Birthplace</span>
+              <span className="text-slate-200 font-bold block">{birthplaceCoords.city}</span>
+              <span className="text-slate-400 text-[10px]">{birthplaceCoords.lat}° N, {Math.abs(birthplaceCoords.lon)}° W</span>
+            </div>
+            <div className="p-2 rounded bg-slate-900/80 border border-white/5">
+              <span className="text-slate-500 text-[9px] block uppercase">Stadium Venue</span>
+              <span className="text-slate-200 font-bold block">{stadiumCoords.venue}</span>
+              <span className="text-slate-400 text-[10px]">{stadiumCoords.lat}° N, {Math.abs(stadiumCoords.lon)}° W</span>
+            </div>
+          </div>
+          <div className="flex justify-between items-center text-[11px] pt-1 text-slate-400 border-t border-white/5">
+            <span>Geodesic Distance:</span>
+            <span className="text-cyan-300 font-bold">{geodesicDist.toLocaleString()} km ({meridianAlignment > 0 ? `+${meridianAlignment}` : meridianAlignment} pts)</span>
+          </div>
+        </div>
+
         {/* Roster Role Comparison / Multi-Candidate Comparison */}
         <div
           data-testid="roster-role-comparison"
           className="space-y-2.5 p-3.5 rounded-xl bg-slate-950/90 border border-purple-500/40 font-mono text-xs"
         >
           <div className="flex items-center justify-between flex-wrap gap-2">
-            <span className="text-xs uppercase font-bold text-purple-200 tracking-wider flex items-center gap-1.5">
+            <button
+              type="button"
+              onClick={() => setIsRoleCompOpen((v) => !v)}
+              aria-expanded={isRoleCompOpen}
+              aria-controls={contentId}
+              className="flex items-center gap-1.5 text-xs uppercase font-bold text-purple-200 tracking-wider hover:text-purple-100 transition-colors cursor-pointer rounded focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+            >
               <ArrowRightLeft className="w-3.5 h-3.5 text-purple-400" />
-              {isMultiCompare && !showRoster
-                ? `Comparing ${compareCandidates!.length} Selected Candidates`
-                : headToHead
-                ? `Head-to-head: ${player.name} vs. ${compareWith?.name}`
-                : isMine
-                ? `Role Comparison vs. Other ${player.position}s`
-                : `Role Comparison (${player.position})`}
-            </span>
+              <span>
+                {isMultiCompare && !showRoster
+                  ? `Comparing ${compareCandidates!.length} Selected Candidates`
+                  : headToHead
+                  ? `Head-to-head: ${player.name} vs. ${compareWith?.name}`
+                  : isMine
+                  ? `Role Comparison vs. Other ${player.position}s`
+                  : `Role Comparison (${player.position})`}
+              </span>
+              <ChevronDown
+                className={`w-3.5 h-3.5 text-purple-400 transition-transform duration-200 ${
+                  isRoleCompOpen ? 'rotate-180' : ''
+                }`}
+              />
+            </button>
             {isMultiCompare ? (
               <button
                 type="button"
                 onClick={() => setShowRoster((v) => !v)}
-                className="text-[10px] text-cyan-300 underline hover:text-cyan-200"
+                className="text-[10px] text-cyan-300 underline hover:text-cyan-200 cursor-pointer"
               >
                 {showRoster
                   ? `Back to ${compareCandidates!.length} Candidates`
@@ -854,7 +928,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowRoster((v) => !v)}
-                className="text-[10px] text-cyan-300 underline hover:text-cyan-200"
+                className="text-[10px] text-cyan-300 underline hover:text-cyan-200 cursor-pointer"
               >
                 {headToHead ? `Compare with all your ${player.position}s` : `Back to ${compareWith.name}`}
               </button>
@@ -866,6 +940,8 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
               </span>
             )}
           </div>
+
+          <div id={contentId} className={isRoleCompOpen ? 'space-y-2 pt-1' : 'hidden space-y-2 pt-1'}>
 
           {isMultiCompare && !showRoster ? (
             <div
@@ -1213,11 +1289,11 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         className="p-1.5 rounded bg-slate-950/70"
                         title={
                           leftMetrics.placeholder.hasPlaceholder || rightMetrics.placeholder.hasPlaceholder
-                            ? `Combined Divinity / Oracle score comparison (uses average projection placeholder for ${[
+                            ? `Combined Oracle score comparison (uses average projection placeholder for ${[
                                 leftMetrics.placeholder.hasPlaceholder ? leftPlayer.name : null,
                                 rightMetrics.placeholder.hasPlaceholder ? rightPlayer.name : null,
                               ].filter(Boolean).join(', ')})`
-                            : 'Combined Divinity / Oracle score comparison'
+                            : 'Combined Oracle score comparison'
                         }
                       >
                         <span className="text-[8px] text-slate-500 uppercase block">
@@ -1251,86 +1327,6 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
               })}
             </div>
           )}
-        </div>
-
-        {/* 5 Divination Tiers Breakdown */}
-        <div className="space-y-2 p-3.5 rounded-xl bg-slate-950/90 border border-white/10 font-mono text-xs">
-          <span className="text-xs uppercase font-bold text-purple-300 tracking-wider flex items-center gap-1.5">
-            <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-            The 5 Divination Pillars
-          </span>
-
-          <div className="space-y-2 pt-1">
-            {[
-              {
-                name: `Celestial Transits (${pct(pillarWeights.celestial)})`,
-                val: breakdown.celestial,
-                color: 'bg-cyan-400',
-                desc: 'Planetary alignments & natal transit aspects',
-              },
-              {
-                name: `Stadium Feng Shui (${pct(pillarWeights.geomantic)})`,
-                val: breakdown.geomantic,
-                color: 'bg-emerald-400',
-                desc: 'Magnetic venue orientation & dome enclosure atmosphere',
-              },
-              {
-                name: `Jersey Gematria (${pct(pillarWeights.numeric)})`,
-                val: breakdown.numeric,
-                color: 'bg-purple-400',
-                desc: 'Life path root resonance & master number harmony',
-              },
-              {
-                name: `Squad Alchemy (${pct(pillarWeights.harmony)})`,
-                val: breakdown.harmony,
-                color: 'bg-amber-400',
-                desc: 'Western Trine harmony & 3.0x correlation stack bonus',
-              },
-              {
-                name: `Tarot & I-Ching (${pct(pillarWeights.oracular)})`,
-                val: breakdown.oracular,
-                color: 'bg-rose-400',
-                desc: 'Major Arcana archetype & hexagram resonance',
-              },
-            ].map((tier) => (
-              <div key={tier.name} className="space-y-1">
-                <div className="flex justify-between text-[11px]">
-                  <span className="text-slate-300">{tier.name}</span>
-                  <span className="text-white font-bold">{Number(tier.val ?? 0).toFixed(1)}</span>
-                </div>
-                <div className="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
-                  <div
-                    className={`h-full ${tier.color} transition-all duration-300`}
-                    style={{ width: `${Math.min(100, Math.max(0, Number(tier.val ?? 0)))}%` }}
-                  />
-                </div>
-                <span className="text-[10px] text-slate-500 block">{tier.desc}</span>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* Astrocartography Stadium Coordinates */}
-        <div className="p-3.5 rounded-xl bg-slate-950/90 border border-white/10 font-mono text-xs space-y-2">
-          <span className="text-xs uppercase font-bold text-cyan-400 tracking-wider flex items-center gap-1.5">
-            <Compass className="w-3.5 h-3.5 text-cyan-400" />
-            Astrocartography Geodesic Coordinates
-          </span>
-          <div className="grid grid-cols-2 gap-2 text-[11px] pt-1">
-            <div className="p-2 rounded bg-slate-900/80 border border-white/5">
-              <span className="text-slate-500 text-[9px] block uppercase">Birthplace</span>
-              <span className="text-slate-200 font-bold block">{birthplaceCoords.city}</span>
-              <span className="text-slate-400 text-[10px]">{birthplaceCoords.lat}° N, {Math.abs(birthplaceCoords.lon)}° W</span>
-            </div>
-            <div className="p-2 rounded bg-slate-900/80 border border-white/5">
-              <span className="text-slate-500 text-[9px] block uppercase">Stadium Venue</span>
-              <span className="text-slate-200 font-bold block">{stadiumCoords.venue}</span>
-              <span className="text-slate-400 text-[10px]">{stadiumCoords.lat}° N, {Math.abs(stadiumCoords.lon)}° W</span>
-            </div>
-          </div>
-          <div className="flex justify-between items-center text-[11px] pt-1 text-slate-400 border-t border-white/5">
-            <span>Geodesic Distance:</span>
-            <span className="text-cyan-300 font-bold">{geodesicDist.toLocaleString()} km ({meridianAlignment > 0 ? `+${meridianAlignment}` : meridianAlignment} pts)</span>
           </div>
         </div>
 
@@ -1363,6 +1359,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                     : 'ROSTERED'}
             </strong>
           </div>
+        </div>
         </div>
       </div>
     </div>

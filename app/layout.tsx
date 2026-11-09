@@ -17,6 +17,7 @@
 import type { Metadata, Viewport } from 'next';
 import { Playfair_Display, Space_Mono } from 'next/font/google';
 import './globals.css';
+import StarfieldBackground from '../components/common/StarfieldBackground';
 
 const playfair = Playfair_Display({
   subsets: ['latin'],
@@ -55,6 +56,7 @@ export default function RootLayout({
   return (
     <html lang="en" className={`${playfair.variable} ${spaceMono.variable}`}>
       <body className="bg-[#131318] text-slate-100 font-sans antialiased min-h-screen">
+        <StarfieldBackground />
         {children}
       </body>
     </html>

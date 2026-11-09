@@ -16,11 +16,17 @@
 
 'use client';
 
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import UserAvatar from '@/components/common/UserAvatar';
 import { resetRateLimit } from '@/lib/sleeper';
-import { X, Settings, RefreshCw, Globe, Sparkles, ExternalLink } from 'lucide-react';
+import { X, Settings, RefreshCw, Globe, Sparkles, ExternalLink, Compass } from 'lucide-react';
+import {
+  getOrientationPermissionStatus,
+  isOrientationPermissionRequired,
+  requestOrientationPermission,
+  type OrientationPermissionState,
+} from '@/components/common/StarfieldBackground';
 
 export interface SettingsDrawerProps {
   isOpen: boolean;
@@ -80,6 +86,51 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   const [isFetchingLeagues, setIsFetchingLeagues] = useState<boolean>(false);
   const [manualLeagueId, setManualLeagueId] = useState<string>('');
   const [isEditing, setIsEditing] = useState<boolean>(false);
+  const [tiltPermission, setTiltPermission] = useState<OrientationPermissionState>(() =>
+    getOrientationPermissionStatus()
+  );
+
+  // Sync orientation permission status and listen for dynamic permission changes
+  useEffect(() => {
+    if (!isOpen) return;
+    setTiltPermission(getOrientationPermissionStatus());
+
+    const handlePermissionChange = (e: Event) => {
+      const customEvent = e as CustomEvent<{ state: OrientationPermissionState }>;
+      if (customEvent.detail?.state) {
+        setTiltPermission(customEvent.detail.state);
+      }
+    };
+
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      window.addEventListener(
+        'oneiromancy:orientation-permission-changed',
+        handlePermissionChange as EventListener
+      );
+      return () => {
+        window.removeEventListener(
+          'oneiromancy:orientation-permission-changed',
+          handlePermissionChange as EventListener
+        );
+      };
+    }
+  }, [isOpen]);
+
+  const [isRequestingOrientation, setIsRequestingOrientation] = useState<boolean>(false);
+  const orientationRequestInFlightRef = useRef<boolean>(false);
+
+  const handleRequestOrientation = async () => {
+    if (orientationRequestInFlightRef.current || isRequestingOrientation) return;
+    orientationRequestInFlightRef.current = true;
+    setIsRequestingOrientation(true);
+    try {
+      const newState = await requestOrientationPermission();
+      setTiltPermission(newState);
+    } finally {
+      orientationRequestInFlightRef.current = false;
+      setIsRequestingOrientation(false);
+    }
+  };
 
   // Detect very first browser launch when no Sleeper username is stored yet
   useEffect(() => {
@@ -560,6 +611,51 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               }`}
             />
           </button>
+        </div>
+
+        {/* Celestial Motion Tilt / Accelerometer Parallax Section */}
+        <div
+          data-testid="celestial-tilt-section"
+          className="p-3.5 rounded-xl bg-slate-900/70 border border-white/10 space-y-2.5 font-mono text-xs"
+        >
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-1.5 font-semibold text-slate-200">
+              <Compass className="w-3.5 h-3.5 text-cyan-400" />
+              <span>Celestial Motion Tilt</span>
+            </div>
+            <span
+              data-testid="celestial-tilt-status-badge"
+              className={`px-2 py-0.5 rounded-full text-[10px] font-bold ${
+                tiltPermission !== 'unsupported'
+                  ? 'bg-emerald-950/80 text-emerald-300 border border-emerald-500/40'
+                  : 'bg-slate-800 text-slate-400 border border-slate-700'
+              }`}
+            >
+              {tiltPermission !== 'unsupported' ? 'Active' : 'Autonomous Drift'}
+            </span>
+          </div>
+
+          <p className="text-[10px] text-slate-400 font-sans leading-relaxed">
+            {tiltPermission !== 'unsupported'
+              ? 'Motion tilt parallax is active by default. Autonomous celestial drift continues automatically if sensor events are unavailable.'
+              : 'Autonomous celestial drift is active. Motion sensors are disabled or unavailable on this device.'}
+          </p>
+
+          {tiltPermission !== 'unsupported' &&
+            tiltPermission !== 'granted' &&
+            isOrientationPermissionRequired() && (
+              <button
+                type="button"
+                id="enable-orientation-tilt-btn"
+                data-testid="enable-orientation-tilt-btn"
+                onClick={handleRequestOrientation}
+                disabled={isRequestingOrientation}
+                className="w-full py-1.5 px-3 rounded-lg bg-slate-900/90 hover:bg-slate-800 text-slate-300 text-[11px] font-mono border border-white/10 transition-all disabled:opacity-50"
+                aria-label="Enable Device Orientation Permission"
+              >
+                {isRequestingOrientation ? 'Requesting...' : 'Enable iOS Motion Access'}
+              </button>
+            )}
         </div>
 
         {/* Drawer Footer Actions */}

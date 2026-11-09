@@ -101,9 +101,9 @@ export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
     key: 'celestial',
     name: 'Celestial Transits',
     label: 'Celestial Transits',
-    desc: 'Planetary alignments & natal transit aspects',
-    whatItMeasures: 'Game-day sun, moon, Mars, and Jupiter angles against a player’s birth chart.',
-    whyItMatters: 'Trines and conjunctions boost explosive ceiling; hard squares signal fatigue or turnover risk.',
+    desc: 'Sun-sign cosmic profile & transit alignment',
+    whatItMeasures: 'Player sun-sign cosmic profile and weekly astrological transit alignment.',
+    whyItMatters: 'Harmonious transits boost explosive scoring ceiling; conflicting aspects signal turnover and fatigue risk.',
     color: 'bg-cyan-400',
     defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.celestial * 100),
   },
@@ -111,9 +111,9 @@ export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
     key: 'geomantic',
     name: 'Stadium Feng Shui',
     label: 'Stadium Feng Shui',
-    desc: 'Magnetic venue orientation & dome enclosure atmosphere',
-    whatItMeasures: 'Stadium compass axis (N-S vs. E-W), dome vs. open-air roof, and travel distance.',
-    whyItMatters: 'Controlled domes and favorable field alignments lift passing efficiency and kicking accuracy.',
+    desc: 'Travel distance, stadium compass axis, roof, and surface',
+    whatItMeasures: 'Travel distance (60%) paired with a 40% stadium feng-shui sub-score for axis (N-S vs. E-W), roof (open, retractable, dome), and surface (grass vs. turf).',
+    whyItMatters: 'Shorter trips raise the travel component (60%); the 40% venue sub-score favors N-S alignment (+15 vs -10 E-W), open sky (+10 open, 0 retractable, +5 dome), and grass (+10 vs -5 turf).',
     color: 'bg-emerald-400',
     defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.geomantic * 100),
   },
@@ -121,9 +121,9 @@ export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
     key: 'numeric',
     name: 'Jersey Gematria',
     label: 'Jersey Gematria',
-    desc: 'Life path root numbers & master vibration resonance',
-    whatItMeasures: 'Pythagorean birthdate life-path number (1-9, 11, 22) paired with jersey number.',
-    whyItMatters: 'Master numbers (11, 22) and aligned jersey roots correlate with clutch red-zone usage.',
+    desc: 'Pythagorean numerology of birth date digits and jersey number',
+    whatItMeasures: 'Pythagorean numerology combining birth date digits and season-year alignment with uniform jersey numbers.',
+    whyItMatters: 'Master life-path numbers (11, 22, 33: +15), season-year alignment (up to +20), and harmonious life-path to jersey totals score higher.',
     color: 'bg-purple-400',
     defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.numeric * 100),
   },
@@ -131,9 +131,9 @@ export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
     key: 'harmony',
     name: 'Squad Alchemy',
     label: 'Squad Alchemy',
-    desc: 'Western Trine elemental harmony & 3.0x stack bonus',
+    desc: 'Same-team QB + WR/TE stacks and shared zodiac elements',
     whatItMeasures: 'Same-team QB + WR/TE stacks and 3+ starters sharing Fire, Earth, Air, or Water.',
-    whyItMatters: 'Correlated passing stacks and balanced elements multiply upside when a game shoots out.',
+    whyItMatters: 'Rewards game-day passing correlations and balanced squad synergy.',
     color: 'bg-amber-400',
     defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.harmony * 100),
   },
@@ -141,9 +141,9 @@ export const DIVINATION_PILLARS: readonly DivinationPillarMeta[] = [
     key: 'oracular',
     name: 'Tarot & Oracular',
     label: 'Tarot & Oracular',
-    desc: 'Major Arcana archetype alignments & hexagram harmony',
-    whatItMeasures: 'Player’s Major Arcana card and weekly I-Ching hexagram momentum state.',
-    whyItMatters: 'Separates surging breakout roles (The Chariot, The Sun) from volatile snap-share traps.',
+    desc: 'Major Arcana tarot card omens and archetype alignment',
+    whatItMeasures: 'Major Arcana tarot card omens and archetype vibrations drawn for each player.',
+    whyItMatters: 'Separates surging breakout roles (The Chariot, The Sun) from volatile lineup traps.',
     color: 'bg-rose-400',
     defaultVal: Math.round(DEFAULT_ORACLE_WEIGHTS.oracular * 100),
   },
@@ -1191,10 +1191,9 @@ export function calculateTeamCelestialMetrics(
       (spiritScore * 0.4 + draftScore * 0.3 + harmonyScore * 0.3) * 10,
     ) / 10;
 
-  // A team's rating is its SpiritScore tier, matching the on-screen
-  // "SpiritScore & Harmony Calibration Spectrum" legend (classifySpiritScoreTier):
-  // >= 85 Favorable, >= 75 Harmonic, else Discordant.
-  const tierInfo = classifySpiritScoreTier(spiritScore);
+  // Classify the team's composite score against the calibration spectrum
+  // (>= 85 Favorable, >= 75 Harmonic, else Discordant) so team ratings and badges match.
+  const tierInfo = classifySpiritScoreTier(compositeScore);
   const verdict = tierInfo.badgeLabel;
   const tier: 'Favorable' | 'Harmonic' | 'Volatile' | 'Discordant' = tierInfo.tier;
 
@@ -1511,3 +1510,15 @@ export function recomputeDraftState(
     trade_proposals: recomputedTrades,
   };
 }
+
+/** Removes internal `(You)` user-team markers before UI display. */
+export function stripUserSuffix(name?: string | null, fallback = ''): string {
+  const cleaned = (name ?? '').replace(/\s*\(You\)\s*/gi, ' ').trim();
+  return cleaned || fallback;
+}
+
+/** Identifies user-owned competitor teams regardless of suffix casing. */
+export function hasUserSuffix(name?: string | null): boolean {
+  return /\(You\)/i.test(name ?? '');
+}
+

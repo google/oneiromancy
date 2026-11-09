@@ -22,7 +22,7 @@ import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import { CosmicPlayer } from '@/types/oneiromancy';
 import { User } from 'lucide-react';
-import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, stripUserSuffix } from '@/lib/scoring';
 import { getSeasonContext } from '@/lib/sleeper';
 import { MAX_COMPARE_PLAYERS, useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import {
@@ -202,7 +202,7 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
           )}
           {!isAvailable && !isMyTeam && (
             <span className="text-[9px] px-1.5 py-0.5 rounded border border-cyan-500/30 bg-slate-900 text-cyan-200">
-              {player.drafted_by || tradeHint?.partnerName || 'Rostered'}
+              {stripUserSuffix(player.drafted_by) || stripUserSuffix(tradeHint?.partnerName) || 'Rostered'}
             </span>
           )}
           {waiverHint && (
@@ -212,7 +212,7 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
           )}
           {tradeHint && (
             <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-950/70 text-purple-200 border border-purple-500/40">
-              {tradeHint.partnerName}
+              {stripUserSuffix(tradeHint.partnerName)}
               {tradeHint.give?.name || tradeHint.giveName
                 ? ` • Send ${tradeHint.give?.name || tradeHint.giveName}`
                 : ''}

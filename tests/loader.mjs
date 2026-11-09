@@ -63,9 +63,10 @@ export function ensureCompiled() {
       path.join(clientRoot, 'node_modules/typescript/bin/tsc'),
       ...(process.env.TEST_TMPDIR
         ? [path.join(process.env.TEST_TMPDIR, 'node_modules/typescript/bin/tsc')]
-        : []),
-      `/tmp/oneiromancy_runner_${user}/node_modules/typescript/bin/tsc`,
-      '/google/src/files/head/depot/google3/third_party/javascript/node_modules/typescript/v6_0_3/lib/tsc.js',
+        : [
+            `/tmp/oneiromancy_runner_${user}/node_modules/typescript/bin/tsc`,
+            '/google/src/files/head/depot/google3/third_party/javascript/node_modules/typescript/v6_0_3/lib/tsc.js',
+          ]),
     ];
     const tscPath = tscPaths.find((p) => fs.existsSync(p));
     if (!tscPath) {
@@ -84,7 +85,15 @@ function getFallbackPackageBases() {
   const user = process.env.USER || process.env.LOGNAME || 'default';
   const bases = [path.resolve(clientRoot, 'package.json')];
   if (process.env.TEST_TMPDIR) {
-    bases.push(path.join(process.env.TEST_TMPDIR, 'package.json'));
+    const resolvedTmp = path.resolve(process.env.TEST_TMPDIR);
+    bases.push(path.join(resolvedTmp, 'package.json'));
+    if (process.env.ONEIROMANCY_SANDBOX_DIR) {
+      const resolvedSandbox = path.resolve(process.env.ONEIROMANCY_SANDBOX_DIR);
+      if (resolvedSandbox === resolvedTmp || resolvedSandbox.startsWith(resolvedTmp + path.sep)) {
+        bases.push(path.join(resolvedSandbox, 'package.json'));
+      }
+    }
+    return bases;
   }
   if (process.env.ONEIROMANCY_SANDBOX_DIR) {
     bases.push(path.join(process.env.ONEIROMANCY_SANDBOX_DIR, 'package.json'));

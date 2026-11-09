@@ -20,13 +20,15 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
+import PowerupStars from '@/components/common/PowerupStars';
 import UserAvatar from '@/components/common/UserAvatar';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import type { InspectTarget } from '@/components/common/PlayerLink';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import { mockMatchupWeeks, mockPlayerFavorabilities, mockTeamComparison, mockWeeklyMatchup } from '@/lib/mockData';
-import { DEFAULT_CHAOS_LAMBDA, calculateWinProbability, starsVerdictLabel } from '@/lib/scoring';
+import { DEFAULT_CHAOS_LAMBDA, calculateWinProbability, starsVerdictLabel, stripUserSuffix } from '@/lib/scoring';
 import { TONE_PILL, computeLineupCheck, currentWeekOracleScore, favorabilityTone, oraclePlaceholderInfo, oracleScore, resolveActiveWeek, starsScore, statsPoints } from '@/lib/oracle';
 import { kickoffLabel, moonAt, neutralVenueCoords, planetaryHourAt, teamGame } from '@/lib/nflGames';
 import { buildStarterPairs, deriveEligiblePositions, deriveWeeklyMatchup, extractStartingSlots, formatStarterRole, getSeasonContext, isNFLByeWeek, isPlayerOnByeWeek } from '@/lib/sleeper';
@@ -198,10 +200,11 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     const found = matchupWeeks.find((w) => w.week === selectedWeek);
     if (found) return found;
     const activeWk = context.draftState?.weekly_matchup?.week || 2;
+    const rawOppName = stripUserSuffix(matchupData.opponent_team?.team_name);
     return {
       week: selectedWeek,
-      opponent_name: matchupData.opponent_team?.team_name || 'Opponent',
-      opponent_owner: matchupData.opponent_team?.owner_name || 'Opponent',
+      opponent_name: rawOppName || 'Matchup',
+      opponent_owner: matchupData.opponent_team?.owner_name?.trim() || 'Manager',
       status: selectedWeek === activeWk ? ('active' as const) : selectedWeek < activeWk ? ('completed' as const) : ('upcoming' as const),
       date_range: matchupData.date_range || `Week ${selectedWeek}`,
     };
@@ -212,8 +215,8 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   const userHarmony = Number(teamComparison.user_harmony_score ?? matchupData.user_team?.harmony_score ?? (isLiveMode ? 0 : 85.0));
   const oppHarmony = Number(teamComparison.opponent_harmony_score ?? matchupData.opponent_team?.harmony_score ?? (isLiveMode ? 0 : 78.0));
   const hasMatchupMetrics = !isLiveMode || (matchupData.user_team?.projected_points !== undefined && matchupData.opponent_team?.projected_points !== undefined);
-  const userTeamName = matchupData.user_team?.team_name || 'Your Team';
-  const oppTeamName = matchupData.opponent_team?.team_name || 'Opponent';
+  const userTeamName = stripUserSuffix(matchupData.user_team?.team_name, 'Team');
+  const oppTeamName = stripUserSuffix(matchupData.opponent_team?.team_name, 'Matchup');
 
   const rawRosterPositions = context.draftState?.roster_positions || context.draftState?.settings?.roster_positions;
   const leagueEligiblePositions = useMemo(() => deriveEligiblePositions(rawRosterPositions, context.draftState?.my_roster), [rawRosterPositions, context.draftState?.my_roster]);
@@ -231,17 +234,20 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
   const byePlayerIds = useMemo(() => {
     const ids = new Set<string>();
-    if (!isNFLByeWeek(selectedWeek)) return ids;
+    const nflByeActive = isNFLByeWeek(selectedWeek);
     const season = getSeasonContext();
     for (const fav of playerFavorabilities) {
       const bp = boardMap.get(String(fav.player_id));
       const rp = rosterPlayerById.get(String(fav.player_id));
       const team = (fav.nfl_team || fav.team || bp?.team || rp?.team || '').toUpperCase();
-      if (
-        isPlayerOnByeWeek(selectedWeek, fav.bye_week || bp?.bye_week || rp?.bye_week, team, season?.byeWeeks) ||
+      const explicitBye =
         fav.game_kickoff === 'Bye week' ||
         fav.game_kickoff === 'No game this week (Bye)' ||
-        fav.stadium?.stadium_name === 'No game this week'
+        fav.stadium?.stadium_name === 'No game this week';
+      if (
+        explicitBye ||
+        (nflByeActive &&
+          isPlayerOnByeWeek(selectedWeek, fav.bye_week || bp?.bye_week || rp?.bye_week, team, season?.byeWeeks))
       ) {
         ids.add(String(fav.player_id));
       }
@@ -474,15 +480,6 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     );
   }, [starterPairs, positionFilter]);
 
-  const userStartersCount = useMemo(
-    () => displayedPairs.filter((p) => Boolean(p.user)).length,
-    [displayedPairs],
-  );
-  const oppStartersCount = useMemo(
-    () => displayedPairs.filter((p) => Boolean(p.opp)).length,
-    [displayedPairs],
-  );
-
   const kickoffSky = useMemo(() => {
     const sampleTeam = playerFavorabilities[0]?.nfl_team || playerFavorabilities[0]?.team;
     const schedGame = sampleTeam ? teamGame(selectedWeek, sampleTeam) : undefined;
@@ -524,6 +521,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     isFavoredInMatchup: boolean = false,
   ) => {
     const isOnBye = byePlayerIds.has(String(player.player_id));
+    const isCardDominant = isFavoredInMatchup && !isOnBye;
     const cp = toCosmicPlayer(player, isOnBye);
     const placeholder = oraclePlaceholderInfo(cp, selectedWeek);
 
@@ -551,67 +549,111 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     const stadiumDisplay = isByeStadium
       ? 'No game this week (Bye)'
       : `${player.stadium?.stadium_name || 'NFL Stadium'}${player.stadium?.roof_type && player.stadium.roof_type !== '-' ? ` (${player.stadium.roof_type})` : ''}`;
+    const kickoffDisplay = isByeStadium
+      ? 'Bye week'
+      : (player.game_kickoff || 'Time TBA');
 
     return (
       <div
         key={`${selectedWeek}-${player.is_user_team ? 'u' : 'o'}-${player.player_id}-${idx}`}
         data-testid={!isMutedBench ? `matchup-starter-card-${player.player_id}` : undefined}
+        data-dominant={isCardDominant ? 'true' : 'false'}
         onClick={() => openFavPlayer(player, swap?.playerIn ?? (vsStarter ? toCosmicPlayer(vsStarter) : null))}
-        className={`p-3 rounded-xl border-2 transition-all cursor-pointer ${
+        className={`p-2.5 rounded-xl border-2 transition-all cursor-pointer h-full flex flex-col justify-between gap-1.5 ${
           isOnBye
             ? 'opacity-50 grayscale bg-slate-950/70 border-slate-700/50 hover:opacity-75'
             : isMutedBench
               ? 'opacity-75 bg-slate-950/50 border-white/10 hover:opacity-100'
               : player.is_user_team
-                ? `bg-purple-950/25 ${isFavoredInMatchup ? 'border-purple-400 ring-1 ring-purple-400/50 shadow-[0_0_12px_rgba(168,85,247,0.3)]' : 'border-purple-500/60'} hover:border-purple-400`
-                : `bg-slate-900/70 ${isFavoredInMatchup ? 'border-cyan-400 ring-1 ring-cyan-400/50 shadow-[0_0_12px_rgba(6,182,212,0.3)]' : 'border-cyan-500/40'} hover:border-cyan-400/70`
+                ? 'bg-purple-950/25 border-purple-500/60 hover:border-purple-400'
+                : 'bg-slate-900/70 border-cyan-500/40 hover:border-cyan-400/70'
         }`}
       >
-        <div className="flex items-center justify-between gap-2">
-          <div className="flex items-center gap-2.5 min-w-0 flex-1">
-            <PlayerHeadshot player={{ id: player.player_id, name: player.player_name, team: player.nfl_team || player.team, position: player.position }} size="sm" />
-            <div data-testid="matchup-card-text-col" className="min-w-0 flex-1 space-y-0.5">
-              <div className="flex items-center gap-1.5 min-w-0">
-                <PositionalBadge position={player.position} size="sm" depth={player.depth_chart_order ?? cp.depth_chart_order} />
-                <span className="font-bold text-sm text-slate-100 truncate">{player.player_name}</span>
+        <div className={`flex items-center justify-between gap-2 min-w-0 ${!player.is_user_team ? 'flex-row-reverse' : ''}`}>
+          <div className={`flex items-center gap-2.5 sm:gap-3 min-w-0 flex-1 ${!player.is_user_team ? 'flex-row-reverse text-right' : ''}`}>
+            <PlayerHeadshot
+              player={{ id: player.player_id, name: player.player_name, team: player.nfl_team || player.team, position: player.position }}
+              size="matchup"
+              className="border-white/15 shadow-sm"
+            />
+            <div data-testid="matchup-card-text-col" className={`min-w-0 flex-1 space-y-1 ${!player.is_user_team ? 'text-right' : ''}`}>
+              <div className={`flex items-center gap-1.5 sm:gap-2 min-w-0 ${!player.is_user_team ? 'justify-end' : ''}`}>
+                <PositionalBadge
+                  position={player.position}
+                  size="md"
+                  className="shrink-0 sm:text-sm sm:px-2.5 sm:py-0.5 sm:font-bold"
+                  depth={player.depth_chart_order ?? cp.depth_chart_order}
+                />
+                <span
+                  title={player.player_name}
+                  className="font-bold text-base sm:text-lg leading-tight text-slate-100 truncate"
+                >
+                  {player.player_name}
+                </span>
               </div>
-              <div className="flex items-center gap-1.5 text-[10px] font-mono text-slate-400 whitespace-nowrap">
-                <span>{player.nfl_team || player.team || 'FA'} · Bye {cp.bye_week || '-'}</span>
-                {isFavoredInMatchup && (
-                  <span data-testid="player-favored-badge" className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-emerald-950/80 text-emerald-300 border border-emerald-500/40 inline-flex items-center gap-1 shadow-sm whitespace-nowrap" title="Favored in this starting matchup based on Oracle rating.">
-                    <Sparkles className="w-2.5 h-2.5 text-emerald-400" />
-                    <span>FAVORED</span>
-                  </span>
-                )}
+              <div className={`flex items-center gap-1.5 text-xs sm:text-[13px] font-mono text-slate-300 min-w-0 overflow-hidden ${!player.is_user_team ? 'justify-end' : ''}`}>
+                <span
+                  title={`${player.nfl_team || player.team || 'FA'} · Bye ${cp.bye_week || '-'}`}
+                  className="truncate"
+                >
+                  {player.nfl_team || player.team || 'FA'} · Bye {cp.bye_week || '-'}
+                </span>
                 {isOnBye && (
-                  <span title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : `On bye in Week ${selectedWeek} - 0.0 projected points`} className="inline-flex items-center gap-1.5 whitespace-nowrap">
-                    <span className="text-[9px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-500/50">
+                  <span title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : `On bye in Week ${selectedWeek} - 0.0 projected points`} className="inline-flex items-center gap-1 whitespace-nowrap shrink-0">
+                    <span className="text-[10px] font-mono font-bold uppercase px-1.5 py-0.5 rounded bg-amber-950/90 text-amber-300 border border-amber-500/50">
                       {`BYE WK ${cp.bye_week || selectedWeek}`}
                     </span>
-                    <span className="text-[10px] font-mono text-slate-500">· On Bye</span>
+                    <span className="text-[11px] font-mono text-slate-400">· On Bye</span>
                   </span>
                 )}
               </div>
             </div>
           </div>
 
-          {/* Strictly the 3 Canonical Player Judgment Metrics */}
-          <div className="flex items-center gap-1.5 shrink-0 font-mono text-right">
+          {/* Hierarchical Node Tree: Stats & Stars feeding upward into Oracle */}
+          <div
+            data-testid="player-oracle-tree"
+            role="group"
+            aria-label={`Player judgment synthesis tree for ${player.player_name}`}
+            className="shrink-0 flex flex-col items-center w-[104px] sm:w-[112px] font-mono select-none pt-0.5"
+          >
             <div
-              className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-white/5"
-              title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : 'Baseline projected points'}
+              data-testid="oracle-node"
+              title={
+                isCardDominant
+                  ? placeholder.hasPlaceholder
+                    ? `${placeholder.tooltipText} (Matchup leader)`
+                    : `Matchup Leader: ${oracle.toFixed(1)} Oracle (dominant score)`
+                  : placeholder.hasPlaceholder
+                  ? placeholder.tooltipText
+                  : 'Combined Oracle Score (Stats + Stars)'
+              }
+              className={`relative w-[88px] sm:w-[94px] px-1.5 py-0.5 rounded-lg border text-center transition-all ${
+                isCardDominant
+                  ? player.is_user_team
+                    ? 'bg-purple-900/75 border-purple-300 text-white shadow-[0_0_16px_rgba(168,85,247,0.85)] ring-1 ring-purple-300/70'
+                    : 'bg-cyan-900/75 border-cyan-300 text-white shadow-[0_0_16px_rgba(6,182,212,0.85)] ring-1 ring-cyan-300/70'
+                  : 'bg-slate-950/90 border-purple-500/30 text-purple-200'
+              }`}
             >
-              <span className="text-[8px] text-slate-500 block uppercase">Stats</span>
-              <span className="text-xs font-bold text-cyan-300 tabular-nums">
-                {Math.round(stats * 100) % 10 === 0 ? stats.toFixed(1) : stats.toFixed(2)}
+              {isCardDominant && (
+                <PowerupStars
+                  seedKey={`${selectedWeek}-${player.player_id}-${idx}`}
+                  isUserTeam={Boolean(player.is_user_team)}
+                />
+              )}
+              <span
+                className={`text-[8px] block uppercase tracking-wider leading-tight relative z-[1] ${
+                  isCardDominant
+                    ? player.is_user_team
+                      ? 'text-purple-100 font-bold'
+                      : 'text-cyan-100 font-bold'
+                    : 'text-purple-300/80'
+                }`}
+              >
+                Oracle
               </span>
-            </div>
-            <div
-              className="min-w-[46px] px-2 py-1 rounded bg-slate-950/80 border border-purple-500/30"
-              title={placeholder.hasPlaceholder ? placeholder.tooltipText : 'Combined Divinity / Oracle Score'}
-            >
-              <span className="text-[8px] text-purple-300/80 block uppercase">Oracle</span>
-              <span className="text-xs font-bold text-purple-200 tabular-nums">
+              <span className="text-xs font-bold tabular-nums leading-tight relative z-[1]">
                 {oracle.toFixed(1)}
                 {placeholder.hasPlaceholder && (
                   <span
@@ -624,30 +666,104 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 )}
               </span>
             </div>
-            <div
-              className={`min-w-[42px] px-2 py-1 rounded border ${TONE_PILL[tone]}`}
-              title={placeholder.hasPlaceholder ? placeholder.tooltipText : starsVerdictLabel(stars)}
+
+            <svg
+              data-testid="oracle-tree-branches"
+              viewBox="0 0 100 16"
+              preserveAspectRatio="none"
+              aria-hidden="true"
+              className="w-full h-2.5 overflow-visible pointer-events-none"
             >
-              <span className="text-[8px] opacity-75 block uppercase">Stars</span>
-              <span className="text-xs font-bold tabular-nums">
-                {stars.toFixed(0)}
-              </span>
+              <path
+                d="M 25 16 L 25 8 L 46 8 L 46 2"
+                fill="none"
+                stroke="currentColor"
+                vectorEffect="non-scaling-stroke"
+                strokeWidth={isCardDominant ? '1.75' : '1.25'}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={isCardDominant ? 'text-cyan-300' : 'text-cyan-500/60'}
+              />
+              <path
+                d="M 43 4.5 L 46 1.5 L 49 4.5"
+                fill="none"
+                stroke="currentColor"
+                vectorEffect="non-scaling-stroke"
+                strokeWidth={isCardDominant ? '1.75' : '1.25'}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={isCardDominant ? 'text-cyan-300' : 'text-cyan-500/60'}
+              />
+              <path
+                d="M 75 16 L 75 8 L 54 8 L 54 2"
+                fill="none"
+                stroke="currentColor"
+                vectorEffect="non-scaling-stroke"
+                strokeWidth={isCardDominant ? '1.75' : '1.25'}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={isCardDominant ? 'text-purple-300' : 'text-purple-400/60'}
+              />
+              <path
+                d="M 51 4.5 L 54 1.5 L 57 4.5"
+                fill="none"
+                stroke="currentColor"
+                vectorEffect="non-scaling-stroke"
+                strokeWidth={isCardDominant ? '1.75' : '1.25'}
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className={isCardDominant ? 'text-purple-300' : 'text-purple-400/60'}
+              />
+            </svg>
+
+            <div className="grid grid-cols-2 gap-1 w-full">
+              <div
+                data-testid="stats-node"
+                className="px-1 py-0.5 rounded bg-slate-950/80 border border-cyan-500/20 text-center"
+                title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : 'Baseline projected points'}
+              >
+                <span className="text-[7px] text-slate-500 block uppercase leading-none">Stats</span>
+                <span className="text-[11px] font-bold text-cyan-300 tabular-nums leading-tight">
+                  {Math.round(stats * 100) % 10 === 0 ? stats.toFixed(1) : stats.toFixed(2)}
+                </span>
+              </div>
+              <div
+                data-testid="stars-node"
+                className={`px-1 py-0.5 rounded border text-center ${TONE_PILL[tone]}`}
+                title={placeholder.hasPlaceholder ? placeholder.tooltipText : starsVerdictLabel(stars)}
+              >
+                <span className="text-[7px] opacity-75 block uppercase leading-none">Stars</span>
+                <span className="text-[11px] font-bold tabular-nums leading-tight">
+                  {stars.toFixed(0)}
+                </span>
+              </div>
             </div>
           </div>
         </div>
 
-        {/* Unclipped venue conditions & kickoff telemetry */}
-        <div className="mt-1.5 pt-1.5 border-t border-white/5 flex items-center justify-between gap-2 text-[10px] font-mono text-slate-400 flex-wrap">
-          <span className="flex items-center gap-1 text-slate-300 min-w-0">
+        {/* Consistent compact single-line venue conditions & kickoff strip */}
+        <div
+          data-testid="matchup-venue-row"
+          className={`pt-1.5 border-t border-white/5 flex flex-col gap-0.5 text-[10px] font-mono min-w-0 ${
+            !player.is_user_team ? 'items-end text-right' : 'items-start text-left'
+          }`}
+        >
+          <div
+            data-testid="matchup-venue-line"
+            className={`flex items-center gap-1 min-w-0 max-w-full ${!player.is_user_team ? 'flex-row-reverse' : ''}`}
+          >
             <MapPin className="w-3 h-3 text-cyan-400 shrink-0" />
-            <span className="text-slate-300 font-medium">{stadiumDisplay}</span>
-          </span>
-          {!isByeStadium && player.game_kickoff && player.game_kickoff !== 'Bye week' && (
-            <span className="flex items-center gap-1 shrink-0 whitespace-nowrap text-slate-400">
-              <Clock className="w-2.5 h-2.5 text-slate-500" />
-              {player.game_kickoff}
+            <span className="text-slate-300 font-medium leading-tight truncate" title={stadiumDisplay}>
+              {stadiumDisplay}
             </span>
-          )}
+          </div>
+          <div
+            data-testid="matchup-kickoff-line"
+            className={`flex items-center gap-1 min-w-0 max-w-full text-slate-400 ${!player.is_user_team ? 'flex-row-reverse' : ''}`}
+          >
+            <Clock className="w-2.5 h-2.5 text-slate-500 shrink-0" />
+            <span className="leading-tight truncate" title={kickoffDisplay}>{kickoffDisplay}</span>
+          </div>
         </div>
 
         {/* Inline Swap Opportunity Tooltip on Starter Slots */}
@@ -676,11 +792,11 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                   setInspected({ player: benchCp, vs: swap.playerOut ?? null });
                 }
               }}
-              className="mt-2 px-2.5 py-1.5 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-[11px] font-mono text-emerald-200 flex items-center justify-between gap-2"
+              className="px-2 py-1 rounded-lg bg-emerald-950/60 border border-emerald-500/40 text-[10px] font-mono text-emerald-200 flex items-center justify-between gap-2 min-w-0"
             >
-              <span data-testid="matchup-swap-tooltip" className="flex items-center gap-1.5">
-                <ArrowUpDown className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                <span>
+              <span data-testid="matchup-swap-tooltip" className="flex items-center gap-1.5 min-w-0">
+                <ArrowUpDown className="w-3 h-3 text-emerald-400 shrink-0" />
+                <span className="truncate">
                   Swap Opportunity: Bench <strong>{swap.playerIn.name}</strong> adds +{gainDisplay} Oracle
                 </span>
               </span>
@@ -688,10 +804,10 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             </div>
           );
         })()}
-        <details className="group mt-1 text-slate-300">
+        <details className="group text-slate-300">
           <summary
             onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
-            className="text-[10px] font-mono text-slate-500 hover:text-slate-300 cursor-pointer select-none"
+            className="text-[10px] font-mono text-slate-500 hover:text-slate-300 cursor-pointer select-none leading-tight"
           >
             Alignment & Stadium Telemetry
           </summary>
@@ -780,12 +896,9 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-1.5">
                   <span className="font-serif font-bold text-base text-purple-100 truncate">{userTeamName}</span>
-                  <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-purple-500/30 text-purple-200 border border-purple-400/50 shrink-0">
-                    YOUR TEAM
-                  </span>
                 </div>
                 <div className="text-xs font-mono text-slate-400 truncate">
-                  Mgr: {matchupData.user_team?.owner_name}
+                  Mgr: {matchupData.user_team?.owner_name?.trim() || 'Manager'}
                 </div>
                 <div className="text-lg font-mono font-bold text-purple-300 mt-0.5 tabular-nums">
                   {hasMatchupMetrics
@@ -830,7 +943,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             </div>
 
             {/* RIGHT: OPPONENT TEAM */}
-            <div className="sm:col-span-3 flex items-center gap-3.5 p-3 rounded-xl bg-cyan-950/20 border-2 border-cyan-500/40">
+            <div className="sm:col-span-3 flex flex-row-reverse items-center gap-3.5 p-3 rounded-xl bg-cyan-950/20 border-2 border-cyan-500/40 text-right">
               <UserAvatar
                 src={matchupData.opponent_team?.avatar_url || matchupData.opponent_team?.avatar}
                 alt={`${oppTeamName} avatar`}
@@ -840,15 +953,12 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 testId="opponent-team-avatar"
                 data-testid="opponent-team-avatar"
               />
-              <div className="min-w-0 flex-1">
-                <div className="flex items-center gap-1.5">
+              <div className="min-w-0 flex-1 text-right">
+                <div className="flex items-center justify-end gap-1.5">
                   <span className="font-serif font-bold text-base text-cyan-100 truncate">{oppTeamName}</span>
-                  <span className="text-[9px] font-mono uppercase px-1.5 py-0.5 rounded bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shrink-0">
-                    OPPONENT
-                  </span>
                 </div>
                 <div className="text-xs font-mono text-slate-400 truncate">
-                  Mgr: {matchupData.opponent_team?.owner_name}
+                  Mgr: {matchupData.opponent_team?.owner_name?.trim() || 'Manager'}
                 </div>
                 <div className="text-lg font-mono font-bold text-cyan-300 mt-0.5 tabular-nums">
                   {hasMatchupMetrics
@@ -876,7 +986,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 fmt: (n: number) => (hasMatchupMetrics ? n.toFixed(1) : '-'),
               },
               {
-                title: 'Starter Stars Avg (Astral Favorability Index)',
+                title: 'Starter Stars Avg',
                 left: userAstral,
                 right: oppAstral,
                 fmt: (n: number) => (hasMatchupMetrics ? n.toFixed(1) : '-'),
@@ -885,10 +995,11 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 title: 'Squad Harmony Rating',
                 left: userHarmony,
                 right: oppHarmony,
-                fmt: (n: number) =>
-                  hasMatchupMetrics
-                    ? `${Math.round(n)}% (${n >= 85 ? 'Apex Harmony' : n >= 75 ? 'Harmonic Balance' : 'Discordant Risk'})`
-                    : '-',
+                fmt: (n: number) => {
+                  if (!hasMatchupMetrics) return '-';
+                  const pct = Math.round(n);
+                  return `${pct}% (${pct >= 85 ? 'Apex Harmony' : pct >= 75 ? 'Harmonic Balance' : 'Discordant Risk'})`;
+                },
               },
             ].map((m) => {
               const total = Math.max(m.left + m.right, 1);
@@ -918,18 +1029,13 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
         <>
           {/* Position Filter Bar */}
           <div className="flex flex-wrap items-center justify-between gap-2">
-            <div>
-              <h3
-                title="Starters paired 1:1 by Sleeper league starting lineup slots."
-                className="font-serif text-lg font-bold text-slate-100 flex items-center gap-2"
-              >
-                <Sparkles className="w-4 h-4 text-purple-400" />
-                <span>Positional Starter Matchups</span>
-              </h3>
-              <span className="text-[10px] font-mono text-slate-400">
-                Player Astrological & Stadium Favorability Breakdown · Active Transits & Conjunctions
-              </span>
-            </div>
+            <h3
+              title="Starters paired 1:1 by Sleeper league starting lineup slots."
+              className="font-serif text-lg font-bold text-slate-100 flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4 text-purple-400" />
+              <span>Positional Starter Matchups</span>
+            </h3>
             <div className="flex flex-wrap gap-1">
               {['ALL', ...leagueEligiblePositions].map((pos) => (
                 <button
@@ -950,125 +1056,60 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
 
           {/* Single Unified Side-by-Side Positional Starter Matchup Grid */}
           <div data-testid="positional-matchup-grid" className="space-y-3">
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-5 pb-1.5 border-b border-white/10">
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-mono uppercase tracking-wider font-bold text-purple-300 flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-purple-400 shadow-[0_0_8px_#a855f7]" />
-                  YOUR STARTERS ({userStartersCount})
-                </span>
-                <span className="text-[10px] font-mono text-purple-300">{userTeamName}</span>
-              </div>
-              <div className="flex items-center justify-between">
-                <span className="text-xs font-mono uppercase tracking-wider font-bold text-cyan-300 flex items-center gap-2">
-                  <span className="w-2.5 h-2.5 rounded-full bg-cyan-400" />
-                  OPPONENT STARTERS ({oppStartersCount})
-                </span>
-                <span className="text-[10px] font-mono text-cyan-300">{oppTeamName}</span>
-              </div>
-            </div>
-
             {displayedPairs.map((pair, idx) => {
               const hasBoth = Boolean(pair.user && pair.opp);
-              const uOracle = pair.user ? oracleScore(toCosmicPlayer(pair.user), lambda, { currentWeek: selectedWeek }) : 0;
-              const oOracle = pair.opp ? oracleScore(toCosmicPlayer(pair.opp), lambda, { currentWeek: selectedWeek }) : 0;
-              const delta = hasBoth ? uOracle - oOracle : 0;
-              const sum = uOracle + oOracle;
-              const isZeroSplit = hasBoth && sum <= 0;
-              const uPct = !hasBoth ? 0 : isZeroSplit ? 50 : Math.min(100, Math.max(0, Math.round((uOracle / sum) * 100)));
-              const oPct = !hasBoth ? 0 : isZeroSplit ? 50 : Math.min(100, Math.max(0, 100 - uPct));
-              const isEven = hasBoth && (isZeroSplit || Math.abs(delta) <= 0.05);
-              const isUserFavored = hasBoth && !isZeroSplit && delta > 0.05;
-              const isOppFavored = hasBoth && !isZeroSplit && delta < -0.05;
-              const displayDelta = isEven ? 0 : delta;
+              const isUserOnBye = pair.user ? byePlayerIds.has(String(pair.user.player_id)) : false;
+              const isOppOnBye = pair.opp ? byePlayerIds.has(String(pair.opp.player_id)) : false;
+              const uOracle = pair.user ? oracleScore(toCosmicPlayer(pair.user, isUserOnBye), lambda, { currentWeek: selectedWeek }) : 0;
+              const oOracle = pair.opp ? oracleScore(toCosmicPlayer(pair.opp, isOppOnBye), lambda, { currentWeek: selectedWeek }) : 0;
+              const effUserOracle = isUserOnBye ? 0 : uOracle;
+              const effOppOracle = isOppOnBye ? 0 : oOracle;
+              const delta = hasBoth ? effUserOracle - effOppOracle : 0;
+              const isZeroSplit = hasBoth && effUserOracle + effOppOracle <= 0;
+              const isUserFavored = hasBoth && !isZeroSplit && !isUserOnBye && delta > 0.05;
+              const isOppFavored = hasBoth && !isZeroSplit && !isOppOnBye && delta < -0.05;
+              const comparisonStatus = !hasBoth
+                ? 'Open'
+                : isUserOnBye && isOppOnBye
+                ? 'Both starters on bye'
+                : isUserOnBye
+                ? 'Opponent active vs user on bye'
+                : isOppOnBye
+                ? 'User active vs opponent on bye'
+                : isUserFavored
+                ? 'User dominant'
+                : isOppFavored
+                ? 'Opponent dominant'
+                : 'Even';
 
               return (
-                <div key={`slot-pair-${pair.slotRole}-${idx}`} className="p-2.5 rounded-2xl bg-slate-900/40 border border-white/5 space-y-2">
-                  {/* Compact Slot Advantage Bar with Crisp Separator & Favored Highlight */}
-                  <div className="flex items-center gap-2.5 px-2 font-mono text-[10px]">
-                    <span data-testid="matchup-slot-label" className="px-1.5 py-0.5 rounded bg-white/5 border border-white/10 text-purple-300 font-bold text-center w-14 shrink-0 tracking-wider">
-                      {pair.slotLabel}
-                    </span>
-                    <div
-                      role="meter"
-                      aria-label={`${pair.slotLabel} matchup: ${pair.user?.player_name || 'Empty'} vs ${pair.opp?.player_name || 'Empty'}`}
-                      aria-valuenow={hasBoth ? Math.round(uPct) : 50}
-                      aria-valuemin={0}
-                      aria-valuemax={100}
-                      title={hasBoth ? `Matchup advantage: ${uOracle.toFixed(1)} Oracle vs ${oOracle.toFixed(1)} Oracle` : 'Empty slot'}
-                      className="relative flex-1 h-2 rounded-full bg-slate-950/80 border border-white/10 overflow-hidden flex items-center shadow-inner"
-                    >
-                      {/* 50% Neutral Centerline */}
-                      <div data-testid="matchup-bar-centerline" aria-hidden="true" className="absolute left-1/2 top-0 bottom-0 w-px bg-white/20 z-20 pointer-events-none" />
-                      {/* User Bar Segment */}
-                      <div
-                        data-testid="matchup-bar-user"
-                        className={`h-full transition-all duration-300 ${
-                          isUserFavored
-                            ? 'bg-gradient-to-r from-purple-600 via-purple-500 to-purple-400 shadow-[0_0_8px_rgba(168,85,247,0.85)] z-[2]'
-                            : isOppFavored
-                            ? 'bg-purple-950/50 opacity-40 z-[1]'
-                            : 'bg-purple-500/80 z-[1]'
-                        }`}
-                        style={{ width: `${uPct}%` }}
-                      />
-                      {/* Crisp Visual Separator Line (Only when both starters present) */}
-                      {hasBoth && (
-                        <div
-                          data-testid="matchup-bar-separator"
-                          aria-hidden="true"
-                          className="w-0.5 bg-white h-full z-10 shrink-0 shadow-[0_0_6px_rgba(255,255,255,0.95)]"
-                        />
-                      )}
-                      {/* Opponent Bar Segment */}
-                      <div
-                        data-testid="matchup-bar-opp"
-                        className={`h-full transition-all duration-300 ${
-                          isOppFavored
-                            ? 'bg-gradient-to-r from-cyan-400 via-cyan-300 to-cyan-200 shadow-[0_0_8px_rgba(6,182,212,0.85)] z-[2]'
-                            : isUserFavored
-                            ? 'bg-cyan-950/50 opacity-40 z-[1]'
-                            : 'bg-cyan-500/80 z-[1]'
-                        }`}
-                        style={{ width: `${oPct}%` }}
-                      />
-                    </div>
-                    {/* Favored Badge & Delta */}
-                    <div data-testid="matchup-bar-delta" className="shrink-0 flex items-center gap-1.5 w-28 justify-end">
-                      <span
-                        className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 rounded font-bold ${
-                          !hasBoth
-                            ? 'bg-slate-800 text-slate-500 border border-white/5'
-                            : isUserFavored
-                            ? 'bg-purple-500/20 text-purple-300 border border-purple-500/40 shadow-[0_0_6px_rgba(168,85,247,0.3)]'
-                            : isOppFavored
-                            ? 'bg-cyan-500/20 text-cyan-300 border border-cyan-500/40 shadow-[0_0_6px_rgba(6,182,212,0.3)]'
-                            : 'bg-slate-800 text-slate-400 border border-white/5'
-                        }`}
-                      >
-                        {!hasBoth ? 'Open' : isUserFavored ? 'Favored' : isOppFavored ? 'Opp Fav' : 'Even'}
-                      </span>
-                      <span className={`font-bold ${!hasBoth || isEven ? 'text-slate-400' : isUserFavored ? 'text-purple-300' : 'text-cyan-300'}`}>
-                        {!hasBoth ? '-' : isEven ? '0.0' : displayDelta > 0 ? `+${displayDelta.toFixed(1)}` : displayDelta.toFixed(1)}
-                      </span>
-                    </div>
-                  </div>
-
+                <div key={`slot-pair-${pair.slotRole}-${idx}`} className="relative p-2 rounded-xl bg-slate-900/40 border border-white/5">
+                  <RosterSlotBadge
+                    slotId={pair.slotRole}
+                    slotLabel={pair.slotLabel}
+                    dataTestId="matchup-slot-label"
+                    size="sm"
+                    className="absolute -top-2.5 left-3 tracking-wider z-10"
+                  />
+                  <span className="sr-only">
+                    {`${pair.slotLabel}: ${pair.user ? `${pair.user.player_name} Oracle ${uOracle.toFixed(1)}` : 'Empty'} vs ${pair.opp ? `${pair.opp.player_name} Oracle ${oOracle.toFixed(1)}` : 'Empty'} - ${comparisonStatus}`}
+                  </span>
                   {/* Paired Starter Cards (Left = Yours in Purple, Right = Opponent in Cyan) */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-                    <div>
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
+                    <div className="h-full flex flex-col">
                       {pair.user ? (
                         renderPlayerCard(pair.user, false, idx, pair.opp, isUserFavored)
                       ) : (
-                        <div className="p-3 rounded-xl border border-dashed border-white/10 text-xs font-mono text-slate-500">
+                        <div className="p-2.5 rounded-xl border border-dashed border-white/10 text-xs font-mono text-slate-500 h-full flex items-center justify-center">
                           Empty starter slot
                         </div>
                       )}
                     </div>
-                    <div>
+                    <div className="h-full flex flex-col">
                       {pair.opp ? (
                         renderPlayerCard(pair.opp, false, idx, pair.user, isOppFavored)
                       ) : (
-                        <div className="p-3 rounded-xl border border-dashed border-white/10 text-xs font-mono text-slate-500">
+                        <div className="p-2.5 rounded-xl border border-dashed border-white/10 text-xs font-mono text-slate-500 h-full flex items-center justify-center">
                           Empty opponent slot
                         </div>
                       )}
@@ -1095,14 +1136,14 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 {playersOnBye.map((p) => (
                   <span
                     key={p.player_id}
-                    title={`On bye in Week ${selectedWeek} - 0.0 pts`}
+                    title={`${p.is_user_team ? userTeamName : oppTeamName} · On bye in Week ${selectedWeek} - 0.0 pts`}
                     className={`px-2 py-0.5 rounded border text-[10px] ${
                       p.is_user_team
                         ? 'bg-purple-950/80 border-purple-400/50 text-purple-200'
                         : 'bg-cyan-950/60 border-cyan-400/40 text-cyan-200'
                     }`}
                   >
-                    {p.player_name} ({p.position} · {p.is_user_team ? 'YOU' : 'OPP'}{p.is_benched ? ' · BN' : ' · START'})
+                    {p.player_name} ({p.position}{p.is_benched ? ' · BN' : ' · START'})
                   </span>
                 ))}
               </div>

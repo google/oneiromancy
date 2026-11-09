@@ -851,7 +851,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       const pkg = JSON.parse(fs.readFileSync(pkgPath, 'utf8'));
       const lockRaw = fs.readFileSync(lockPath, 'utf8');
       const lock = JSON.parse(lockRaw);
-      assert.equal(pkg.dependencies.next, '16.4.0', 'Next.js dependency must be 16.4.0');
+      assert.equal(pkg.dependencies.next, '16.4.2', 'Next.js dependency must be 16.4.2');
       assert.equal(pkg.dependencies.react, '19.3.0', 'React dependency must be 19.3.0');
       assert.equal(pkg.dependencies['react-dom'], '19.3.0', 'React DOM dependency must be 19.3.0');
       assert.deepEqual(
@@ -976,7 +976,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(teControls.includes('border-amber-400'), 'BoardControls must style active TE filter in amber');
     });
 
-    it('20.2 should verify head-to-head player comparison renders in PlayerDetailModal with Stats, Oracle, and Stars', () => {
+    it('20.2 should verify head-to-head player comparison renders in PlayerDetailModal with Stats, Oracle, Stars, and DIVINATION_PILLARS descriptions', () => {
       const p1 = mockData.mockCosmicBoard[0];
       const p2 = mockData.mockCosmicBoard[1];
       const modalHtml = renderWithProvider(
@@ -991,9 +991,15 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       for (const col of ['Stats', 'Oracle', 'Stars']) {
         assert.ok(modalHtml.includes(col), `Head-to-head must compare ${col}`);
       }
+      for (const pillar of scoring.DIVINATION_PILLARS) {
+        assert.ok(
+          modalHtml.includes(pillar.desc) || modalHtml.includes(pillar.desc.replace(/&/g, '&amp;')),
+          `PlayerDetailModal must render DIVINATION_PILLARS description for ${pillar.key}`
+        );
+      }
     });
 
-    it('20.3 should verify ChaosDial renders educational reference guide with planetary aspects, lambda equilibrium, and external links', () => {
+    it('20.3 should verify ChaosDial renders educational reference guide with planetary aspects, lambda equilibrium, worked example math, and external links', () => {
       const chaosHtml = renderWithProvider(React.createElement(ChaosDial));
       assert.ok(
         chaosHtml.includes('Astrology &amp; Divination Field Guide (Encyclopedia)') ||
@@ -1006,8 +1012,20 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(chaosHtml.includes('Mercury Retrogrades') && chaosHtml.includes('Jupiter Alignments'), 'ChaosDial must detail Mercury and Jupiter aspects');
       assert.ok(chaosHtml.includes('Elemental Triplicities in Gridiron Divination'), 'ChaosDial must explain Elemental Triplicities');
       assert.ok(chaosHtml.includes('href="https://en.wikipedia.org/wiki/Astrological_aspect"'), 'ChaosDial must link to external Wikipedia reference');
-      assert.ok(chaosHtml.includes('href="https://www.astro.com/astrology/in_sports_e.htm"'), 'ChaosDial must link to Astrodienst reference');
+      assert.ok(chaosHtml.includes('href="https://en.wikipedia.org/wiki/Astrology"'), 'ChaosDial must link to Wikipedia astrology reference');
       assert.ok(chaosHtml.includes('href="https://ssd.jpl.nasa.gov/horizons/"'), 'ChaosDial must link to NASA JPL Horizons ephemeris');
+      const chasePlayer = { projected_points: 19.8, spirit_score: 92.7 };
+      const chaseStats = oracleLib.statsScore(chasePlayer);
+      assert.equal(chaseStats, 79.2, 'Unit conversion rescale (19.8 / 25 * 100) must equal 79.2 Stats');
+      assert.equal(oracleLib.starsScore(chasePlayer), 85, 'spirit_score 92.7 must yield 85 Stars');
+      assert.equal(
+        oracleLib.oracleScore(chasePlayer, 0.75),
+        83.6,
+        'oracleLib.oracleScore must blend 79.2 Stats and 85 Stars at lambda 0.75 to 83.6 Oracle'
+      );
+      assert.ok(chaosHtml.includes('83.6 Oracle'), 'ChaosDial worked example must show 83.6 Oracle');
+      const panelHtml = renderWithProvider(React.createElement(OraclePanel, { isOpen: true, onClose: () => {} }));
+      assert.ok(panelHtml.includes('83.6 Oracle'), 'OraclePanel worked example must show 83.6 Oracle');
     });
 
     it('20.4 should verify OneiromancyDashboard explains Squad Harmony with the 3 bonuses it actually adds', () => {
@@ -1016,6 +1034,10 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(html.includes('1. Elemental Trine'), 'OneiromancyDashboard must explain the trine bonus');
       assert.ok(html.includes('2. QB Stacks'), 'OneiromancyDashboard must explain the stack bonus');
       assert.ok(html.includes('3. Four-Element Balance'), 'OneiromancyDashboard must explain the balance bonus');
+      assert.ok(html.includes('added to base 50'), 'Harmony explainer must state bonuses are added to base 50');
+      assert.match(html, /Squad Harmony:\s*\d+\s*pts/, 'OneiromancyDashboard SVG footer must render Squad Harmony in pts');
+      assert.ok(!/Squad Harmony:\s*\d+%/.test(html), 'OneiromancyDashboard SVG footer must not render Squad Harmony as %');
+      assert.match(html, /Squad Harmony<\/span><span[^>]*>\d+\s*pts<\/span>/, 'OneiromancyDashboard badge must render Squad Harmony in pts');
       assert.ok(!html.includes('Schedule Symmetry'), 'Harmony explainer must not claim byes affect Harmony');
       assert.ok(html.includes('Squad Harmony'), 'OneiromancyDashboard must display Squad Harmony');
     });
@@ -1057,7 +1079,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       const html = renderWithProvider(React.createElement(OneiromancyDashboard));
       assert.ok(html.includes('How bye coverage works'), 'OneiromancyDashboard must explain bye coverage');
       assert.ok(html.includes('Weeks 5-14'), 'Must say when byes fall');
-      assert.ok(html.includes('Weeks 15-17'), 'Must explain fantasy playoffs Weeks 15-17');
+      assert.ok(html.includes('Weeks 15-17'), 'Must list fantasy playoffs Weeks 15-17');
       assert.ok(html.includes('No one on bye.'), 'Must explain the OK state');
       assert.ok(html.includes('One or two players on bye.'), 'Must explain the amber state');
       assert.ok(html.includes('Three or more on bye'), 'Must explain the conflict state');
@@ -1145,8 +1167,13 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.equal(typeof scoring.calculateWinProbability, 'function', 'scoring.ts must export calculateWinProbability');
       assert.equal(typeof scoring.classifySpiritScoreTier, 'function', 'scoring.ts must export classifySpiritScoreTier');
       assert.equal(scoring.classifySpiritScoreTier(85.0).tier, 'Favorable', 'Threshold 85.0 must be Favorable');
+      assert.equal(scoring.classifySpiritScoreTier(84.9).tier, 'Harmonic', 'Just below 85.0 (84.9) must be Harmonic');
       assert.equal(scoring.classifySpiritScoreTier(75.0).tier, 'Harmonic', 'Threshold 75.0 must be Harmonic');
       assert.equal(scoring.classifySpiritScoreTier(74.9).tier, 'Discordant', 'Below 75.0 must be Discordant');
+      assert.equal(scoring.classifySpiritScoreTier(100).tier, 'Favorable', 'Max score 100 must be Favorable');
+      assert.equal(scoring.classifySpiritScoreTier(0).tier, 'Discordant', 'Zero score must be Discordant');
+      assert.equal(scoring.classifySpiritScoreTier(-15).tier, 'Discordant', 'Negative score must be Discordant');
+      assert.equal(scoring.classifySpiritScoreTier(Number.NaN).tier, 'Discordant', 'NaN score must safely degrade to Discordant');
     });
 
     it('21.6 should verify OneiromancyDashboard unifies Team harmony with the user team harmony score', () => {
@@ -1197,12 +1224,12 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(!marketHtml.includes('Player Marketplace • Screen 4'), 'PlayerMarketplace must not contain Screen 4 pill');
     });
 
-    it('22.3 should verify MatchupsScreen renders Team Celestial Telemetry with Astral Favorability Index and Win Probability', () => {
+    it('22.3 should verify MatchupsScreen renders Team Celestial Telemetry without redundant Positional breakdown subtitle', () => {
       const html = renderWithProvider(React.createElement(MatchupsScreen));
       assert.ok(html.includes('Win Prob'), 'MatchupsScreen must render dynamic win probability');
       assert.ok(
-        html.includes('Active Transits &amp; Conjunctions') || html.includes('Active Transits & Conjunctions'),
-        'MatchupsScreen must render Active Transits & Conjunctions'
+        !html.includes('Active Transits &amp; Conjunctions') && !html.includes('Active Transits & Conjunctions'),
+        'MatchupsScreen must remove redundant Active Transits & Conjunctions subtitle'
       );
       assert.ok(html.includes('Week 1'), 'MatchupsScreen must include week switcher');
     });
@@ -1580,20 +1607,25 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       );
     });
 
-    it('27.3 should verify clean team badging without cluttered ⭐ YOUR TEAM (YOU)', () => {
+    it('27.3 should verify clean team badging without YOUR TEAM, OPPONENT, or (You) labels', () => {
       const rosterHtml = renderWithProvider(React.createElement(OneiromancyDashboard));
       assert.ok(!rosterHtml.includes('⭐ YOUR TEAM (YOU)'), 'OneiromancyDashboard must not include cluttered ⭐ YOUR TEAM (YOU) text');
       assert.ok(!rosterHtml.includes('>YOUR TEAM<'), 'OneiromancyDashboard H2 must not contain cluttered YOUR TEAM badge');
       const matchupsHtml = renderWithProvider(React.createElement(MatchupsScreen));
-      assert.ok(matchupsHtml.includes('YOUR TEAM'), 'MatchupsScreen must render YOUR TEAM');
+      assert.ok(!matchupsHtml.includes('YOUR TEAM'), 'MatchupsScreen must not render YOUR TEAM label');
+      assert.ok(!matchupsHtml.includes('OPPONENT'), 'MatchupsScreen must not render OPPONENT label');
+      assert.ok(!matchupsHtml.includes('(You)'), 'MatchupsScreen must not render visible (You) suffix');
       assert.ok(!matchupsHtml.includes('⭐ YOUR TEAM (YOU)'), 'MatchupsScreen must not include cluttered ⭐ YOUR TEAM (YOU) text');
+      const leagueHtml = renderWithProvider(React.createElement(LeagueScreen));
+      assert.ok(!leagueHtml.includes('(You)'), 'LeagueScreen must not render visible (You) suffix');
+      assert.ok(!leagueHtml.includes('>YOU<'), 'LeagueScreen must not render YOU pill');
     });
 
-    it('27.4 should verify starters are formatted in a unified positional comparison without duplicate bench section', () => {
+    it('27.4 should verify starters are formatted in a unified positional comparison without redundant starter/bench headers', () => {
       const matchupsHtml = renderWithProvider(React.createElement(MatchupsScreen));
       assert.ok(matchupsHtml.includes('data-testid="positional-matchup-grid"'), 'MatchupsScreen must provide unified positional matchup grid');
-      assert.ok(matchupsHtml.includes('YOUR STARTERS'), 'MatchupsScreen must render YOUR STARTERS header');
-      assert.ok(matchupsHtml.includes('OPPONENT STARTERS'), 'MatchupsScreen must render OPPONENT STARTERS header');
+      assert.ok(!matchupsHtml.includes('YOUR STARTERS'), 'MatchupsScreen must remove redundant YOUR STARTERS header');
+      assert.ok(!matchupsHtml.includes('OPPONENT STARTERS'), 'MatchupsScreen must remove redundant OPPONENT STARTERS header');
       assert.ok(!matchupsHtml.includes('YOUR BENCH') && !matchupsHtml.includes('OPPONENT BENCH'), 'MatchupsScreen must not render duplicate YOUR BENCH / OPPONENT BENCH section');
 
       const rosterHtml = renderWithProvider(React.createElement(OneiromancyDashboard));
@@ -1666,7 +1698,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
         matchupsHtml.includes('Alignment &amp; Stadium Telemetry') || matchupsHtml.includes('Alignment & Stadium Telemetry'),
         'MatchupsScreen must provide collapsible summary for telemetry and metaphysics'
       );
-      assert.ok(matchupsHtml.includes('<details class="group mt-1 text-slate-300">'), 'MatchupsScreen player cards must use collapsible details for clean display');
+      assert.ok(matchupsHtml.includes('<details class="group text-slate-300">'), 'MatchupsScreen player cards must use collapsible details for clean display');
     });
 
     it('27.10 should verify de-cluttered UI strings and semantic three-state modal status', () => {
@@ -2077,7 +2109,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
 
       const matchupsHtml = renderWithProvider(React.createElement(MatchupsScreen));
       assert.ok(matchupsHtml.includes('Positional Starter Matchup'), 'MatchupsScreen must render Positional Starter Matchup title');
-      assert.ok(matchupsHtml.includes('YOUR STARTERS') && matchupsHtml.includes('OPPONENT STARTERS'), 'MatchupsScreen must render YOUR STARTERS and OPPONENT STARTERS headers');
+      assert.ok(!matchupsHtml.includes('YOUR STARTERS') && !matchupsHtml.includes('OPPONENT STARTERS'), 'MatchupsScreen must not render redundant YOUR STARTERS / OPPONENT STARTERS headers');
       assert.ok(!matchupsHtml.includes('YOUR BENCH') && !matchupsHtml.includes('OPPONENT BENCH'), 'MatchupsScreen must not render a duplicate YOUR BENCH / OPPONENT BENCH section');
     });
 
@@ -2211,50 +2243,42 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.equal(pairs9[8].opp?.player_name, 'BAL Defense');
     });
 
-    it('30.11 should verify matchup advantage bar renders distinct separator line, 50% centerline marker, and favored highlights', () => {
+    it('30.11 should verify advantage bar removal and hierarchical Stats/Stars -> Oracle node tree with dominant power-up glow', () => {
       const matchupsHtml = renderWithProvider(React.createElement(MatchupsScreen));
-      assert.ok(matchupsHtml.includes('data-testid="matchup-bar-separator"'), 'Advantage bar must render distinct visual separator line');
-      assert.ok(
-        /data-testid="matchup-bar-separator"[^>]*aria-hidden="true"/.test(matchupsHtml) ||
-        /aria-hidden="true"[^>]*data-testid="matchup-bar-separator"/.test(matchupsHtml),
-        'Separator line must have aria-hidden="true"'
-      );
-      assert.ok(matchupsHtml.includes('data-testid="matchup-bar-centerline"'), 'Advantage bar must render 50% neutral centerline marker');
-      assert.ok(
-        /data-testid="matchup-bar-centerline"[^>]*aria-hidden="true"/.test(matchupsHtml) ||
-        /aria-hidden="true"[^>]*data-testid="matchup-bar-centerline"/.test(matchupsHtml),
-        'Centerline marker must have aria-hidden="true"'
-      );
-      assert.ok(matchupsHtml.includes('data-testid="matchup-bar-user"'), 'Advantage bar must render user team bar');
-      assert.ok(matchupsHtml.includes('data-testid="matchup-bar-opp"'), 'Advantage bar must render opponent team bar');
-      assert.ok(matchupsHtml.includes('data-testid="matchup-bar-delta"'), 'Advantage bar must render delta score with favored indicator');
-      assert.ok(matchupsHtml.includes('role="meter"'), 'Advantage bar container must have role="meter" accessibility attribute');
-      assert.ok(matchupsHtml.includes('aria-valuenow='), 'Advantage bar container must expose aria-valuenow');
-      assert.ok(matchupsHtml.includes('title="Matchup advantage:'), 'Advantage bar meter must expose descriptive advantage tooltip');
+      assert.ok(!matchupsHtml.includes('data-testid="matchup-bar-separator"'), 'Advantage bar separator must be removed');
+      assert.ok(!matchupsHtml.includes('data-testid="matchup-bar-centerline"'), 'Advantage bar centerline must be removed');
+      assert.ok(!matchupsHtml.includes('data-testid="matchup-bar-user"'), 'Advantage bar user segment must be removed');
+      assert.ok(!matchupsHtml.includes('data-testid="matchup-bar-opp"'), 'Advantage bar opp segment must be removed');
+      assert.ok(!matchupsHtml.includes('data-testid="matchup-bar-delta"'), 'Advantage bar delta / Opp Fav tag strip must be removed');
+      assert.ok(!matchupsHtml.includes('role="meter"'), 'Advantage bar role="meter" must be removed');
+      assert.ok(!matchupsHtml.includes('>Opp Fav<'), 'Must not render Opp Fav tag');
+      assert.ok(!matchupsHtml.includes('data-testid="player-favored-badge"'), 'Card-level player-favored-badge must be removed');
       assert.ok(matchupsHtml.includes('title="Starters paired 1:1 by Sleeper league starting lineup slots."'), 'Positional Starter Matchups header must expose explanatory tooltip');
       assert.ok(/\bWRT\b/.test(matchupsHtml), 'Positional Starter Matchups must render WRT (Flex) slot');
       assert.ok(/\bWRTQ\b/.test(matchupsHtml), 'Positional Starter Matchups must render WRTQ (Superflex) slot');
 
-      // Non-color favored badge verification (#80 AC2, #84 Item 2 & 3)
-      assert.ok(matchupsHtml.includes('data-testid="player-favored-badge"'), 'Favored player card must render dedicated non-color favored badge');
-      const badgeMatch = matchupsHtml.match(/data-testid="player-favored-badge"[^>]*>(.*?)<\/span>/s);
-      assert.ok(badgeMatch && badgeMatch[1].includes('FAVORED'), 'Favored badge must display uppercase text FAVORED');
-      assert.ok(
-        matchupsHtml.includes('ring-1 ring-purple-400/50') || matchupsHtml.includes('ring-1 ring-cyan-400/50'),
-        'Favored card must receive highlight ring distinct from hover'
-      );
-      assert.ok(
-        matchupsHtml.includes('shadow-[0_0_12px_rgba(168,85,247,0.3)]') ||
-        matchupsHtml.includes('shadow-[0_0_12px_rgba(6,182,212,0.3)]'),
-        'Favored card must receive glow shadow'
-      );
-      assert.ok(
-        matchupsHtml.includes('shadow-[0_0_8px_rgba(168,85,247,0.85)]') ||
-        matchupsHtml.includes('shadow-[0_0_8px_rgba(6,182,212,0.85)]'),
-        'Favored bar segment must receive glow box shadow'
-      );
+      // Hierarchical node tree verification
+      assert.ok(matchupsHtml.includes('data-testid="player-oracle-tree"'), 'Player card must render hierarchical player-oracle-tree');
+      assert.ok(matchupsHtml.includes('role="group"'), 'Hierarchical node tree must expose role="group"');
+      assert.ok(matchupsHtml.includes('aria-label="Player judgment synthesis tree for '), 'Hierarchical node tree must expose player-specific aria-label');
+      assert.ok(matchupsHtml.includes('data-testid="oracle-node"'), 'Node tree must render Oracle root node');
+      assert.ok(matchupsHtml.includes('data-testid="oracle-tree-branches"'), 'Node tree must render Stats/Stars branch connectors');
+      assert.ok(matchupsHtml.includes('data-testid="stats-node"'), 'Node tree must render Stats leaf');
+      assert.ok(matchupsHtml.includes('data-testid="stars-node"'), 'Node tree must render Stars leaf');
 
-      // Verify distinct states (User Favored, Opponent Favored, Even, Open) in matchup-bar-delta
+      // Dominant Oracle glow & animated floating 5-point SVG stars verification
+      assert.ok(
+        matchupsHtml.includes('shadow-[0_0_16px_rgba(168,85,247,0.85)]') ||
+        matchupsHtml.includes('shadow-[0_0_16px_rgba(6,182,212,0.85)]'),
+        'Dominant Oracle node must receive power-up glow shadow'
+      );
+      assert.ok(!matchupsHtml.includes('data-testid="oracle-powerup-arrows"'), 'Power-up arrows must be removed');
+      assert.ok(matchupsHtml.includes('data-testid="oracle-powerup-stars"'), 'Dominant Oracle node must render floating SVG stars overlay');
+      assert.ok(matchupsHtml.includes('<polygon points="12,2 15,9 22,9 17,14 19,21 12,17 5,21 7,14 2,9 9,9"'), 'Floating stars must render actual 5-point SVG polygon shapes');
+      assert.ok(matchupsHtml.includes('animate-powerup-star-float'), 'Floating stars must use animate-powerup-star-float');
+      assert.ok(matchupsHtml.includes('motion-reduce:animate-none'), 'Floating stars must honor motion-reduce:animate-none');
+
+      // Verify distinct states (User Favored, Opponent Favored, Even, Open, Bye) on card-scoped Oracle trees
       const statesWeeklyMatchup = {
         week: 8,
         season_year: 2026,
@@ -2263,7 +2287,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
           roster_id: 1,
           name: 'Alpha Team (You)',
           is_user: true,
-          starters: ['u_fav', 'u_under', 'u_even', '0'],
+          starters: ['u_fav', 'u_under', 'u_even', '0', 'u_bye', 'u_bye_both'],
           points: 110.0,
           projected_points: 110.0,
         },
@@ -2272,7 +2296,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
           roster_id: 2,
           name: 'Beta Team (Opp)',
           is_user: false,
-          starters: ['o_under', 'o_fav', 'o_even', 'o_open'],
+          starters: ['o_under', 'o_fav', 'o_even', 'o_open', 'o_bye_opp', 'o_bye_both'],
           points: 105.0,
           projected_points: 105.0,
         },
@@ -2280,45 +2304,33 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
           { player_id: 'u_fav', player_name: 'User Fav Star', position: 'QB', is_user_team: true, is_benched: false, projected_points: 25.0, favorability_score: 90 },
           { player_id: 'u_under', player_name: 'User Underdog', position: 'RB', is_user_team: true, is_benched: false, projected_points: 8.0, favorability_score: 60 },
           { player_id: 'u_even', player_name: 'User Even', position: 'WR', is_user_team: true, is_benched: false, projected_points: 15.0, favorability_score: 75 },
+          { player_id: 'u_bye', player_name: 'User Bye Star', position: 'K', is_user_team: true, is_benched: false, projected_points: 12.0, favorability_score: 88, bye_week: 8, game_kickoff: 'Bye week' },
+          { player_id: 'u_bye_both', player_name: 'User Bye DST', position: 'DST', is_user_team: true, is_benched: false, projected_points: 9.0, favorability_score: 82, bye_week: 8, game_kickoff: 'Bye week' },
           { player_id: 'o_under', player_name: 'Opp Underdog', position: 'QB', is_user_team: false, is_benched: false, projected_points: 10.0, favorability_score: 60 },
           { player_id: 'o_fav', player_name: 'Opp Fav Star', position: 'RB', is_user_team: false, is_benched: false, projected_points: 28.0, favorability_score: 92 },
           { player_id: 'o_even', player_name: 'Opp Even', position: 'WR', is_user_team: false, is_benched: false, projected_points: 15.0, favorability_score: 75 },
           { player_id: 'o_open', player_name: 'Opp Solo', position: 'TE', is_user_team: false, is_benched: false, projected_points: 12.0, favorability_score: 75 },
+          { player_id: 'o_bye_opp', player_name: 'Opp Active Kicker', position: 'K', is_user_team: false, is_benched: false, projected_points: 5.0, favorability_score: 55 },
+          { player_id: 'o_bye_both', player_name: 'Opp Bye DST', position: 'DST', is_user_team: false, is_benched: false, projected_points: 6.0, favorability_score: 65, bye_week: 8, game_kickoff: 'Bye week' },
         ],
         matchup_score: { user_score: 55.0, opp_score: 48.0, win_probability: 56.0, favorite_side: 'user', point_spread: -7.0 },
       };
 
       const statesHtml = renderWithProvider(
         React.createElement(MatchupsScreen, { weeklyMatchup: statesWeeklyMatchup }),
-        { ...mockData.mock_oneiromancy_draft_2025, roster_positions: ['QB', 'RB', 'WR', 'TE'] }
+        { ...mockData.mock_oneiromancy_draft_2025, roster_positions: ['QB', 'RB', 'WR', 'TE', 'K', 'DST'] }
       );
-      assert.ok(statesHtml.includes('>Favored</span>'), 'Advantage bar must render Favored badge for user-favored slot');
-      assert.ok(statesHtml.includes('>Opp Fav</span>'), 'Advantage bar must render Opp Fav badge for opponent-favored slot');
-      assert.ok(statesHtml.includes('>Even</span>'), 'Advantage bar must render Even badge for equal matchup slot');
-      assert.ok(statesHtml.includes('>Open</span>'), 'Advantage bar must render Open badge for slot with missing starter');
+      const slotLabels = [...statesHtml.matchAll(/data-testid="matchup-slot-label"[^>]*>([^<]+)<\/span>/g)].map((m) => m[1].trim());
+      assert.deepStrictEqual(slotLabels, ['QB', 'RB', 'WR', 'TE', 'K', 'DST'], 'Starter rows must map row-by-row to exact slot labels');
+      const srSummaries = [...statesHtml.matchAll(/<span class="sr-only">([^<]+)<\/span>/g)].map((m) => m[1].trim());
+      assert.equal(srSummaries.length, 6, 'Every positional starter row must render an accessible sr-only comparison summary');
+      assert.ok(srSummaries[0].startsWith('QB: User Fav Star Oracle') && srSummaries[0].endsWith(' - User dominant'), `QB sr-only summary mismatch: ${srSummaries[0]}`);
+      assert.ok(srSummaries[1].startsWith('RB: User Underdog Oracle') && srSummaries[1].endsWith(' - Opponent dominant'), `RB sr-only summary mismatch: ${srSummaries[1]}`);
+      assert.ok(srSummaries[2].startsWith('WR: User Even Oracle') && srSummaries[2].endsWith(' - Even'), `WR sr-only summary mismatch: ${srSummaries[2]}`);
+      assert.ok(srSummaries[3].includes('TE: Empty vs Opp Solo Oracle') && srSummaries[3].endsWith(' - Open'), `TE sr-only summary mismatch: ${srSummaries[3]}`);
+      assert.ok(srSummaries[4].startsWith('K: User Bye Star Oracle') && srSummaries[4].endsWith(' - Opponent active vs user on bye'), `K bye sr-only summary mismatch: ${srSummaries[4]}`);
+      assert.ok(srSummaries[5].startsWith('DST: User Bye DST Oracle') && srSummaries[5].endsWith(' - Both starters on bye'), `DST bye sr-only summary mismatch: ${srSummaries[5]}`);
 
-      // Row-by-row status pills (QB -> Favored, RB -> Opp Fav, WR -> Even, TE -> Open)
-      const rowMatches = [
-        ...statesHtml.matchAll(
-          /data-testid="matchup-slot-label"[^>]*>([^<]+)<\/span>[\s\S]*?data-testid="matchup-bar-delta"[^>]*>\s*<span[^>]*>([^<]+)<\/span>/g
-        ),
-      ];
-      assert.equal(rowMatches.length, 4, 'Must render exactly 4 starter matchup rows');
-      const rowStatuses = rowMatches.map((m) => [m[1].trim(), m[2].trim()]);
-      assert.deepStrictEqual(
-        rowStatuses,
-        [
-          ['QB', 'Favored'],
-          ['RB', 'Opp Fav'],
-          ['WR', 'Even'],
-          ['TE', 'Open'],
-        ],
-        'Starter rows must map row-by-row to exact status pills'
-      );
-
-      // Card-scoped checks by card ID (matchup-starter-card-<player_id>):
-      // Favored cards (u_fav, o_fav) must have player-favored-badge and highlight ring.
-      // Non-favored cards (u_under, u_even, o_under, o_even, o_open) must strictly lack both.
       const getStarterCardHtml = (html, id) => {
         const marker = `data-testid="matchup-starter-card-${id}"`;
         const markerIdx = html.indexOf(marker);
@@ -2326,29 +2338,46 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
         const cardStart = html.lastIndexOf('<div', markerIdx);
         assert.ok(cardStart !== -1, `Opening div for player card ${id} must exist`);
         const rest = html.slice(cardStart);
-        const nextDelim = rest.slice(4).search(/<div[^>]*data-testid="matchup-starter-card-|Empty starter slot|Empty opponent slot|data-testid="matchup-slot-label"|data-testid="matchup-bye-callout"|<\/section>/);
-        return nextDelim !== -1 ? rest.slice(0, 4 + nextDelim) : rest.slice(0, 1200);
+        const nextDelim = rest.slice(4).search(/<div[^>]*data-testid="matchup-starter-card-|Empty starter slot|Empty opponent slot|data-testid="matchup-bye-callout"|<\/section>/);
+        return nextDelim !== -1 ? rest.slice(0, 4 + nextDelim) : rest.slice(0, 2600);
       };
 
-      // Favored cards
+      // Dominant cards: data-dominant="true", glowing Oracle node, floating 5-point SVG stars, zero favored badge / arrows
       const uFavCard = getStarterCardHtml(statesHtml, 'u_fav');
-      assert.ok(uFavCard.includes('data-testid="player-favored-badge"'), 'u_fav card must render player-favored-badge');
-      assert.ok(uFavCard.includes('ring-1 ring-purple-400/50'), 'u_fav card must render purple highlight ring');
+      assert.ok(uFavCard.includes('data-dominant="true"'), 'u_fav card must have data-dominant="true"');
+      assert.ok(uFavCard.includes('aria-label="Player judgment synthesis tree for User Fav Star"'), 'u_fav tree must include player name in aria-label');
+      assert.ok(uFavCard.includes('shadow-[0_0_16px_rgba(168,85,247,0.85)]'), 'u_fav Oracle node must render purple power-up glow');
+      assert.ok(uFavCard.includes('data-testid="oracle-powerup-stars"'), 'u_fav Oracle node must render floating stars');
+      assert.ok(!uFavCard.includes('data-testid="oracle-powerup-arrows"'), 'u_fav card must not render removed arrows');
+      assert.ok(!uFavCard.includes('data-testid="player-favored-badge"'), 'u_fav card must not render removed favored badge');
 
-      const oFavCard = getStarterCardHtml(statesHtml, 'o_fav');
-      assert.ok(oFavCard.includes('data-testid="player-favored-badge"'), 'o_fav card must render player-favored-badge');
-      assert.ok(oFavCard.includes('ring-1 ring-cyan-400/50'), 'o_fav card must render cyan highlight ring');
+      for (const oppFavId of ['o_fav', 'o_bye_opp']) {
+        const oppFavCard = getStarterCardHtml(statesHtml, oppFavId);
+        assert.ok(oppFavCard.includes('data-dominant="true"'), `${oppFavId} card must have data-dominant="true"`);
+        assert.ok(oppFavCard.includes('shadow-[0_0_16px_rgba(6,182,212,0.85)]'), `${oppFavId} Oracle node must render cyan power-up glow`);
+        assert.ok(oppFavCard.includes('data-testid="oracle-powerup-stars"'), `${oppFavId} Oracle node must render floating stars`);
+        assert.ok(!oppFavCard.includes('data-testid="oracle-powerup-arrows"'), `${oppFavId} card must not render removed arrows`);
+        assert.ok(!oppFavCard.includes('data-testid="player-favored-badge"'), `${oppFavId} card must not render removed favored badge`);
+      }
 
-      // Non-favored cards: strictly absent badge and highlight rings
-      for (const nonFavId of ['u_under', 'u_even', 'o_under', 'o_even', 'o_open']) {
+      // Non-dominant / even / open / bye / both-on-bye cards: data-dominant="false", strictly absent dominant glow and floating stars
+      for (const nonFavId of ['u_under', 'u_even', 'o_under', 'o_even', 'o_open', 'u_bye', 'u_bye_both', 'o_bye_both']) {
         const cardHtml = getStarterCardHtml(statesHtml, nonFavId);
         assert.ok(
-          !cardHtml.includes('data-testid="player-favored-badge"'),
-          `Non-favored card ${nonFavId} must strictly NOT render player-favored-badge`
+          cardHtml.includes('data-dominant="false"'),
+          `Non-favored / bye card ${nonFavId} must have data-dominant="false"`
         );
         assert.ok(
-          !/ring-1 ring-(?:purple|cyan)-400\/50/.test(cardHtml),
-          `Non-favored card ${nonFavId} must strictly NOT render highlight ring`
+          !cardHtml.includes('data-dominant="true"'),
+          `Non-favored / bye card ${nonFavId} must strictly NOT mark dominant`
+        );
+        assert.ok(
+          !cardHtml.includes('data-testid="oracle-powerup-stars"'),
+          `Non-favored / bye card ${nonFavId} must strictly NOT render floating stars`
+        );
+        assert.ok(
+          !cardHtml.includes('data-testid="player-favored-badge"'),
+          `Non-favored / bye card ${nonFavId} must strictly NOT render removed favored badge`
         );
       }
     });
@@ -2671,7 +2700,7 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       assert.ok(html.includes('Bijan Robinson'), 'Opponent RB must be rendered in flex row');
     });
 
-    it('30.16 should verify AC6 NaN width guard when both starters have 0 Oracle score rendering 50/50 split and meter attributes', () => {
+    it('30.16 should verify AC6 NaN width guard when both starters have 0 Oracle score without dominant state', () => {
       const zeroUser = {
         player_id: 'zero_u',
         player_name: 'Zero User',
@@ -2713,27 +2742,11 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
         React.createElement(MatchupsScreen, { weeklyMatchup: zeroMatchup }),
         { ...mockData.mock_oneiromancy_draft_2025, roster_positions: ['QB'] }
       );
-      assert.ok(!html.includes('NaN%'), 'Advantage bar must never render NaN% in width style');
-      assert.ok(
-        html.includes('title="Matchup advantage: 0.0 Oracle vs 0.0 Oracle"'),
-        'Advantage bar must expose 0.0 Oracle vs 0.0 Oracle tooltip'
-      );
-      assert.ok(
-        /role="meter"[^>]*aria-valuenow="50"/.test(html),
-        'Advantage bar meter must expose aria-valuenow="50" on 0/0 split'
-      );
-      assert.ok(
-        /data-testid="matchup-bar-user"[^>]*style="[^"]*width:\s*50%/.test(html),
-        'User bar segment must render 50% width'
-      );
-      assert.ok(
-        /data-testid="matchup-bar-opp"[^>]*style="[^"]*width:\s*50%/.test(html),
-        'Opponent bar segment must render 50% width'
-      );
-      assert.ok(
-        /data-testid="matchup-bar-delta"[^>]*>(?:(?!<\/div>)[\s\S])*?<span[^>]*>Even<\/span>(?:(?!<\/div>)[\s\S])*?<span[^>]*>0\.0<\/span>\s*<\/div>/.test(html),
-        'Advantage bar delta must render Even and 0.0 inside bounded delta container'
-      );
+      assert.ok(!html.includes('NaN'), 'Card metrics must never render NaN when Oracle scores are 0');
+      assert.ok(html.includes('data-testid="oracle-node"'), 'Zero-score tie must still render oracle-node tree');
+      assert.ok(!html.includes('data-dominant="true"'), '0.0 vs 0.0 tie must not mark either Oracle node dominant');
+      assert.ok(!html.includes('data-testid="oracle-powerup-stars"'), '0.0 vs 0.0 tie must not render floating stars');
+      assert.ok(!html.includes('role="meter"'), 'Advantage bar meter must remain removed');
     });
 
     it('30.17 should verify multi-position starter pairing in buildStarterPairs via fantasy_positions (e.g. TE with QB fantasy_positions in QB slot)', () => {
@@ -2900,8 +2913,57 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
       );
       assert.ok(html.includes('data-testid="matchup-starter-card-uk"'), 'User K starter card must be present');
       assert.ok(html.includes('data-testid="matchup-starter-card-od"'), 'Opp DEF starter card must be present');
-      assert.ok(html.includes('Open'), 'One-sided overflow rows must display Open status pill');
+      assert.ok(html.includes('Empty opponent slot'), 'User overflow row must render Empty opponent slot placeholder');
+      assert.ok(html.includes('Empty starter slot'), 'Opponent overflow row must render Empty starter slot placeholder');
+      assert.ok(!html.includes('data-dominant="true"'), 'One-sided overflow rows must never mark Oracle node dominant');
+      assert.ok(!html.includes('data-testid="oracle-powerup-stars"'), 'One-sided overflow rows must never display floating stars');
       assert.ok(!html.includes('player-favored-badge'), 'One-sided overflow rows must never display favored badge');
+    });
+
+    it('30.20 should verify League leaderboard tier badges strictly match the displayed team rating rather than raw spirit_score alone', () => {
+      const topTeam = {
+        slot: 1,
+        roster_id: 1,
+        name: 'Top Composite Team',
+        avg_spirit_score: 72.0,
+        avg_draft_score: 82.0,
+        harmony_score: 86.7,
+        picks: [],
+      };
+      const midTeam = {
+        slot: 4,
+        roster_id: 4,
+        name: 'Fourth Place Team',
+        avg_spirit_score: 76.0,
+        avg_draft_score: 70.0,
+        harmony_score: 76.0,
+        picks: [],
+      };
+
+      const mTop = scoring.calculateTeamCelestialMetrics(topTeam);
+      const mMid = scoring.calculateTeamCelestialMetrics(midTeam);
+
+      assert.equal(mTop.compositeScore, 79.4, 'Top team compositeScore must be 79.4');
+      assert.equal(mTop.tier, 'Harmonic', 'Team with 79.4 composite score must be Harmonic, not Discordant');
+      assert.equal(mTop.verdict, '⚖️ Harmonic (Stable)', 'Team with 79.4 composite score must display Harmonic (Stable)');
+
+      assert.equal(mMid.compositeScore, 74.2, 'Fourth team compositeScore must be 74.2');
+      assert.equal(mMid.tier, 'Discordant', 'Team with 74.2 composite score (< 75.0) must be Discordant, not Harmonic');
+      assert.equal(mMid.verdict, '⚠️ Discordant (At Risk)', 'Team with 74.2 composite score (< 75.0) must display Discordant (At Risk)');
+
+      const lbHtml = renderWithProvider(
+        React.createElement(CelestialLeaderboardGraph, {
+          competitorTeams: [midTeam, topTeam],
+        })
+      );
+      const topCardStart = lbHtml.indexOf('Top Composite Team');
+      const midCardStart = lbHtml.indexOf('Fourth Place Team');
+      assert.ok(topCardStart !== -1 && midCardStart !== -1 && topCardStart < midCardStart, 'Leaderboard must rank 79.4 ahead of 74.2');
+      const topSlice = lbHtml.slice(topCardStart, midCardStart);
+      assert.ok(topSlice.includes('⚖️ Harmonic (Stable)') && topSlice.includes('79.4'), 'Rank #1 (79.4) must show Harmonic (Stable)');
+      assert.ok(!topSlice.includes('Discordant'), 'Rank #1 (79.4) must NOT show Discordant');
+      const midSlice = lbHtml.slice(midCardStart);
+      assert.ok(midSlice.includes('⚠️ Discordant (At Risk)') && midSlice.includes('74.2'), '74.2 row must show Discordant (At Risk)');
     });
   });
 });

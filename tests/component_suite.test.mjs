@@ -49,14 +49,22 @@ register(new URL('./loader.mjs', import.meta.url));
 import { test, describe, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert/strict';
 
-const { render, renderToString, screen, fireEvent, waitFor, act, cleanup, jsx, Fragment, StrictMode, React } = await import('./helpers/react_testing_wrapper.mjs');
+const { render, renderToString, renderToStaticMarkup, screen, fireEvent, waitFor, act, cleanup, jsx, Fragment, StrictMode, React } = await import('./helpers/react_testing_wrapper.mjs');
 const { setupServer, http, HttpResponse } = await import('./helpers/msw_network_interceptor.mjs');
 
 // Import UI components dynamically after loader registration
 const { GlassCard } = await import('../components/common/GlassCard.tsx');
 const { PositionalBadge } = await import('../components/common/PositionalBadge.tsx');
+const { RosterSlotBadge, normalizeRosterSlot } = await import('../components/common/RosterSlotBadge.tsx');
 const { UserAvatar } = await import('../components/common/UserAvatar.tsx');
 const { NavigationShell } = await import('../components/common/NavigationShell.tsx');
+const {
+  StarfieldBackground,
+  initStarfield,
+  isOrientationPermissionRequired,
+  getOrientationPermissionStatus,
+  requestOrientationPermission,
+} = await import('../components/common/StarfieldBackground.tsx');
 const { Astrolabe } = await import('../components/astrolabe/Astrolabe.tsx');
 const { BoardControls } = await import('../components/board/BoardControls.tsx');
 const { PlayerCardRow } = await import('../components/board/PlayerCardRow.tsx');
@@ -74,6 +82,7 @@ const { LeagueScreen } = await import('../components/screens/LeagueScreen.tsx');
 const { ChaosDial } = await import('../components/screens/ChaosDial.tsx');
 const { OneiromancyProvider, useOneiromancy } = await import('../context/OneiromancyContext.tsx');
 const { HealthTag } = await import('../components/common/PlayerTiles.tsx');
+const { CelestialLeaderboardGraph } = await import('../components/oneiromancy/CelestialLeaderboardGraph.tsx');
 
 const mockData = await import('../core/lib/mockData.ts');
 const sleeper = await import('../core/lib/sleeper.ts');
@@ -320,6 +329,1848 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       const slateDot = indicator.querySelector('.bg-slate-500');
       assert.ok(slateDot, 'Must render slate status dot when offline');
       cleanup();
+    });
+
+    test('8.1.7 RosterSlotBadge and normalizeRosterSlot should enforce anchored normalization order', () => {
+      const normalizationCases = [
+        // BN/Bench first
+        { input: ['BN', undefined], expected: { type: 'BN', label: 'BN', title: 'Bench' } },
+        { input: ['BN1', 'Bench 1'], expected: { type: 'BN', label: 'BN', title: 'Bench 1' } },
+        { input: ['BN2', undefined], expected: { type: 'BN', label: 'BN', title: 'Bench 2' } },
+        { input: [undefined, 'Bench 3'], expected: { type: 'BN', label: 'BN', title: 'Bench 3' } },
+        { input: ['BENCH', undefined], expected: { type: 'BN', label: 'BN', title: 'Bench' } },
+        { input: ['QB', 'BN'], expected: { type: 'BN', label: 'BN', title: 'Bench' } },
+
+        // Exact slotId lookup
+        { input: ['QB', undefined], expected: { type: 'QB', label: 'QB', title: 'Quarterback' } },
+        { input: ['RB1', 'Running Back 1'], expected: { type: 'RB', label: 'RB', title: 'Running Back 1' } },
+        { input: ['RB2', undefined], expected: { type: 'RB', label: 'RB', title: 'Running Back 2' } },
+        { input: ['WR1', undefined], expected: { type: 'WR', label: 'WR', title: 'Wide Receiver 1' } },
+        { input: ['WR2', undefined], expected: { type: 'WR', label: 'WR', title: 'Wide Receiver 2' } },
+        { input: ['TE', undefined], expected: { type: 'TE', label: 'TE', title: 'Tight End' } },
+        { input: ['FLEX', undefined], expected: { type: 'WRT', label: 'WRT', title: 'Flex (W/R/T)' } },
+        { input: ['WRT', undefined], expected: { type: 'WRT', label: 'WRT', title: 'Flex (W/R/T)' } },
+        { input: ['SUPER_FLEX', undefined], expected: { type: 'WRTQ', label: 'WRTQ', title: 'Superflex (QB/W/R/T)' } },
+        { input: ['SUPERFLEX', undefined], expected: { type: 'WRTQ', label: 'WRTQ', title: 'Superflex (QB/W/R/T)' } },
+        { input: ['WRTQ', undefined], expected: { type: 'WRTQ', label: 'WRTQ', title: 'Superflex (QB/W/R/T)' } },
+        { input: ['SF', undefined], expected: { type: 'WRTQ', label: 'WRTQ', title: 'Superflex (QB/W/R/T)' } },
+        { input: ['WRRB_FLEX', undefined], expected: { type: 'WRRB', label: 'WR/RB', title: 'Flex (W/R)' } },
+        { input: ['WRRB', undefined], expected: { type: 'WRRB', label: 'WR/RB', title: 'Flex (W/R)' } },
+        { input: ['REC_FLEX', undefined], expected: { type: 'REC_FLEX', label: 'WR/TE', title: 'Flex (W/T)' } },
+        { input: ['WRTE', undefined], expected: { type: 'REC_FLEX', label: 'WR/TE', title: 'Flex (W/T)' } },
+        { input: ['IDP_FLEX', undefined], expected: { type: 'IDP', label: 'IDP', title: 'Individual Defensive Player' } },
+        { input: ['DL', undefined], expected: { type: 'IDP', label: 'DL', title: 'Defensive Lineman' } },
+        { input: ['LB', undefined], expected: { type: 'IDP', label: 'LB', title: 'Linebacker' } },
+        { input: ['DB', undefined], expected: { type: 'IDP', label: 'DB', title: 'Defensive Back' } },
+        { input: ['K', undefined], expected: { type: 'K', label: 'K', title: 'Kicker' } },
+        { input: ['DEF', undefined], expected: { type: 'DEF', label: 'DEF', title: 'Defense / Special Teams' } },
+
+        // Exact slotName lookup
+        { input: [undefined, 'Quarterback'], expected: { type: 'QB', label: 'QB', title: 'Quarterback' } },
+        { input: [undefined, 'Running Back 1'], expected: { type: 'RB', label: 'RB', title: 'Running Back 1' } },
+        { input: [undefined, 'Wide Receiver 2'], expected: { type: 'WR', label: 'WR', title: 'Wide Receiver 2' } },
+        { input: [undefined, 'Tight End'], expected: { type: 'TE', label: 'TE', title: 'Tight End' } },
+        { input: [undefined, 'Flex (W/R/T)'], expected: { type: 'WRT', label: 'WRT', title: 'Flex (W/R/T)' } },
+        { input: [undefined, 'Superflex (QB/W/R/T)'], expected: { type: 'WRTQ', label: 'WRTQ', title: 'Superflex (QB/W/R/T)' } },
+        { input: [undefined, 'Flex (W/R)'], expected: { type: 'WRRB', label: 'WR/RB', title: 'Flex (W/R)' } },
+        { input: [undefined, 'Flex (W/T)'], expected: { type: 'REC_FLEX', label: 'WR/TE', title: 'Flex (W/T)' } },
+        { input: [undefined, 'Defensive Lineman'], expected: { type: 'IDP', label: 'DL', title: 'Defensive Lineman' } },
+        { input: [undefined, 'Linebacker'], expected: { type: 'IDP', label: 'LB', title: 'Linebacker' } },
+        { input: [undefined, 'Defensive Back'], expected: { type: 'IDP', label: 'DB', title: 'Defensive Back' } },
+        { input: [undefined, 'Defense / Special Teams'], expected: { type: 'DEF', label: 'DEF', title: 'Defense / Special Teams' } },
+
+        // Symmetric Bench with space and suffix
+        { input: ['BN 1', undefined], expected: { type: 'BN', label: 'BN', title: 'Bench 1' } },
+        { input: ['BENCH 2', undefined], expected: { type: 'BN', label: 'BN', title: 'Bench 2' } },
+
+        // Fallback passthrough
+        { input: ['Rd 3', 'Rd 3'], expected: { type: 'UNKNOWN', label: 'Rd 3', title: 'Rd 3' } },
+        { input: [undefined, undefined], expected: { type: 'UNKNOWN', label: 'SLOT', title: 'SLOT' } },
+      ];
+
+      for (const tc of normalizationCases) {
+        const actual = normalizeRosterSlot(tc.input[0], tc.input[1]);
+        assert.equal(actual.type, tc.expected.type, `Type mismatch for input ${JSON.stringify(tc.input)}`);
+        assert.equal(actual.label, tc.expected.label, `Label mismatch for input ${JSON.stringify(tc.input)}`);
+        assert.equal(actual.title, tc.expected.title, `Title mismatch for input ${JSON.stringify(tc.input)}`);
+      }
+    });
+
+    test('8.1.8 RosterSlotBadge should render authentic Sleeper colors, split gradients, and text styles', () => {
+      const badgeCases = [
+        { slotId: 'QB', expectedText: 'QB', expectedTestId: 'slot-badge-qb', expectedBg: '#ff2a6d' },
+        { slotId: 'RB', expectedText: 'RB', expectedTestId: 'slot-badge-rb', expectedBg: '#00ceb8' },
+        { slotId: 'WR', expectedText: 'WR', expectedTestId: 'slot-badge-wr', expectedBg: '#00b0ff' },
+        { slotId: 'TE', expectedText: 'TE', expectedTestId: 'slot-badge-te', expectedBg: '#ff9100' },
+        {
+          slotId: 'WRT',
+          expectedText: 'WRT',
+          expectedTestId: 'slot-badge-wrt',
+          expectedGradientType: 'linear-gradient(',
+          expectedGradientStops: ['#00b0ff', '#00ceb8', '#ff9100'],
+          expectedExactGradient: 'linear-gradient(90deg, #00b0ff 0%, #00b0ff 33.33%, #00ceb8 33.33%, #00ceb8 66.66%, #ff9100 66.66%, #ff9100 100%)',
+        },
+        {
+          slotId: 'WRTQ',
+          expectedText: 'WRTQ',
+          expectedTestId: 'slot-badge-wrtq',
+          expectedGradientType: 'conic-gradient(',
+          expectedGradientStops: ['#00ceb8', '#ff2a6d', '#ff9100', '#00b0ff'],
+          expectedExactGradient: 'conic-gradient(from 0deg at 50% 50%, #00ceb8 0deg 90deg, #ff2a6d 90deg 180deg, #ff9100 180deg 270deg, #00b0ff 270deg 360deg)',
+        },
+        { slotId: 'WRRB', expectedText: 'WR/RB', expectedTestId: 'slot-badge-wrrb', expectedGradientStops: ['#00b0ff', '#00ceb8'] },
+        { slotId: 'REC_FLEX', expectedText: 'WR/TE', expectedTestId: 'slot-badge-rec_flex', expectedGradientStops: ['#00b0ff', '#ff9100'] },
+        { slotId: 'K', expectedText: 'K', expectedTestId: 'slot-badge-k', expectedClass: 'bg-slate-800' },
+        { slotId: 'DEF', expectedText: 'DEF', expectedTestId: 'slot-badge-def', expectedClass: 'bg-slate-800' },
+        { slotId: 'BN', expectedText: 'BN', expectedTestId: 'slot-badge-bn', expectedClass: 'bg-slate-700', expectedTextClass: 'text-slate-200' },
+        { slotId: 'Rd 3', slotName: 'Rd 3', expectedText: 'Rd 3', expectedTestId: 'slot-badge-unknown', expectedClass: 'bg-slate-800' },
+      ];
+
+      for (const bc of badgeCases) {
+        render(jsx(RosterSlotBadge, { slotId: bc.slotId, slotName: bc.slotName, size: 'sm' }));
+        const badge = screen.getByTestId(bc.expectedTestId);
+        assert.ok(badge, `Must find badge for ${bc.slotId}`);
+        assert.equal(badge.textContent, bc.expectedText, `Badge text must be ${bc.expectedText}`);
+
+        if (bc.expectedBg) {
+          const bgColor = badge.style?.backgroundColor || badge.style?.getPropertyValue?.('background-color');
+          assert.equal(bgColor, bc.expectedBg, `Expected bgColor ${bc.expectedBg} for ${bc.slotId}`);
+          assert.ok(badge.className.includes('text-black'), `Starter ${bc.slotId} must have black text`);
+          assert.ok(badge.className.includes('font-black'), `Starter ${bc.slotId} must have font-black`);
+        }
+        if (bc.expectedGradientStops) {
+          const background = badge.style?.background || badge.style?.getPropertyValue?.('background');
+          const gradType = bc.expectedGradientType || 'linear-gradient(';
+          assert.ok(background && background.startsWith(gradType), `Expected ${gradType} for ${bc.slotId}`);
+          for (const stop of bc.expectedGradientStops) {
+            assert.ok(background.includes(stop), `Expected stop ${stop} in gradient for ${bc.slotId}`);
+          }
+          assert.ok(badge.className.includes('text-black'), `Flex ${bc.slotId} must have black text`);
+        }
+        if (bc.expectedExactGradient) {
+          const background = badge.style?.background || badge.style?.getPropertyValue?.('background');
+          assert.equal(background, bc.expectedExactGradient, `Exact gradient mismatch for ${bc.slotId}`);
+        }
+        if (bc.expectedClass) {
+          assert.ok(badge.className.includes(bc.expectedClass), `${bc.slotId} must have class ${bc.expectedClass}`);
+        }
+        if (bc.expectedTextClass) {
+          assert.ok(badge.className.includes(bc.expectedTextClass), `${bc.slotId} must have text class ${bc.expectedTextClass}`);
+        }
+        cleanup();
+      }
+    });
+
+    test('8.1.9 RosterSlotBadge should maintain SSR markup invariance with exactly one text node child', () => {
+      const slots = ['WRT', 'WRTQ', 'WRRB', 'REC_FLEX', 'QB', 'RB', 'WR', 'TE', 'BN', 'K', 'DEF'];
+      for (const slot of slots) {
+        const markup = renderToStaticMarkup(
+          jsx(RosterSlotBadge, { slotId: slot, slotLabel: slot, dataTestId: 'matchup-slot-label' })
+        );
+        const match = markup.match(/data-testid="matchup-slot-label"[^>]*>([^<]+)<\/span>/);
+        assert.ok(match, `Markup for ${slot} must match single text node regex: ${markup}`);
+        assert.equal(match[1], slot, `Captured text node must be verbatim ${slot}`);
+      }
+
+      // Empty label guard test
+      const emptyLabelMarkup = renderToStaticMarkup(
+        jsx(RosterSlotBadge, { slotId: 'QB', slotLabel: '', dataTestId: 'matchup-slot-label' })
+      );
+      const emptyMatch = emptyLabelMarkup.match(/data-testid="matchup-slot-label"[^>]*>([^<]+)<\/span>/);
+      assert.ok(emptyMatch, 'Empty slotLabel must fall back and still match single text node regex');
+      assert.equal(emptyMatch[1], 'QB', 'Must fall back to normalized QB label');
+    });
+
+    test('8.1.10 RosterSlotBadge sizing, custom className, and test-id collision prevention', () => {
+      render(jsx(RosterSlotBadge, { slotId: 'QB', size: 'lg', className: 'custom-pill-class', dataTestId: 'custom-slot-id' }));
+      const badge = screen.getByTestId('custom-slot-id');
+      assert.ok(badge, 'Must honor custom dataTestId');
+      assert.ok(!(badge.getAttribute('data-testid') || '').startsWith('badge-'), 'Must not collide with PositionalBadge badge-* test-id prefix');
+      assert.ok(badge.className.includes('custom-pill-class'), 'Must retain custom classes');
+      assert.ok(badge.className.includes('text-sm'), 'Must apply lg text-sm size class');
+      cleanup();
+    });
+
+    test('8.1.11 RosterSlotBadge renders authentic slot pills across real OneiromancyDashboard, LeagueScreen, and MatchupsScreen screens', () => {
+      const baseTeam = (testDraftState.competitor_teams || mockData.mockCompetitorTeams)[0];
+      const starterIds = testDraftState.cosmic_board.slice(0, 4).map((p) => String(p.id));
+      const allPlayerIds = testDraftState.cosmic_board.slice(0, 5).map((p) => String(p.id));
+      const customRosterState = {
+        ...testDraftState,
+        settings: {
+          ...testDraftState.settings,
+          roster_positions: ['QB', 'FLEX', 'SUPER_FLEX', 'REC_FLEX', 'BN'],
+        },
+        my_roster: [
+          {
+            slot_id: 'QB',
+            slot_name: 'Quarterback',
+            position: 'QB',
+            eligible_positions: ['QB'],
+            player: testDraftState.cosmic_board[0],
+            is_locked: false,
+          },
+          {
+            slot_id: 'FLEX',
+            slot_name: 'Flex (W/R/T)',
+            position: 'FLEX',
+            eligible_positions: ['WR', 'RB', 'TE'],
+            player: testDraftState.cosmic_board[1],
+            is_locked: false,
+          },
+          {
+            slot_id: 'TE',
+            slot_name: 'Tight End',
+            position: 'TE',
+            eligible_positions: ['TE'],
+            player: null,
+            is_locked: false,
+          },
+          {
+            slot_id: 'BN1',
+            slot_name: 'Bench 1',
+            position: 'BN',
+            eligible_positions: ['QB', 'RB', 'WR', 'TE'],
+            player: testDraftState.cosmic_board[2],
+            is_locked: false,
+          },
+        ],
+        competitor_teams: [
+          {
+            ...baseTeam,
+            is_user: true,
+            starters: starterIds,
+            players: allPlayerIds,
+          },
+          ...(testDraftState.competitor_teams || []).slice(1),
+        ],
+      };
+
+      // 1. OneiromancyDashboard: starter slot pills, empty slot badge, bench BN pill, and 4-child card column
+      const { container: dashContainer } = render(
+        jsx(OneiromancyProvider, { initialDraftState: customRosterState }, jsx(OneiromancyDashboard, {})),
+      );
+      assert.equal(screen.getByTestId('slot-badge-qb').textContent, 'QB', 'Dashboard must render QB slot badge');
+      assert.equal(screen.getByTestId('slot-badge-wrt').textContent, 'WRT', 'Dashboard must render WRT flex slot badge');
+      assert.equal(screen.getByTestId('slot-badge-te').textContent, 'TE', 'Dashboard must render TE empty-slot badge');
+      assert.equal(screen.getByTestId('slot-badge-bn').textContent, 'BN', 'Dashboard must render BN bench badge');
+      assert.ok(dashContainer.textContent.includes('Empty Slot'), 'Dashboard empty slot must retain Empty Slot label');
+      const cardCols = screen.getAllByTestId('roster-card-text-col');
+      assert.ok(cardCols.length >= 2, 'Dashboard must render roster-card-text-col cards');
+      assert.equal(cardCols[0].children.length, 4, 'roster-card-text-col must retain strictly 4 children');
+      cleanup();
+
+      // 2. LeagueScreen: maps SUPER_FLEX -> WRTQ, FLEX -> WRT, REC_FLEX -> WR/TE, BN -> BN
+      render(jsx(OneiromancyProvider, { initialDraftState: customRosterState }, jsx(LeagueScreen, {})));
+      assert.equal(screen.getByTestId('slot-badge-wrtq').textContent, 'WRTQ', 'LeagueScreen must map SUPER_FLEX to WRTQ');
+      assert.equal(screen.getByTestId('slot-badge-wrt').textContent, 'WRT', 'LeagueScreen must map FLEX to WRT');
+      assert.equal(screen.getByTestId('slot-badge-rec_flex').textContent, 'WR/TE', 'LeagueScreen must map REC_FLEX to WR/TE');
+      assert.equal(screen.getByTestId('slot-badge-bn').textContent, 'BN', 'LeagueScreen must render BN bench badges');
+      cleanup();
+
+      // 3. MatchupsScreen: renders RosterSlotBadge with data-testid="matchup-slot-label" and single text node
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: testDraftState },
+          jsx(MatchupsScreen, { weeklyMatchup: testDraftState.weekly_matchup }),
+        ),
+      );
+      const matchupSlots = screen.getAllByTestId('matchup-slot-label');
+      assert.ok(matchupSlots.length > 0, 'MatchupsScreen must render matchup-slot-label pills');
+      for (const el of matchupSlots) {
+        assert.equal(el.children.length, 0, 'matchup-slot-label span must have 0 child elements');
+        assert.equal(el.getAttribute('role'), 'note', 'matchup-slot-label must render RosterSlotBadge note role');
+        assert.ok((el.getAttribute('aria-label') || '').trim().length > 0, 'matchup-slot-label must have non-empty aria-label');
+        assert.ok((el.textContent || '').trim().length > 0, 'matchup-slot-label must have non-empty slot text');
+      }
+      cleanup();
+    });
+
+    test('8.1.12 StarfieldBackground should render canvas with accessibility attributes, test ID, and fixed positioning', () => {
+      render(jsx(StarfieldBackground, {}));
+      const canvas = screen.getByTestId('starfield-canvas');
+      assert.ok(canvas, 'Must render canvas with data-testid="starfield-canvas"');
+      assert.equal(canvas.getAttribute('aria-hidden'), 'true', 'Must have aria-hidden="true"');
+      assert.equal(canvas.getAttribute('tabindex') ?? String(canvas.tabIndex), '-1', 'Must set tabIndex={-1}');
+      assert.ok(canvas.className.includes('fixed'), 'Must include fixed positioning class');
+      assert.ok(canvas.className.includes('inset-0'), 'Must include inset-0 class');
+      assert.ok(canvas.className.includes('pointer-events-none'), 'Must include pointer-events-none class');
+      assert.ok(canvas.className.includes('-z-10'), 'Must include -z-10 stacking class');
+      assert.ok(canvas.className.includes('w-full'), 'Must include w-full class');
+      assert.ok(canvas.className.includes('h-full'), 'Must include h-full class');
+      cleanup();
+    });
+
+    test('8.1.13 StarfieldBackground should mount and unmount cleanly in headless Node environments without throwing', () => {
+      assert.doesNotThrow(() => {
+        render(jsx(StarfieldBackground, {}));
+        cleanup();
+      }, 'Must mount and unmount cleanly without exceptions in headless Node environment');
+    });
+
+    test('8.1.14 initStarfield should register event listeners, handle tilt and visibility pause/resume, and clean up on teardown', () => {
+      const registeredWindowListeners = new Map();
+      const removedWindowListeners = new Map();
+      const registeredDocListeners = new Map();
+      const removedDocListeners = new Map();
+      const rafCallbacks = [];
+      let animFrameRequested = 0;
+      let animFrameCancelled = 0;
+
+      const mockWindow = {
+        innerWidth: 1024,
+        innerHeight: 768,
+        devicePixelRatio: 2,
+        matchMedia: () => ({ matches: false }),
+        addEventListener: (event, handler) => {
+          registeredWindowListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedWindowListeners.set(event, handler);
+        },
+      };
+
+      const mockDoc = {
+        hidden: false,
+        addEventListener: (event, handler) => {
+          registeredDocListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedDocListeners.set(event, handler);
+        },
+      };
+
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      globalThis.window = mockWindow;
+      globalThis.document = mockDoc;
+      globalThis.requestAnimationFrame = (cb) => {
+        animFrameRequested++;
+        rafCallbacks.push(cb);
+        return animFrameRequested;
+      };
+      globalThis.cancelAnimationFrame = () => {
+        animFrameCancelled++;
+      };
+
+      const arcCalls = [];
+      const mockCtx = {
+        clearRect: () => {},
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: (x, y, r) => {
+          arcCalls.push({ x, y, r });
+        },
+        fill: () => {},
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: (type) => (type === '2d' ? mockCtx : null),
+      };
+
+      let mockTime = 1000;
+      const origPerf = globalThis.performance;
+      globalThis.performance = {
+        now: () => mockTime,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+
+        assert.ok(registeredWindowListeners.has('deviceorientation'), 'Must register deviceorientation listener');
+        assert.ok(registeredWindowListeners.has('resize'), 'Must register resize listener');
+        assert.ok(registeredDocListeners.has('visibilitychange'), 'Must register visibilitychange listener');
+        assert.ok(animFrameRequested > 0, 'Must request animation frame on init');
+
+        // Frame 1: Initial baseline frame at t = 1016.67ms (dt = 1.0)
+        mockTime = 1016.67;
+        const frame1 = rafCallbacks.shift();
+        assert.ok(typeof frame1 === 'function', 'Must queue initial animation frame callback');
+        frame1();
+        assert.ok(arcCalls.length > 0, 'Must render star particles on animation frame');
+        const x1 = arcCalls[0].x;
+        const y1 = arcCalls[0].y;
+
+        // Frame 2: Second frame with pure drift (no tilt) at t = 1033.34ms (dt = 1.0)
+        mockTime = 1033.34;
+        const frame2 = rafCallbacks.shift();
+        assert.ok(typeof frame2 === 'function', 'Must queue second animation frame callback');
+        arcCalls.length = 0;
+        frame2();
+        const x2 = arcCalls[0].x;
+        const y2 = arcCalls[0].y;
+        const unwrapDelta = (delta, max) => (delta < -max / 2 ? delta + max : delta > max / 2 ? delta - max : delta);
+        const pureDriftX = unwrapDelta(x2 - x1, 1024);
+        const pureDriftY = unwrapDelta(y2 - y1, 768);
+
+        // Apply accelerometer tilt (gamma = 30 -> targetTiltX = 1.0, beta = 75 -> targetTiltY = 1.0)
+        const orientationHandler = registeredWindowListeners.get('deviceorientation');
+        orientationHandler({ gamma: 30, beta: 75 });
+
+        // Frame 3: Third frame with damped tilt parallax applied at t = 1050.01ms (dt = 1.0)
+        mockTime = 1050.01;
+        const frame3 = rafCallbacks.shift();
+        assert.ok(typeof frame3 === 'function', 'Must queue third animation frame callback');
+        arcCalls.length = 0;
+        frame3();
+        const x3 = arcCalls[0].x;
+        const y3 = arcCalls[0].y;
+        assert.ok(
+          arcCalls.every((s) => s.x >= 0 && s.x < 1024 && s.y >= 0 && s.y < 768),
+          'Tilted star coordinates must wrap strictly within [0, width) x [0, height)'
+        );
+        const tiltedShiftX = unwrapDelta(x3 - x2, 1024);
+        const tiltedShiftY = unwrapDelta(y3 - y2, 768);
+        const parallaxDeltaX = tiltedShiftX - pureDriftX;
+        const parallaxDeltaY = tiltedShiftY - pureDriftY;
+
+        // Verify tilt displacement strictly exceeds pure celestial drift
+        assert.ok(
+          parallaxDeltaX > 0.01,
+          `Horizontal tilt parallax shift (${parallaxDeltaX.toFixed(4)}px) must exceed pure drift (${pureDriftX.toFixed(4)}px)`
+        );
+        assert.ok(
+          parallaxDeltaY > 0.01,
+          `Vertical tilt parallax shift (${parallaxDeltaY.toFixed(4)}px) must exceed pure drift (${pureDriftY.toFixed(4)}px)`
+        );
+
+        // Safe null handling for sensors reporting null tilt
+        assert.doesNotThrow(() => {
+          orientationHandler({ gamma: null, beta: null });
+        }, 'Orientation handler must handle null values safely');
+
+        // Visibilitychange tab pausing and resuming
+        const visibilityHandler = registeredDocListeners.get('visibilitychange');
+        mockDoc.hidden = true;
+        visibilityHandler();
+        assert.ok(animFrameCancelled > 0, 'Must cancel active animation frame when tab is hidden');
+
+        const prevRAFCount = animFrameRequested;
+        mockDoc.hidden = false;
+        visibilityHandler();
+        assert.ok(animFrameRequested > prevRAFCount, 'Must resume animation loop when tab becomes visible');
+
+        cleanupStarfield();
+
+        assert.ok(removedWindowListeners.has('deviceorientation'), 'Must remove deviceorientation listener on teardown');
+        assert.equal(
+          removedWindowListeners.get('deviceorientation'),
+          registeredWindowListeners.get('deviceorientation'),
+          'Must remove exact deviceorientation handler reference'
+        );
+        assert.ok(removedWindowListeners.has('resize'), 'Must remove resize listener on teardown');
+        assert.equal(
+          removedWindowListeners.get('resize'),
+          registeredWindowListeners.get('resize'),
+          'Must remove exact resize handler reference'
+        );
+        assert.ok(removedDocListeners.has('visibilitychange'), 'Must remove visibilitychange listener on teardown');
+        assert.equal(
+          removedDocListeners.get('visibilitychange'),
+          registeredDocListeners.get('visibilitychange'),
+          'Must remove exact visibilitychange handler reference'
+        );
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.performance = origPerf;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.15 initStarfield should respect prefers-reduced-motion, render static frame, and redraw on resize', () => {
+      const registeredWindowListeners = new Map();
+      const removedWindowListeners = new Map();
+      let animFrameRequested = 0;
+
+      const mockWindow = {
+        innerWidth: 1024,
+        innerHeight: 768,
+        devicePixelRatio: 1,
+        matchMedia: (query) => ({ matches: typeof query === 'string' && query.includes('prefers-reduced-motion') }),
+        addEventListener: (event, handler) => {
+          registeredWindowListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedWindowListeners.set(event, handler);
+        },
+      };
+
+      const origWindow = globalThis.window;
+      const origRAF = globalThis.requestAnimationFrame;
+
+      globalThis.window = mockWindow;
+      globalThis.requestAnimationFrame = () => {
+        animFrameRequested++;
+        return 99;
+      };
+
+      let fillCallCount = 0;
+      const mockCtx = {
+        clearRect: () => {},
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: () => {},
+        fill: () => {
+          fillCallCount++;
+        },
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+
+        assert.ok(!registeredWindowListeners.has('deviceorientation'), 'Must not listen to deviceorientation under prefers-reduced-motion');
+        assert.ok(!registeredWindowListeners.has('devicemotion'), 'Must not listen to devicemotion under prefers-reduced-motion');
+        assert.ok(!registeredWindowListeners.has('scroll'), 'Must not listen to scroll under prefers-reduced-motion');
+        assert.ok(!registeredWindowListeners.has('orientationchange'), 'Must not listen to orientationchange under prefers-reduced-motion');
+        assert.ok(fillCallCount > 0, 'Must render static frame under prefers-reduced-motion');
+        assert.equal(animFrameRequested, 0, 'Must not request animation frames under prefers-reduced-motion');
+
+        const initialFillCount = fillCallCount;
+        const resizeHandler = registeredWindowListeners.get('resize');
+        assert.ok(resizeHandler, 'Must register resize listener under prefers-reduced-motion');
+        resizeHandler();
+        assert.ok(fillCallCount > initialFillCount, 'Must immediately redraw static frame on resize under prefers-reduced-motion');
+
+        cleanupStarfield();
+        assert.ok(removedWindowListeners.has('resize'), 'Must remove resize listener on teardown');
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.requestAnimationFrame = origRAF;
+      }
+    });
+
+    test('8.1.16 NavigationShell should apply transparent background and relative isolate to preserve starfield visibility', () => {
+      render(
+        jsx(NavigationShell, {
+          activeTab: 'oneiromancy',
+          onTabChange: () => {},
+          mode: 'mock',
+        })
+      );
+      const rootDiv = screen.getByTestId('navigation-shell-root');
+      assert.ok(rootDiv, 'NavigationShell root container must render');
+      assert.ok(rootDiv.className.includes('bg-transparent'), 'Must use bg-transparent to avoid occluding background starfield');
+      assert.ok(rootDiv.className.includes('isolate'), 'Must use isolate for stacking context');
+      cleanup();
+    });
+
+    test('8.1.17 initStarfield should redistribute star coordinates and rebalance star count across viewport dimensions upon resize', () => {
+      const registeredWindowListeners = new Map();
+      const removedWindowListeners = new Map();
+      let animCallback = null;
+
+      const mockWindow = {
+        innerWidth: 390,
+        innerHeight: 844,
+        devicePixelRatio: 1,
+        matchMedia: () => ({ matches: false }),
+        addEventListener: (event, handler) => {
+          registeredWindowListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedWindowListeners.set(event, handler);
+        },
+      };
+
+      const origWindow = globalThis.window;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      globalThis.window = mockWindow;
+      globalThis.requestAnimationFrame = (cb) => {
+        animCallback = cb;
+        return 101;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+
+      let renderedArcs = [];
+      const mockCtx = {
+        clearRect: () => {
+          renderedArcs = [];
+        },
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: (x, y, r) => {
+          renderedArcs.push({ x, y, r });
+        },
+        fill: () => {},
+      };
+
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+
+        assert.equal(mockCanvas.width, 390, 'Initial canvas width matches portrait viewport');
+        assert.equal(mockCanvas.height, 844, 'Initial canvas height matches portrait viewport');
+
+        // Execute initial animation frame
+        if (typeof animCallback === 'function') {
+          const cb = animCallback;
+          animCallback = null;
+          cb();
+        }
+
+        const initialCount = renderedArcs.length;
+        assert.ok(initialCount >= 55 && initialCount <= 65, `Initial mobile star count (${initialCount}) must be within 55..65`);
+        assert.ok(
+          renderedArcs.every((s) => s.x >= 0 && s.x <= 390),
+          'Initial stars must all lie within portrait width 390'
+        );
+
+        // Simulate device rotation to landscape (844x390)
+        mockWindow.innerWidth = 844;
+        mockWindow.innerHeight = 390;
+        const resizeHandler = registeredWindowListeners.get('resize');
+        assert.ok(resizeHandler, 'Must register resize listener');
+        resizeHandler();
+
+        assert.equal(mockCanvas.width, 844, 'Canvas width updates to landscape viewport');
+        assert.equal(mockCanvas.height, 390, 'Canvas height updates to landscape viewport');
+
+        // Execute post-resize animation frame
+        if (typeof animCallback === 'function') {
+          const cb = animCallback;
+          animCallback = null;
+          cb();
+        }
+
+        // Verify stars have been redistributed across the full expanded width
+        const expandedStars = renderedArcs.filter((s) => s.x > 390);
+        assert.ok(
+          expandedStars.length > 0,
+          `Stars must be redistributed into the expanded width (>390px), found ${expandedStars.length} stars`
+        );
+        assert.ok(
+          renderedArcs.every((s) => s.x >= 0 && s.x <= 844 && s.y >= 0 && s.y <= 390),
+          'All stars must remain bounded within new viewport dimensions [844x390]'
+        );
+
+        // Simulate viewport expansion to 1920x1080 with HiDPI DPR=2
+        mockWindow.innerWidth = 1920;
+        mockWindow.innerHeight = 1080;
+        mockWindow.devicePixelRatio = 2;
+        resizeHandler();
+
+        assert.equal(mockCanvas.width, 3840, 'Canvas backing width must scale by updated DPR=2');
+        assert.equal(mockCanvas.height, 2160, 'Canvas backing height must scale by updated DPR=2');
+
+        if (typeof animCallback === 'function') {
+          const cb = animCallback;
+          animCallback = null;
+          cb();
+        }
+
+        assert.ok(
+          renderedArcs.length > initialCount && renderedArcs.length >= 150 && renderedArcs.length <= 175,
+          `Expanded desktop viewport must rebalance star count (got ${renderedArcs.length}, portrait had ${initialCount})`
+        );
+
+        cleanupStarfield();
+        assert.ok(removedWindowListeners.has('resize'), 'Must remove resize listener on teardown');
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.18 initStarfield should render clearly visible stars and perceptible celestial drift on desktop viewports', () => {
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origPerf = globalThis.performance;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      let animCallback = null;
+      let mockTime = 2000;
+      const drawCalls = [];
+
+      globalThis.window = {
+        innerWidth: 1440,
+        innerHeight: 900,
+        devicePixelRatio: 1,
+        matchMedia: () => ({ matches: false }),
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.document = {
+        hidden: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.performance = { now: () => mockTime };
+      globalThis.requestAnimationFrame = (cb) => {
+        animCallback = cb;
+        return 201;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+
+      let lastArc = null;
+      const mockCtx = {
+        clearRect: () => {
+          drawCalls.length = 0;
+        },
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: (x, y, r) => {
+          lastArc = { x, y, r };
+        },
+        fill: () => {
+          const match = /rgba\(\s*\d+,\s*\d+,\s*\d+,\s*([\d.]+)\s*\)/.exec(mockCtx.fillStyle);
+          const alpha = match ? Number(match[1]) : 0;
+          if (lastArc) {
+            drawCalls.push({ ...lastArc, alpha });
+          }
+        },
+      };
+
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+
+        assert.ok(typeof animCallback === 'function', 'Must schedule initial render frame');
+        mockTime += 16.67;
+        animCallback();
+
+        const frame1 = drawCalls.slice();
+        assert.ok(frame1.length >= 90, `1440x900 desktop viewport should render >= 90 stars (got ${frame1.length})`);
+
+        const alphas = frame1.map((s) => s.alpha);
+        const minAlpha = Math.min(...alphas);
+        const meanAlpha = alphas.reduce((sum, a) => sum + a, 0) / alphas.length;
+        const maxAlpha = Math.max(...alphas);
+        const minRadius = Math.min(...frame1.map((s) => s.r));
+        const maxRadius = Math.max(...frame1.map((s) => s.r));
+
+        assert.ok(minAlpha >= 0.18, `Minimum star alpha (${minAlpha.toFixed(3)}) must be >= 0.18`);
+        assert.ok(meanAlpha >= 0.28, `Mean star alpha (${meanAlpha.toFixed(3)}) must remain clearly perceptible (>= 0.28)`);
+        assert.ok(maxAlpha >= 0.50 && maxAlpha <= 0.90, `Foreground peak alpha (${maxAlpha.toFixed(3)}) must be prominent yet capped <= 0.90`);
+        assert.ok(minRadius >= 0.6 && maxRadius >= 1.4 && maxRadius <= 2.2, `Star radii [${minRadius.toFixed(2)}, ${maxRadius.toFixed(2)}] must stay within [0.6, 2.2] with foreground >= 1.4`);
+
+        // Advance 60 frames (~1 second at 60fps) and verify perceptible foreground drift
+        for (let i = 0; i < 60; i++) {
+          mockTime += 16.67;
+          const cb = animCallback;
+          animCallback = null;
+          cb();
+        }
+        const frameAfter1s = drawCalls.slice();
+        let maxShiftX = 0;
+        for (let i = 0; i < Math.min(frame1.length, frameAfter1s.length); i++) {
+          const dx = (frameAfter1s[i].x - frame1[i].x + 1440) % 1440;
+          if (dx < 500 && dx > maxShiftX) {
+            maxShiftX = dx;
+          }
+        }
+        assert.ok(maxShiftX >= 3.0, `Foreground celestial drift over 1s (${maxShiftX.toFixed(2)}px) must be clearly visible (>= 3.0px)`);
+
+        cleanupStarfield();
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.performance = origPerf;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.19 initStarfield should apply vertical scroll parallax across depth planes and side-to-side accel scrolling on mobile', () => {
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origPerf = globalThis.performance;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      const registeredListeners = new Map();
+      const removedListeners = new Map();
+      let animCallback = null;
+      let mockTime = 3000;
+      const rendered = [];
+
+      const mockWindow = {
+        innerWidth: 390,
+        innerHeight: 844,
+        scrollY: 0,
+        devicePixelRatio: 1,
+        matchMedia: () => ({ matches: false }),
+        addEventListener: (event, handler) => {
+          registeredListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedListeners.set(event, handler);
+        },
+      };
+
+      globalThis.window = mockWindow;
+      globalThis.document = {
+        hidden: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.performance = { now: () => mockTime };
+      globalThis.requestAnimationFrame = (cb) => {
+        animCallback = cb;
+        return 301;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+
+      const mockCtx = {
+        clearRect: () => {
+          rendered.length = 0;
+        },
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: (x, y, r) => {
+          rendered.push({ x, y, r });
+        },
+        fill: () => {},
+      };
+
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      const stepFrame = () => {
+        mockTime += 16.67;
+        const cb = animCallback;
+        animCallback = null;
+        assert.ok(typeof cb === 'function', 'Must schedule animation frame');
+        cb();
+      };
+
+      try {
+        const cleanup = initStarfield(mockCanvas);
+        const scrollHandler = registeredListeners.get('scroll');
+        const motionHandler = registeredListeners.get('devicemotion');
+        assert.ok(typeof scrollHandler === 'function', 'Must register scroll listener for vertical parallax');
+        assert.ok(typeof motionHandler === 'function', 'Must register devicemotion listener for accelerometer fallback');
+
+        // 1. Baseline frame at scrollY = 0
+        stepFrame();
+        const atTop = rendered.slice();
+
+        // Scroll down 400px -> stars shift upward proportionally to depth while wrapping inside [0, 844]
+        mockWindow.scrollY = 400;
+        scrollHandler();
+        for (let i = 0; i < 20; i++) {
+          stepFrame();
+        }
+        const afterScroll = rendered.slice();
+        assert.ok(
+          afterScroll.every((s) => s.x >= 0 && s.x < 390 && s.y >= 0 && s.y < 844),
+          'Vertically scrolled stars must wrap cleanly within viewport bounds [0, width) x [0, height)'
+        );
+
+        const bgUpShifts = [];
+        const pureFgShifts = [];
+        const anyFgShifts = [];
+        for (let i = 0; i < atTop.length; i++) {
+          const dy = (atTop[i].y - afterScroll[i].y + 844) % 844;
+          if (atTop[i].r <= 0.99) bgUpShifts.push(dy);
+          if (atTop[i].r > 1.6) pureFgShifts.push(dy);
+          if (atTop[i].r >= 1.4) anyFgShifts.push(dy);
+        }
+        const fgUpShifts = pureFgShifts.length > 0 ? pureFgShifts : anyFgShifts;
+        assert.ok(bgUpShifts.length > 0 && fgUpShifts.length > 0, 'Must contain both background and foreground stars');
+        const avgBgUp = bgUpShifts.reduce((a, b) => a + b, 0) / bgUpShifts.length;
+        const avgFgUp = fgUpShifts.reduce((a, b) => a + b, 0) / fgUpShifts.length;
+        assert.ok(
+          avgFgUp > avgBgUp + 20,
+          `Foreground scroll parallax shift (${avgFgUp.toFixed(1)}px) must significantly exceed background (${avgBgUp.toFixed(1)}px)`
+        );
+
+        // 2. Side-to-side accelerometer scrolling via W3C devicemotion (tilt left acc.x=+5 -> left, tilt right acc.x=-5 -> right)
+        motionHandler({ accelerationIncludingGravity: { x: 5, y: 9.8, z: 0 } });
+        for (let i = 0; i < 30; i++) {
+          stepFrame();
+        }
+        const startLeft = rendered.slice();
+        for (let i = 0; i < 20; i++) {
+          stepFrame();
+        }
+        const endLeft = rendered.slice();
+        assert.ok(
+          endLeft.every((s) => s.x >= 0 && s.x < 390 && s.y >= 0 && s.y < 844),
+          'Heavily tilted left/upright stars must wrap within [0, width) x [0, height) without OOB coordinates'
+        );
+
+        let leftMeanDx = 0;
+        for (let i = 0; i < startLeft.length; i++) {
+          let dx = endLeft[i].x - startLeft[i].x;
+          if (dx > 195) dx -= 390;
+          if (dx < -195) dx += 390;
+          leftMeanDx += dx;
+        }
+        leftMeanDx /= startLeft.length;
+        assert.ok(
+          leftMeanDx < -2.0,
+          `Left tilt (W3C acc.x=+5) must scroll stars left side-to-side (mean dx=${leftMeanDx.toFixed(2)}px)`
+        );
+
+        motionHandler({ accelerationIncludingGravity: { x: -5, y: 0, z: 9.8 } });
+        for (let i = 0; i < 30; i++) {
+          stepFrame();
+        }
+        const startRight = rendered.slice();
+        for (let i = 0; i < 20; i++) {
+          stepFrame();
+        }
+        const endRight = rendered.slice();
+        assert.ok(
+          endRight.every((s) => s.x >= 0 && s.x < 390 && s.y >= 0 && s.y < 844),
+          'Heavily tilted right/flat stars must wrap within [0, width) x [0, height) without OOB coordinates'
+        );
+
+        let rightMeanDx = 0;
+        for (let i = 0; i < startRight.length; i++) {
+          let dx = endRight[i].x - startRight[i].x;
+          if (dx > 195) dx -= 390;
+          if (dx < -195) dx += 390;
+          rightMeanDx += dx;
+        }
+        rightMeanDx /= startRight.length;
+        assert.ok(
+          rightMeanDx > 2.0,
+          `Right tilt (W3C acc.x=-5) must scroll stars right side-to-side (mean dx=${rightMeanDx.toFixed(2)}px)`
+        );
+
+        // 3. Negative or non-finite viewport dimensions must fall back safely without corrupting canvas backing store
+        mockWindow.innerWidth = -100;
+        mockWindow.innerHeight = Number.NaN;
+        mockWindow.devicePixelRatio = Number.POSITIVE_INFINITY;
+        registeredListeners.get('resize')();
+        assert.equal(mockCanvas.width, 800, 'Invalid negative width must fall back to 800');
+        assert.equal(mockCanvas.height, 600, 'Invalid NaN height must fall back to 600');
+
+        cleanup();
+        assert.equal(removedListeners.get('scroll'), scrollHandler, 'Must remove exact scroll handler reference on cleanup');
+        assert.equal(removedListeners.get('devicemotion'), motionHandler, 'Must remove exact devicemotion handler reference on cleanup');
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.performance = origPerf;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.20 should remap orientation and motion axes across 90/180/270 deg and remove orientationchange listeners cleanly', () => {
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origPerf = globalThis.performance;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      let perfNow = 1000;
+      const meanDeltaAxis = (startArr, endArr, viewportSpan, axis) => {
+        const half = viewportSpan / 2;
+        let total = 0;
+        for (let i = 0; i < startArr.length; i++) {
+          let d = endArr[i][axis] - startArr[i][axis];
+          if (d > half) d -= viewportSpan;
+          if (d < -half) d += viewportSpan;
+          total += d;
+        }
+        return total / startArr.length;
+      };
+
+      const runHarness = (initialAngle, fn, { useLegacyOrientationOnly = false } = {}) => {
+        const registeredListeners = new Map();
+        const removedListeners = new Map();
+        const registeredScreenListeners = new Map();
+        const removedScreenListeners = new Map();
+        const rendered = [];
+        let pendingFrame = null;
+
+        const screenOrientation = useLegacyOrientationOnly
+          ? undefined
+          : {
+              angle: initialAngle,
+              addEventListener: (ev, cb) => registeredScreenListeners.set(ev, cb),
+              removeEventListener: (ev, cb) => removedScreenListeners.set(ev, cb),
+            };
+
+        globalThis.window = {
+          innerWidth: 844,
+          innerHeight: 390,
+          devicePixelRatio: 1,
+          scrollY: 0,
+          ...(useLegacyOrientationOnly
+            ? { orientation: initialAngle }
+            : { screen: { orientation: screenOrientation } }),
+          matchMedia: () => ({ matches: false }),
+          addEventListener: (ev, cb) => registeredListeners.set(ev, cb),
+          removeEventListener: (ev, cb) => removedListeners.set(ev, cb),
+        };
+        globalThis.document = { hidden: false, addEventListener: () => {}, removeEventListener: () => {} };
+        globalThis.performance = { now: () => perfNow };
+        globalThis.requestAnimationFrame = (cb) => {
+          pendingFrame = cb;
+          return 1;
+        };
+        globalThis.cancelAnimationFrame = () => {
+          pendingFrame = null;
+        };
+
+        const mockCtx = {
+          clearRect: () => {
+            rendered.length = 0;
+          },
+          setTransform: () => {},
+          fillStyle: '',
+          beginPath: () => {},
+          arc: (x, y) => rendered.push({ x, y }),
+          fill: () => {},
+        };
+        const mockCanvas = { width: 0, height: 0, getContext: () => mockCtx };
+        const stepFrame = () => {
+          perfNow += 16.67;
+          if (pendingFrame) pendingFrame();
+        };
+
+        const cleanup = initStarfield(mockCanvas);
+        return fn({
+          screenOrientation,
+          registeredListeners,
+          removedListeners,
+          registeredScreenListeners,
+          removedScreenListeners,
+          rendered,
+          stepFrame,
+          cleanup,
+        });
+      };
+
+      try {
+        // 1. Landscape 90 deg deviceorientation: W3C resting gamma=-45, beta=0 yields neutral X & Y; gamma drives Y; beta drives X
+        runHarness(90, ({
+          registeredListeners,
+          removedListeners,
+          registeredScreenListeners,
+          removedScreenListeners,
+          rendered,
+          stepFrame,
+          cleanup,
+        }) => {
+          const orientHandler = registeredListeners.get('deviceorientation');
+          const windowOrientChange = registeredListeners.get('orientationchange');
+          const screenOrientChange = registeredScreenListeners.get('change');
+          assert.ok(orientHandler, 'Must register deviceorientation listener');
+          assert.ok(windowOrientChange, 'Must register window orientationchange listener');
+          assert.ok(screenOrientChange, 'Must register screen.orientation change listener');
+
+          // Pure baseline ambient drift (20 frames) for both X and Y
+          stepFrame();
+          const baseStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const baseEnd = rendered.slice();
+          const baseMeanDx = meanDeltaAxis(baseStart, baseEnd, 844, 'x');
+          const baseMeanDy = meanDeltaAxis(baseStart, baseEnd, 390, 'y');
+
+          // Stationary device tilted back 45 deg in W3C 90 deg CCW landscape: screen top (+x) raised -> gamma=-45, beta=0
+          orientHandler({ gamma: -45, beta: 0 });
+          const restYStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const restYShift = meanDeltaAxis(restYStart, rendered.slice(), 390, 'y') - baseMeanDy;
+          assert.ok(
+            Math.abs(restYShift) < 0.5,
+            `Resting landscape tilt (angle=90, gamma=-45, beta=0) must remain vertically neutral (delta=${restYShift.toFixed(2)}px)`
+          );
+
+          const calmXStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const calmMeanDx = meanDeltaAxis(calmXStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            Math.abs(calmMeanDx - baseMeanDx) < 0.05,
+            `Resting landscape tilt (angle=90, gamma=-45, beta=0) must not induce horizontal drift (base=${baseMeanDx.toFixed(3)}, calm=${calmMeanDx.toFixed(3)})`
+          );
+
+          // Vertical pitch around horizontal gamma axis (-75 vs -15) shifts screen Y upward then downward
+          orientHandler({ gamma: -75, beta: 0 });
+          const pitchUpStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const pitchUpDy = meanDeltaAxis(pitchUpStart, rendered.slice(), 390, 'y') - baseMeanDy;
+          assert.ok(
+            pitchUpDy > 4.0,
+            `Landscape angle=90 steep pitch gamma=-75 must shift screen Y positively (dy=${pitchUpDy.toFixed(2)}px)`
+          );
+
+          orientHandler({ gamma: -15, beta: 0 });
+          const pitchDownStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const pitchDownDy = meanDeltaAxis(pitchDownStart, rendered.slice(), 390, 'y') - baseMeanDy;
+          assert.ok(
+            pitchDownDy < -8.0,
+            `Landscape angle=90 flatter pitch gamma=-15 must shift screen Y negatively (dy=${pitchDownDy.toFixed(2)}px)`
+          );
+
+          // Lateral tilt driven by beta (+30 vs -30) moves stars horizontally in screen space
+          orientHandler({ gamma: -45, beta: 30 });
+          for (let i = 0; i < 40; i++) stepFrame();
+          const posStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const posMeanDx = meanDeltaAxis(posStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            posMeanDx > 5.0,
+            `Landscape angle=90 lateral tilt beta=+30 must scroll stars horizontally right (mean dx=${posMeanDx.toFixed(2)}px)`
+          );
+
+          orientHandler({ gamma: -45, beta: -30 });
+          for (let i = 0; i < 60; i++) stepFrame();
+          const negStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const negMeanDx = meanDeltaAxis(negStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            negMeanDx < -5.0,
+            `Landscape angle=90 lateral tilt beta=-30 must scroll stars horizontally left (mean dx=${negMeanDx.toFixed(2)}px)`
+          );
+
+          cleanup();
+          assert.equal(
+            removedListeners.get('orientationchange'),
+            windowOrientChange,
+            'Must remove exact window orientationchange listener on cleanup'
+          );
+          assert.equal(
+            removedScreenListeners.get('change'),
+            screenOrientChange,
+            'Must remove exact screen.orientation change listener on cleanup'
+          );
+        });
+
+        // 2. Landscape devicemotion: W3C gravity reactions (+x at 90 deg, -x at 270 deg), neutral resting check, and 90 -> 270 negation
+        runHarness(90, ({
+          screenOrientation,
+          registeredListeners,
+          registeredScreenListeners,
+          rendered,
+          stepFrame,
+          cleanup,
+        }) => {
+          const motionHandler = registeredListeners.get('devicemotion');
+          const screenOrientChange = registeredScreenListeners.get('change');
+          assert.ok(motionHandler, 'Must register devicemotion listener');
+
+          stepFrame();
+          const baseStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const baseEnd = rendered.slice();
+          const baseDx = meanDeltaAxis(baseStart, baseEnd, 844, 'x');
+          const baseDy = meanDeltaAxis(baseStart, baseEnd, 390, 'y');
+
+          // Resting 90 deg landscape gravity: screen top (+x) up -> acc.x=+4.9, acc.y=0
+          motionHandler({ accelerationIncludingGravity: { x: 4.9, y: 0, z: 0 } });
+          const restYStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const restYShift = meanDeltaAxis(restYStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            Math.abs(restYShift) < 0.5,
+            `Resting 90 deg devicemotion acc={x:4.9,y:0} must remain vertically neutral (delta=${restYShift.toFixed(2)}px)`
+          );
+          const restXStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const restDx = meanDeltaAxis(restXStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            Math.abs(restDx - baseDx) < 0.05,
+            `Resting 90 deg devicemotion acc={x:4.9,y:0} must not induce horizontal drift (base=${baseDx.toFixed(3)}, calm=${restDx.toFixed(3)})`
+          );
+
+          // At 90 deg: acc.x=+4.9 rests vertically, acc.y=+5 drives +X horizontal drift (opposite to portrait -acc.x!)
+          motionHandler({ accelerationIncludingGravity: { x: 4.9, y: 5, z: 0 } });
+          for (let i = 0; i < 40; i++) stepFrame();
+          const start90 = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const meanDx90 = meanDeltaAxis(start90, rendered.slice(), 844, 'x');
+          assert.ok(
+            meanDx90 > 5.0,
+            `Landscape 90 deg devicemotion acc.y=+5 must drift right (mean dx=${meanDx90.toFixed(2)}px)`
+          );
+
+          // Rotate to secondary landscape (270 deg): screen top is -x (resting acc.x=-4.9) and +X is -acc.y
+          screenOrientation.angle = 270;
+          screenOrientChange();
+          // Verify handleOrientationChange resets targetTiltX/Y to 0 without waiting for a new sensor event
+          for (let i = 0; i < 60; i++) stepFrame();
+          const resetStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const resetDx = meanDeltaAxis(resetStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            Math.abs(resetDx - baseDx) < 1.0,
+            `orientationchange must reset prior tilt drift without a new sensor event (base=${baseDx.toFixed(2)}, afterReset=${resetDx.toFixed(2)})`
+          );
+
+          motionHandler({ accelerationIncludingGravity: { x: -4.9, y: 0, z: 0 } });
+          for (let i = 0; i < 20; i++) stepFrame();
+          const start270RestY = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const rest270YShift = meanDeltaAxis(start270RestY, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            Math.abs(rest270YShift) < 0.5,
+            `Resting 270 deg devicemotion acc={x:-4.9,y:0} must remain vertically neutral (delta=${rest270YShift.toFixed(2)}px)`
+          );
+
+          motionHandler({ accelerationIncludingGravity: { x: -4.9, y: 5, z: 0 } });
+          for (let i = 0; i < 40; i++) stepFrame();
+          const start270 = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const meanDx270 = meanDeltaAxis(start270, rendered.slice(), 844, 'x');
+          assert.ok(
+            meanDx270 < -5.0,
+            `Landscape 270 deg devicemotion acc.y=+5 must negate horizontal drift left (mean dx=${meanDx270.toFixed(2)}px)`
+          );
+
+          cleanup();
+        });
+
+        // 2b. Landscape 270 deg deviceorientation: screenXDeg=-beta, screenYDeg=+gamma
+        runHarness(270, ({ rendered, registeredListeners, stepFrame, cleanup }) => {
+          const orientHandler = registeredListeners.get('deviceorientation');
+          stepFrame();
+          const baseStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const baseEnd = rendered.slice();
+          const baseDx = meanDeltaAxis(baseStart, baseEnd, 844, 'x');
+          const baseDy = meanDeltaAxis(baseStart, baseEnd, 390, 'y');
+
+          // W3C 270 deg resting pose: gamma=+45, beta=0 -> screenYDeg=+45 (neutral Y), screenXDeg=0
+          orientHandler({ gamma: 45, beta: 0 });
+          const restYStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const restYShift = meanDeltaAxis(restYStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            Math.abs(restYShift) < 0.5,
+            `Resting 270 deg tilt (gamma=+45, beta=0) must remain vertically neutral (delta=${restYShift.toFixed(2)}px)`
+          );
+          const calmXStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const calmDx = meanDeltaAxis(calmXStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            Math.abs(calmDx - baseDx) < 0.05,
+            `Resting 270 deg tilt must not induce horizontal drift (base=${baseDx.toFixed(3)}, calm=${calmDx.toFixed(3)})`
+          );
+
+          orientHandler({ gamma: 75, beta: 0 });
+          const pitchUpStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const pitchUpDy = meanDeltaAxis(pitchUpStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            pitchUpDy > 4.0,
+            `Landscape angle=270 steep pitch gamma=+75 must shift screen Y positively (dy=${pitchUpDy.toFixed(2)}px)`
+          );
+
+          orientHandler({ gamma: 15, beta: 0 });
+          const pitchDownStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const pitchDownDy = meanDeltaAxis(pitchDownStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            pitchDownDy < -8.0,
+            `Landscape angle=270 flatter pitch gamma=+15 must shift screen Y negatively (dy=${pitchDownDy.toFixed(2)}px)`
+          );
+
+          orientHandler({ gamma: 45, beta: 30 });
+          for (let i = 0; i < 40; i++) stepFrame();
+          const leftStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const leftDx = meanDeltaAxis(leftStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            leftDx < -5.0,
+            `Landscape angle=270 lateral tilt beta=+30 must invert X to scroll left (mean dx=${leftDx.toFixed(2)}px)`
+          );
+
+          orientHandler({ gamma: 45, beta: -30 });
+          for (let i = 0; i < 60; i++) stepFrame();
+          const rightStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const rightDx = meanDeltaAxis(rightStart, rendered.slice(), 844, 'x');
+          assert.ok(
+            rightDx > 5.0,
+            `Landscape angle=270 lateral tilt beta=-30 must scroll right (mean dx=${rightDx.toFixed(2)}px)`
+          );
+
+          cleanup();
+        });
+
+        // 3. Upside-down portrait (180 deg) orientation & motion inversion + legacy window.orientation=-90 fallback
+        runHarness(180, ({ rendered, registeredListeners, stepFrame, cleanup }) => {
+          const orientHandler = registeredListeners.get('deviceorientation');
+          stepFrame();
+          const baseStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const baseEnd = rendered.slice();
+          const baseDx = meanDeltaAxis(baseStart, baseEnd, 844, 'x');
+          const baseDy = meanDeltaAxis(baseStart, baseEnd, 390, 'y');
+
+          // At 180 deg, screenXDeg=-gamma, screenYDeg=-beta: {gamma:-30, beta:-45} -> +30 X, neutral +45 Y
+          orientHandler({ gamma: -30, beta: -45 });
+          const startY = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const yShift = meanDeltaAxis(startY, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            Math.abs(yShift) < 0.5,
+            `180 deg orientation beta=-45 must stay vertically neutral (delta=${yShift.toFixed(2)}px)`
+          );
+          for (let i = 0; i < 30; i++) stepFrame();
+          const startX = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const dx180 = meanDeltaAxis(startX, rendered.slice(), 844, 'x');
+          assert.ok(
+            dx180 > baseDx + 5.0,
+            `180 deg orientation gamma=-30 must invert X to scroll right (dx=${dx180.toFixed(2)}px)`
+          );
+          cleanup();
+        });
+
+        runHarness(180, ({ rendered, registeredListeners, stepFrame, cleanup }) => {
+          const motionHandler = registeredListeners.get('devicemotion');
+          stepFrame();
+          const baseStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const baseDy = meanDeltaAxis(baseStart, rendered.slice(), 390, 'y');
+
+          // At 180 deg, rawAccX=+acc.x, rawAccY=-acc.y
+          motionHandler({ accelerationIncludingGravity: { x: 0, y: -4.9, z: 0 } });
+          const restYStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const restYShift = meanDeltaAxis(restYStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            Math.abs(restYShift) < 0.5,
+            `180 deg devicemotion acc.y=-4.9 must stay vertically neutral (delta=${restYShift.toFixed(2)}px)`
+          );
+
+          motionHandler({ accelerationIncludingGravity: { x: 0, y: -9.8, z: 0 } });
+          const steepYStart = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const steepYShift = meanDeltaAxis(steepYStart, rendered.slice(), 390, 'y') - baseDy;
+          assert.ok(
+            steepYShift > 4.0,
+            `180 deg devicemotion acc.y=-9.8 must shift screen Y positively (dy=${steepYShift.toFixed(2)}px)`
+          );
+
+          motionHandler({ accelerationIncludingGravity: { x: 5, y: -4.9, z: 0 } });
+          for (let i = 0; i < 40; i++) stepFrame();
+          const startX = rendered.slice();
+          for (let i = 0; i < 20; i++) stepFrame();
+          const dx180 = meanDeltaAxis(startX, rendered.slice(), 844, 'x');
+          assert.ok(
+            dx180 > 5.0,
+            `180 deg devicemotion acc.x=+5 must invert portrait X and drift right (dx=${dx180.toFixed(2)}px)`
+          );
+          cleanup();
+        });
+
+        // Legacy window.orientation=-90 (when screen.orientation is unavailable) normalizes to 270 deg
+        runHarness(
+          -90,
+          ({ rendered, registeredListeners, removedListeners, stepFrame, cleanup }) => {
+            const motionHandler = registeredListeners.get('devicemotion');
+            const windowOrientChange = registeredListeners.get('orientationchange');
+            motionHandler({ accelerationIncludingGravity: { x: -4.9, y: 5, z: 0 } });
+            for (let i = 0; i < 40; i++) stepFrame();
+            const startLegacy = rendered.slice();
+            for (let i = 0; i < 20; i++) stepFrame();
+            const legacyDx = meanDeltaAxis(startLegacy, rendered.slice(), 844, 'x');
+            assert.ok(
+              legacyDx < -5.0,
+              `Legacy window.orientation=-90 must normalize to 270 deg and drift left (dx=${legacyDx.toFixed(2)}px)`
+            );
+            cleanup();
+            assert.equal(removedListeners.get('orientationchange'), windowOrientChange);
+          },
+          { useLegacyOrientationOnly: true }
+        );
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.performance = origPerf;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.21 isOrientationPermissionRequired should return true when DeviceOrientationEvent.requestPermission is a function', () => {
+      const origWindow = globalThis.window;
+      try {
+        globalThis.window = {
+          DeviceOrientationEvent: {
+            requestPermission: async () => 'granted',
+          },
+        };
+        assert.equal(
+          isOrientationPermissionRequired(),
+          true,
+          'Must return true when requestPermission function exists on DeviceOrientationEvent'
+        );
+
+        globalThis.window = {
+          DeviceOrientationEvent: {},
+        };
+        assert.equal(
+          isOrientationPermissionRequired(),
+          false,
+          'Must return false when requestPermission is missing'
+        );
+
+        globalThis.window = undefined;
+        assert.equal(
+          isOrientationPermissionRequired(),
+          false,
+          'Must return false when window is undefined'
+        );
+      } finally {
+        globalThis.window = origWindow;
+      }
+    });
+
+    test('8.1.22 getOrientationPermissionStatus should return stored permission, prompt, granted, or unsupported', () => {
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      let storedVal = null;
+      globalThis.localStorage = {
+        getItem: (key) => (key === 'oneiromancy_orientation_permission' ? storedVal : null),
+        setItem: (key, val) => {
+          if (key === 'oneiromancy_orientation_permission') storedVal = val;
+        },
+      };
+
+      try {
+        // iOS Safari with permission pending (prompt)
+        globalThis.window = {
+          DeviceOrientationEvent: {
+            requestPermission: async () => 'granted',
+          },
+        };
+        storedVal = null;
+        assert.equal(
+          getOrientationPermissionStatus(),
+          'prompt',
+          'Must return prompt when iOS permission has not been requested yet'
+        );
+
+        // iOS Safari with permission granted
+        storedVal = 'granted';
+        assert.equal(
+          getOrientationPermissionStatus(),
+          'granted',
+          'Must return granted when stored in localStorage'
+        );
+
+        // iOS Safari with permission denied
+        storedVal = 'denied';
+        assert.equal(
+          getOrientationPermissionStatus(),
+          'denied',
+          'Must return denied when stored in localStorage'
+        );
+
+        // Non-iOS browser with orientation support (permission granted by default)
+        globalThis.window = {
+          DeviceOrientationEvent: {},
+        };
+        assert.equal(
+          getOrientationPermissionStatus(),
+          'granted',
+          'Must return granted by default on browsers where permission is not gated'
+        );
+
+        // Headless or unsupported environment
+        globalThis.window = undefined;
+        assert.equal(
+          getOrientationPermissionStatus(),
+          'unsupported',
+          'Must return unsupported when window is undefined'
+        );
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+      }
+    });
+
+    test('8.1.23 requestOrientationPermission should invoke requestPermission, persist state to localStorage, and dispatch event', async () => {
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      let storedState = null;
+      let requestPermissionCalled = 0;
+      const dispatchedEvents = [];
+
+      globalThis.localStorage = {
+        getItem: () => storedState,
+        setItem: (key, val) => {
+          if (key === 'oneiromancy_orientation_permission') storedState = val;
+        },
+      };
+
+      globalThis.window = {
+        DeviceOrientationEvent: {
+          requestPermission: async () => {
+            requestPermissionCalled++;
+            return 'granted';
+          },
+        },
+        dispatchEvent: (event) => {
+          dispatchedEvents.push(event);
+        },
+      };
+
+      try {
+        const state = await requestOrientationPermission();
+        assert.equal(
+          requestPermissionCalled,
+          1,
+          'Must invoke DeviceOrientationEvent.requestPermission once'
+        );
+        assert.equal(state, 'granted', 'Must resolve to granted');
+        assert.equal(storedState, 'granted', 'Must persist granted state in localStorage');
+        assert.equal(dispatchedEvents.length, 1, 'Must dispatch custom permission changed event');
+        assert.equal(dispatchedEvents[0].type, 'oneiromancy:orientation-permission-changed');
+        assert.equal(dispatchedEvents[0].detail?.state, 'granted');
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+      }
+    });
+
+    test('8.1.24 requestOrientationPermission should handle rejection gracefully, persist denied state, and dispatch event', async () => {
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      const origSessionStorage = globalThis.sessionStorage;
+      let storedState = null;
+      let sessionDenied = null;
+      const dispatchedEvents = [];
+
+      globalThis.localStorage = {
+        getItem: () => storedState,
+        setItem: (key, val) => {
+          if (key === 'oneiromancy_orientation_permission') storedState = val;
+        },
+      };
+
+      globalThis.sessionStorage = {
+        getItem: (k) => (k === 'oneiromancy_orientation_permission_denied' ? sessionDenied : null),
+        setItem: (k, val) => {
+          if (k === 'oneiromancy_orientation_permission_denied') sessionDenied = val;
+        },
+      };
+
+      globalThis.window = {
+        DeviceOrientationEvent: {
+          requestPermission: async () => 'denied',
+        },
+        dispatchEvent: (event) => {
+          dispatchedEvents.push(event);
+        },
+      };
+
+      try {
+        const state = await requestOrientationPermission();
+        assert.equal(
+          state,
+          'denied',
+          'Must resolve to denied when user dismisses or rejects prompt'
+        );
+        assert.equal(storedState, 'denied', 'Must persist denied state in localStorage');
+        assert.equal(sessionDenied, 'true', 'Must set session denied flag');
+        assert.equal(
+          dispatchedEvents.length,
+          1,
+          'Must dispatch custom permission changed event on denial'
+        );
+        assert.equal(dispatchedEvents[0].detail?.state, 'denied');
+
+        // Verify transient exception sets session denial without writing permanent localStorage denial
+        storedState = null;
+        sessionDenied = null;
+        globalThis.window.DeviceOrientationEvent.requestPermission = async () => {
+          throw new Error('NotAllowedError: user gesture expired');
+        };
+        const errState = await requestOrientationPermission();
+        assert.equal(errState, 'denied', 'Must resolve to denied on transient exception');
+        assert.equal(sessionDenied, 'true', 'Must set session denied flag on transient exception');
+        assert.equal(storedState, null, 'Must NOT write permanent localStorage denial on transient exception');
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+        globalThis.sessionStorage = origSessionStorage;
+      }
+    });
+
+    test('8.1.25 initStarfield should attach deviceorientation by default and respond to oneiromancy:orientation-permission-changed', () => {
+      const registeredWindowListeners = new Map();
+      const removedWindowListeners = new Map();
+
+      const mockWindow = {
+        innerWidth: 800,
+        innerHeight: 600,
+        devicePixelRatio: 1,
+        matchMedia: () => ({ matches: false }),
+        DeviceOrientationEvent: {
+          requestPermission: async () => 'granted',
+        },
+        addEventListener: (event, handler) => {
+          registeredWindowListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedWindowListeners.set(event, handler);
+        },
+      };
+
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      globalThis.window = mockWindow;
+      globalThis.document = {
+        hidden: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.requestAnimationFrame = () => 1;
+      globalThis.cancelAnimationFrame = () => {};
+
+      const mockCtx = {
+        clearRect: () => {},
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: () => {},
+        fill: () => {},
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+        assert.ok(
+          registeredWindowListeners.has('oneiromancy:orientation-permission-changed'),
+          'Must listen for dynamic orientation permission changes'
+        );
+
+        // Default to tilting: attach deviceorientation listener immediately on mount
+        assert.ok(
+          registeredWindowListeners.has('deviceorientation'),
+          'Must attach deviceorientation listener by default even when requestPermission exists'
+        );
+
+        const permHandler = registeredWindowListeners.get(
+          'oneiromancy:orientation-permission-changed'
+        );
+        assert.ok(
+          typeof permHandler === 'function',
+          'Permission change listener must be registered function'
+        );
+
+        // Simulate permission denial event: listener stays attached by default (tilt targets reset safely)
+        permHandler({ detail: { state: 'denied' } });
+        assert.equal(
+          removedWindowListeners.has('deviceorientation'),
+          false,
+          'Must keep deviceorientation listener attached across permission denial so transient errors never kill tilt'
+        );
+
+        // Granted event remains idempotent without duplicate registration
+        permHandler({ detail: { state: 'granted' } });
+
+        cleanupStarfield();
+        assert.ok(
+          removedWindowListeners.has('deviceorientation'),
+          'Must detach deviceorientation listener on unmount cleanup'
+        );
+        assert.ok(
+          removedWindowListeners.has('oneiromancy:orientation-permission-changed'),
+          'Must remove permission change listener on teardown'
+        );
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.26 initStarfield resize should proportionally rescale star positions to prevent void areas on orientation changes', () => {
+      const registeredWindowListeners = new Map();
+      const removedWindowListeners = new Map();
+      let animFrameRequested = 0;
+      const rafCallbacks = [];
+
+      const mockWindow = {
+        innerWidth: 390,
+        innerHeight: 844,
+        devicePixelRatio: 1,
+        matchMedia: () => ({ matches: false }),
+        addEventListener: (event, handler) => {
+          registeredWindowListeners.set(event, handler);
+        },
+        removeEventListener: (event, handler) => {
+          removedWindowListeners.set(event, handler);
+        },
+      };
+
+      const origWindow = globalThis.window;
+      const origDoc = globalThis.document;
+      const origRAF = globalThis.requestAnimationFrame;
+      const origCAF = globalThis.cancelAnimationFrame;
+
+      globalThis.window = mockWindow;
+      globalThis.document = {
+        hidden: false,
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+      globalThis.requestAnimationFrame = (cb) => {
+        animFrameRequested++;
+        rafCallbacks.push(cb);
+        return animFrameRequested;
+      };
+      globalThis.cancelAnimationFrame = () => {};
+
+      const renderedParticles = [];
+      const mockCtx = {
+        clearRect: () => {},
+        setTransform: () => {},
+        fillStyle: '',
+        beginPath: () => {},
+        arc: (x, y, r) => {
+          renderedParticles.push({ x, y, r });
+        },
+        fill: () => {},
+      };
+      const mockCanvas = {
+        width: 0,
+        height: 0,
+        getContext: () => mockCtx,
+      };
+
+      try {
+        const cleanupStarfield = initStarfield(mockCanvas);
+
+        // Render portrait frame (390 x 844)
+        const frame1 = rafCallbacks.shift();
+        frame1();
+        assert.ok(renderedParticles.length > 0, 'Must render stars in portrait orientation');
+        assert.ok(
+          renderedParticles.every((p) => p.x <= 390),
+          'All portrait particles must start within 390px'
+        );
+
+        // Rotate device to landscape (844 x 390)
+        mockWindow.innerWidth = 844;
+        mockWindow.innerHeight = 390;
+        const resizeHandler = registeredWindowListeners.get('resize');
+        assert.ok(typeof resizeHandler === 'function', 'Must have registered resize handler');
+        resizeHandler();
+
+        // Render landscape frame
+        renderedParticles.length = 0;
+        const frame2 = rafCallbacks.shift();
+        frame2();
+        assert.ok(renderedParticles.length > 0, 'Must render stars in landscape orientation');
+
+        // Check star redistribution: stars must be rescaled proportionally across the expanded 844px width
+        const wideStars = renderedParticles.filter((p) => p.x > 390);
+        assert.ok(
+          wideStars.length > 0,
+          `Stars must be proportionally redistributed across expanded landscape width (found ${wideStars.length} stars with x > 390px out of ${renderedParticles.length})`
+        );
+        assert.ok(
+          renderedParticles.some((p) => p.x > 0.75 * 844),
+          'Stars must reach past 75% of the expanded landscape width'
+        );
+        assert.ok(
+          renderedParticles.every((p) => p.y <= 390),
+          'All landscape stars must remain within 390px height'
+        );
+        assert.ok(
+          renderedParticles.every((p) => Number.isFinite(p.x) && Number.isFinite(p.y)),
+          'All particle coordinates must be finite numbers'
+        );
+
+        cleanupStarfield();
+      } finally {
+        globalThis.window = origWindow;
+        globalThis.document = origDoc;
+        globalThis.requestAnimationFrame = origRAF;
+        globalThis.cancelAnimationFrame = origCAF;
+      }
+    });
+
+    test('8.1.27 StarfieldBackground should render only the canvas without mounting a permission popup toast on iOS', () => {
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+
+      globalThis.localStorage = {
+        getItem: () => null,
+        setItem: () => {},
+      };
+
+      globalThis.window = {
+        innerWidth: 390,
+        innerHeight: 844,
+        devicePixelRatio: 2,
+        DeviceOrientationEvent: {
+          requestPermission: async () => 'granted',
+        },
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+
+      try {
+        const { container } = render(jsx(StarfieldBackground, {}));
+        const canvas = screen.getByTestId('starfield-canvas');
+        assert.ok(canvas, 'StarfieldBackground must render the celestial starfield canvas');
+        assert.equal(canvas.tagName, 'CANVAS', 'Rendered element must be a canvas');
+        assert.equal(
+          container.children.length,
+          1,
+          'StarfieldBackground must render strictly the canvas with no sibling toast overlay'
+        );
+        assert.equal(
+          screen.queryByTestId('orientation-permission-prompt'),
+          null,
+          'StarfieldBackground must not render an overlay orientation permission toast'
+        );
+        assert.equal(
+          screen.queryByText(/Enable Celestial Tilt/i),
+          null,
+          'StarfieldBackground must not render any tilt permission prompt text'
+        );
+      } finally {
+        cleanup();
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+      }
     });
   });
 
@@ -599,6 +2450,196 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         globalThis.localStorage = origLocalStorage;
       }
     });
+
+    test('8.3.4 PlayerDetailModal should relocate role comparison to bottom after Astrocartography and toggle with accordion', () => {
+      const player = mockData.mockCosmicBoard[0];
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: testDraftState },
+          jsx(PlayerDetailModal, {
+            player,
+            isOpen: true,
+            onClose: () => {},
+          })
+        )
+      );
+
+      const modalDialog = screen.getByRole('dialog');
+      assert.ok(modalDialog, 'Must render modal dialog');
+
+      // Verify DOM ordering inside scrollable body (cl/1015913860): Astrocartography comes before roster-role-comparison
+      const modalBox = modalDialog.querySelector('.max-w-2xl') || modalDialog.children[0];
+      const scrollBody = modalBox.querySelector('.overflow-y-auto') || modalBox;
+      const children = Array.from(scrollBody.children || []);
+      const astroIndex = children.findIndex((c) => c.textContent?.includes('Astrocartography Geodesic Coordinates'));
+      const roleCompIndex = children.findIndex((c) => c.getAttribute?.('data-testid') === 'roster-role-comparison');
+      assert.ok(astroIndex !== -1, 'Astrocartography section must exist in modal');
+      assert.ok(roleCompIndex !== -1, 'roster-role-comparison must exist in modal');
+      assert.ok(roleCompIndex > astroIndex, 'roster-role-comparison must appear after Astrocartography in the DOM');
+
+      // Accordion toggle button with aria-expanded
+      const roleComp = screen.getByTestId('roster-role-comparison');
+      const toggleBtn = roleComp.querySelector('[aria-expanded]');
+      assert.ok(toggleBtn, 'Must render accordion toggle button with aria-expanded');
+      assert.equal(toggleBtn.getAttribute('aria-expanded'), 'true', 'Accordion must be expanded by default');
+
+      const contentId = toggleBtn.getAttribute('aria-controls');
+      assert.ok(contentId, 'Must specify aria-controls on toggle button');
+      const contentEl = roleComp.querySelector(`#${contentId}`);
+      assert.ok(contentEl, 'Collapsible content element must exist');
+      assert.ok(!contentEl.className.includes('hidden'), 'Content must not have hidden class when open');
+
+      // Click to collapse
+      fireEvent.click(toggleBtn);
+      const collapsedToggle = screen.getByTestId('roster-role-comparison').querySelector('[aria-expanded]');
+      assert.equal(collapsedToggle.getAttribute('aria-expanded'), 'false', 'Accordion must update aria-expanded to false');
+      const collapsedContent = screen.getByTestId('roster-role-comparison').querySelector(`#${contentId}`);
+      assert.ok(collapsedContent.className.includes('hidden'), 'Content must have hidden class when collapsed');
+
+      // Click to re-expand
+      fireEvent.click(collapsedToggle);
+      const reExpandedToggle = screen.getByTestId('roster-role-comparison').querySelector('[aria-expanded]');
+      assert.equal(reExpandedToggle.getAttribute('aria-expanded'), 'true', 'Accordion must update aria-expanded to true');
+      const reExpandedContent = screen.getByTestId('roster-role-comparison').querySelector(`#${contentId}`);
+      assert.ok(!reExpandedContent.className.includes('hidden'), 'Content must remove hidden class when re-expanded');
+      cleanup();
+    });
+
+    test('8.3.5 SettingsDrawer should default Celestial Motion Tilt badge to Active with discreet iOS opt-in and Autonomous Drift fallback', async () => {
+      const origWindow = globalThis.window;
+      const origLocalStorage = globalThis.localStorage;
+      let storedPerm = null;
+      let requestPermissionCalled = 0;
+
+      globalThis.localStorage = {
+        getItem: (k) => (k === 'oneiromancy_orientation_permission' ? storedPerm : null),
+        setItem: (k, v) => {
+          if (k === 'oneiromancy_orientation_permission') storedPerm = v;
+        },
+      };
+
+      let resolvePending = null;
+      globalThis.window = {
+        location: { origin: 'http://127.0.0.1:3000', search: '' },
+        DeviceOrientationEvent: {
+          requestPermission: () =>
+            new Promise((resolve) => {
+              resolvePending = resolve;
+              requestPermissionCalled++;
+            }),
+        },
+        dispatchEvent: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+      };
+
+      try {
+        render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: testDraftState },
+            jsx(SettingsDrawer, {
+              isOpen: true,
+              onClose: () => {},
+            })
+          )
+        );
+
+        const tiltSection = screen.getByTestId('celestial-tilt-section');
+        assert.ok(tiltSection, 'Must render Celestial Motion Tilt section');
+        assert.ok(screen.getByText('Celestial Motion Tilt'), 'Must display Celestial Motion Tilt title');
+
+        const badge = screen.getByTestId('celestial-tilt-status-badge');
+        assert.ok(badge, 'Must render tilt status badge');
+        assert.equal(
+          badge.textContent,
+          'Active',
+          'Status badge must default to Active without intrusive permission warnings'
+        );
+
+        const requestBtn = screen.getByTestId('enable-orientation-tilt-btn');
+        assert.ok(requestBtn, 'Must render discreet iOS opt-in button when requestPermission exists');
+
+        // Trigger request and verify in-flight double-tap guard
+        await act(async () => {
+          fireEvent.click(requestBtn);
+        });
+        assert.equal(requestBtn.disabled, true, 'Button must be disabled while request is in flight');
+        fireEvent.click(requestBtn);
+        assert.equal(requestPermissionCalled, 1, 'Second click while in-flight must be guarded');
+
+        await act(async () => {
+          resolvePending('granted');
+        });
+        assert.equal(badge.textContent, 'Active', 'Status badge must remain Active after permission grant');
+        assert.equal(storedPerm, 'granted', 'Must save granted permission to localStorage');
+        assert.equal(
+          screen.queryByTestId('enable-orientation-tilt-btn'),
+          null,
+          'Discreet opt-in button should hide once iOS motion access is granted'
+        );
+        cleanup();
+
+        // Denied state on iOS still shows Active badge (no scary warning) and retains discreet opt-in button
+        storedPerm = 'denied';
+        render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: testDraftState },
+            jsx(SettingsDrawer, {
+              isOpen: true,
+              onClose: () => {},
+            })
+          )
+        );
+        assert.equal(
+          screen.getByTestId('celestial-tilt-status-badge').textContent,
+          'Active',
+          'Status badge must remain Active without intrusive warnings even when prior iOS permission was denied'
+        );
+        assert.ok(
+          screen.getByTestId('enable-orientation-tilt-btn'),
+          'Discreet iOS opt-in button must remain available when stored permission is denied'
+        );
+        cleanup();
+
+        // Reduced motion / unsupported fallback shows Autonomous Drift
+        storedPerm = null;
+        globalThis.window = {
+          location: { origin: 'http://127.0.0.1:3000', search: '' },
+          matchMedia: (q) => ({ matches: q.includes('prefers-reduced-motion') }),
+          dispatchEvent: () => {},
+          addEventListener: () => {},
+          removeEventListener: () => {},
+        };
+        render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: testDraftState },
+            jsx(SettingsDrawer, {
+              isOpen: true,
+              onClose: () => {},
+            })
+          )
+        );
+        const fallbackBadge = screen.getByTestId('celestial-tilt-status-badge');
+        assert.equal(
+          fallbackBadge.textContent,
+          'Autonomous Drift',
+          'Status badge must show Autonomous Drift when motion sensors are disabled or unavailable'
+        );
+        assert.equal(
+          screen.queryByTestId('enable-orientation-tilt-btn'),
+          null,
+          'Opt-in button must not render when reduced motion is preferred'
+        );
+      } finally {
+        cleanup();
+        globalThis.window = origWindow;
+        globalThis.localStorage = origLocalStorage;
+      }
+    });
   });
 
   // ==========================================================================
@@ -624,8 +2665,11 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         )
       );
 
-      assert.ok(screen.getByText('YOUR STARTERS'), 'Must render YOUR STARTERS header');
-      assert.ok(screen.getByText('OPPONENT STARTERS'), 'Must render OPPONENT STARTERS header');
+      assert.equal(screen.queryByText(/YOUR STARTERS/), null, 'Must remove redundant YOUR STARTERS header');
+      assert.equal(screen.queryByText(/OPPONENT STARTERS/), null, 'Must remove redundant OPPONENT STARTERS header');
+      assert.equal(screen.queryByText('YOUR TEAM'), null, 'Must remove YOUR TEAM badge on MatchupsScreen');
+      assert.equal(screen.queryByText('OPPONENT'), null, 'Must remove OPPONENT badge on MatchupsScreen');
+      assert.equal(screen.queryByText(/\(You\)/), null, 'Must not render visible (You) suffix on MatchupsScreen');
       assert.equal(screen.queryByText('YOUR BENCH'), null, 'Must not render duplicate YOUR BENCH section on MatchupsScreen');
       assert.equal(screen.queryByText('OPPONENT BENCH'), null, 'Must not render duplicate OPPONENT BENCH section on MatchupsScreen');
       assert.ok(screen.getByText(/SolarFlare/i), 'Must render Week 2 opponent SolarFlare');
@@ -759,6 +2803,365 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
           process.env.TZ = prevTz;
         }
       }
+    });
+
+    test('8.4.8 OneiromancyDashboard mobile responsive constellation chart layout', () => {
+      render(
+        jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(OneiromancyDashboard, {}))
+      );
+
+      const svgList = screen.getAllByTestId('synergy-constellation-svg');
+      assert.equal(svgList.length, 1, 'Exactly one synergy-constellation-svg must exist in DOM');
+
+      const svg = svgList[0];
+      assert.equal(svg.getAttribute('viewBox'), '-45 0 300 190', 'SVG viewBox must be adjusted to -45 0 300 190');
+
+      // Verify all 5 spoke labels in textContent
+      const text = svg.textContent;
+      assert.ok(text.includes('Fire ('), 'SVG textContent must include Fire spoke label');
+      assert.ok(text.includes('Air ('), 'SVG textContent must include Air spoke label');
+      assert.ok(text.includes('Water ('), 'SVG textContent must include Water spoke label');
+      assert.ok(text.includes('Earth ('), 'SVG textContent must include Earth spoke label');
+      assert.ok(text.includes('Aspects ('), 'SVG textContent must include Aspects spoke label');
+
+      // Container checks: no overflow-x-auto, no min-w-[560px]
+      let curr = svg;
+      let chartOuter = null;
+      while (curr && curr.parentNode) {
+        if (curr.className && curr.className.includes('bg-slate-950/70')) {
+          chartOuter = curr;
+          break;
+        }
+        curr = curr.parentNode;
+      }
+      assert.ok(chartOuter, 'Chart container must exist');
+      assert.ok(!chartOuter.className.includes('overflow-x-auto'), 'Chart container must eliminate overflow-x-auto');
+      assert.ok(!svg.className.includes('min-w-[560px]'), 'SVG must eliminate min-w-[560px]');
+
+      // Decoupled responsive flex container
+      const flexContainer = chartOuter.querySelector('.flex-col');
+      assert.ok(flexContainer, 'Must use responsive flex-col container');
+      assert.ok(flexContainer.className.includes('md:flex-row'), 'Must use md:flex-row on wider viewports');
+      cleanup();
+    });
+
+    test('8.4.9 MatchupsScreen team alignment and opponent starter card mirroring', () => {
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: testDraftState },
+          jsx(MatchupsScreen, { weeklyMatchup: testDraftState.weekly_matchup })
+        )
+      );
+
+      // Opponent header comparison card has flex-row-reverse and right alignment
+      const oppAvatar = screen.getByTestId('opponent-team-avatar');
+      let curr = oppAvatar;
+      let oppHeaderCard = null;
+      while (curr && curr.parentNode) {
+        if (curr.className && curr.className.includes('sm:col-span-3')) {
+          oppHeaderCard = curr;
+          break;
+        }
+        curr = curr.parentNode;
+      }
+      assert.ok(oppHeaderCard, 'Opponent header card must exist');
+      assert.ok(oppHeaderCard.className.includes('flex-row-reverse'), 'Opponent header card must use flex-row-reverse');
+      assert.ok(oppHeaderCard.className.includes('text-right'), 'Opponent header card must have text-right');
+
+      const userAvatar = screen.getByTestId('user-team-avatar');
+      curr = userAvatar;
+      let userHeaderCard = null;
+      while (curr && curr.parentNode) {
+        if (curr.className && curr.className.includes('sm:col-span-3')) {
+          userHeaderCard = curr;
+          break;
+        }
+        curr = curr.parentNode;
+      }
+      assert.ok(userHeaderCard, 'User header card must exist');
+      assert.ok(!userHeaderCard.className.includes('flex-row-reverse'), 'User header card must retain left alignment');
+
+      // Starters from matchup: user starters vs opponent starters
+      const userStarters = (testDraftState.weekly_matchup?.player_favorabilities || []).filter(
+        (p) => p.is_user_team && !p.is_benched
+      );
+      const oppStarters = (testDraftState.weekly_matchup?.player_favorabilities || []).filter(
+        (p) => !p.is_user_team && !p.is_benched
+      );
+
+      assert.ok(userStarters.length > 0, 'Must have user starters in test state');
+      assert.ok(oppStarters.length > 0, 'Must have opponent starters in test state');
+
+      // Check opponent starter card layout
+      const oppCard = screen.getByTestId(`matchup-starter-card-${oppStarters[0].player_id}`);
+      assert.ok(oppCard, 'Opponent starter card must exist');
+
+      const oppTopRow = oppCard.children[0];
+      assert.ok(oppTopRow.className.includes('flex-row-reverse'), 'Opponent starter top row must use flex-row-reverse');
+
+      const oppTextCol = oppCard.querySelector('[data-testid="matchup-card-text-col"]');
+      assert.ok(oppTextCol, 'Opponent text column must exist');
+      assert.ok(oppTextCol.className.includes('text-right'), 'Opponent text column must have text-right');
+      assert.equal(oppTextCol.children.length, 2, 'Layout invariant A: matchup-card-text-col must have strictly 2 children');
+      const oppHeadshot = oppTopRow.querySelector('img, span[aria-hidden="true"]');
+      assert.ok(oppHeadshot && oppHeadshot.className.includes('w-12') && oppHeadshot.className.includes('sm:w-16'), 'Starter headshot must scale to fill identity area (w-12 sm:w-16)');
+      const oppNameSpan = oppTextCol.children[0].querySelector('span[title]');
+      assert.ok(oppNameSpan && oppNameSpan.className.includes('text-base') && oppNameSpan.className.includes('sm:text-lg'), 'Starter name must use scaled typography (text-base sm:text-lg) with title tooltip');
+      assert.ok(oppTextCol.children[1].className.includes('text-xs'), 'Starter team/bye row must use readable text-xs+ typography');
+
+      // Opponent stadium row must be a flex-col container with right-aligned items
+      const borderTRows = oppCard.querySelectorAll('.border-t');
+      assert.ok(borderTRows.length >= 1, 'Must have at least one border-t row');
+      const venueRow = borderTRows[0];
+      assert.ok(venueRow.className.includes('flex-col'), 'Opponent stadium row must be a flex-col container');
+      assert.ok(venueRow.className.includes('items-end'), 'Opponent stadium row must have items-end');
+      assert.ok(!venueRow.className.includes('flex-row-reverse'), 'Opponent venue row container must not have flex-row-reverse to avoid flex-direction conflict');
+
+      // User starter card retains left alignment
+      const userCard = screen.getByTestId(`matchup-starter-card-${userStarters[0].player_id}`);
+      assert.ok(userCard, 'User starter card must exist');
+      const userTopRow = userCard.children[0];
+      assert.ok(!userTopRow.className.includes('flex-row-reverse'), 'User starter top row must retain left alignment');
+      const userBadge = userCard.querySelector(`[data-testid="badge-${userStarters[0].position.toLowerCase()}"]`);
+      assert.ok(userBadge && userBadge.className.includes('text-xs') && userBadge.className.includes('sm:text-sm'), 'Starter position badge must scale to md/sm:lg sizing');
+
+      // Check venue row structure and children
+      const userVenueRow = userCard.querySelector('[data-testid="matchup-venue-row"]');
+      assert.ok(userVenueRow, 'User card must have matchup-venue-row');
+      assert.equal(userVenueRow.children.length, 2, 'matchup-venue-row must have exactly 2 children');
+      const userLine1 = userVenueRow.querySelector('[data-testid="matchup-venue-line"]');
+      const userLine2 = userVenueRow.querySelector('[data-testid="matchup-kickoff-line"]');
+      assert.ok(userLine1, 'Must have matchup-venue-line');
+      assert.ok(userLine2, 'Must have matchup-kickoff-line');
+      assert.ok(userVenueRow.className.includes('items-start'), 'User venue row must have items-start');
+      assert.ok(!userVenueRow.className.includes('flex-row-reverse'), 'User venue row container must not have flex-row-reverse');
+      assert.ok(!userLine1.className.includes('flex-row-reverse'), 'User venue line 1 must not have flex-row-reverse');
+      assert.ok(!userLine2.className.includes('flex-row-reverse'), 'User kickoff line 2 must not have flex-row-reverse');
+
+      const oppVenueRow = oppCard.querySelector('[data-testid="matchup-venue-row"]');
+      assert.ok(oppVenueRow, 'Opponent card must have matchup-venue-row');
+      assert.equal(oppVenueRow.children.length, 2, 'Opponent matchup-venue-row must have exactly 2 children');
+      const oppLine1 = oppVenueRow.querySelector('[data-testid="matchup-venue-line"]');
+      const oppLine2 = oppVenueRow.querySelector('[data-testid="matchup-kickoff-line"]');
+      assert.ok(oppLine1, 'Opponent must have matchup-venue-line');
+      assert.ok(oppLine2, 'Opponent must have matchup-kickoff-line');
+      assert.ok(oppVenueRow.className.includes('items-end'), 'Opponent venue row must have items-end');
+      assert.ok(!oppVenueRow.className.includes('flex-row-reverse'), 'Opponent venue row container must not have flex-row-reverse');
+      assert.ok(oppLine1.className.includes('flex-row-reverse'), 'Opponent venue line 1 must have flex-row-reverse');
+      assert.ok(oppLine2.className.includes('flex-row-reverse'), 'Opponent kickoff line 2 must have flex-row-reverse');
+      assert.ok(oppLine1.querySelector('span').className.includes('truncate'), 'Opponent venue line 1 must truncate cleanly to a single line');
+      assert.ok(oppLine1.querySelector('span').getAttribute('title'), 'Truncated venue line must preserve full accessible title');
+      assert.ok(oppLine2.querySelector('span').className.includes('truncate'), 'Opponent kickoff line 2 must truncate cleanly to a single line');
+      assert.ok(oppLine2.querySelector('span').getAttribute('title'), 'Truncated kickoff line must preserve full accessible title');
+
+      // Verify card containers have h-full and flex flex-col
+      assert.ok(userCard.className.includes('h-full'), 'User card must have h-full');
+      assert.ok(userCard.className.includes('flex flex-col'), 'User card must have flex flex-col');
+      assert.ok(oppCard.className.includes('h-full'), 'Opponent card must have h-full');
+      assert.ok(oppCard.className.includes('flex flex-col'), 'Opponent card must have flex flex-col');
+
+      // Advantage bar strip and delta labels must be completely removed
+      assert.equal(document.querySelectorAll('[role="meter"]').length, 0, 'Old matchup advantage meter bars must be removed');
+      assert.equal(document.querySelectorAll('[data-testid="matchup-bar-delta"]').length, 0, 'Old Opp Fav / Favored delta tag container must be removed');
+      assert.equal(document.querySelectorAll('[data-testid="matchup-bar-user"]').length, 0, 'Old matchup-bar-user must be removed');
+      assert.equal(document.querySelectorAll('[data-testid="matchup-bar-opp"]').length, 0, 'Old matchup-bar-opp must be removed');
+      assert.equal(document.querySelectorAll('[data-testid="matchup-bar-arrows"]').length, 0, 'Old matchup-bar-arrows must be removed');
+
+      // Hierarchical Stats/Stars -> Oracle node tree verification
+      const trees = Array.from(document.querySelectorAll('[data-testid="player-oracle-tree"]'));
+      assert.ok(trees.length > 0, 'Must render hierarchical player-oracle-tree widgets inside player cards');
+      for (const tree of trees) {
+        assert.equal(tree.getAttribute('role'), 'group', 'Tree container must have role="group"');
+        const oracleNode = tree.querySelector('[data-testid="oracle-node"]');
+        const branches = tree.querySelector('[data-testid="oracle-tree-branches"]');
+        const statsLeaf = tree.querySelector('[data-testid="stats-node"]');
+        const starsLeaf = tree.querySelector('[data-testid="stars-node"]');
+        assert.ok(oracleNode, 'Tree must include top oracle-node');
+        assert.ok(branches && branches.tagName.toLowerCase() === 'svg', 'Tree must render SVG feed connectors between leaves and Oracle');
+        assert.equal(branches.getAttribute('aria-hidden'), 'true', 'Tree connector SVG must be aria-hidden');
+        assert.ok(statsLeaf && statsLeaf.textContent.toUpperCase().includes('STATS'), 'Tree must include Stats child leaf');
+        assert.ok(starsLeaf && starsLeaf.textContent.toUpperCase().includes('STARS'), 'Tree must include Stars child leaf');
+        // Verify DOM order: Oracle top -> SVG branches -> leaf row containing Stats & Stars
+        assert.equal(tree.children.length, 3, 'Node tree must have 3 vertical tiers: Oracle, branches, leaves');
+        assert.ok(tree.children[0].contains(oracleNode), 'Tier 0 must be Oracle node');
+        assert.equal(tree.children[1], branches, 'Tier 1 must be connector SVG');
+        assert.ok(tree.children[2].contains(statsLeaf) && tree.children[2].contains(starsLeaf), 'Tier 2 must contain Stats and Stars leaf nodes');
+      }
+
+      // Dominant winning starter card must glow on oracle-node and render floating 5-point SVG stars
+      const dominantCards = Array.from(document.querySelectorAll('[data-dominant="true"]'));
+      const nonDominantCards = Array.from(document.querySelectorAll('[data-dominant="false"]'));
+      assert.ok(dominantCards.length > 0, 'At least one favored starter card must have data-dominant="true"');
+      assert.ok(nonDominantCards.length > 0, 'Non-winning starter cards must have data-dominant="false"');
+
+      for (const card of dominantCards) {
+        const node = card.querySelector('[data-testid="oracle-node"]');
+        assert.ok(node && node.className.includes('shadow-[0_0_16px_rgba('), 'Dominant Oracle node must glow');
+        assert.equal(node.querySelectorAll('[data-testid="oracle-powerup-arrows"]').length, 0, 'Power-up arrows must be removed');
+        const starsOverlay = node.querySelector('[data-testid="oracle-powerup-stars"]');
+        assert.ok(starsOverlay, 'Dominant Oracle node must render oracle-powerup-stars');
+        assert.equal(starsOverlay.getAttribute('aria-hidden'), 'true', 'Power-up stars overlay must be aria-hidden');
+        const starSvgs = starsOverlay.querySelectorAll('svg');
+        assert.ok(starSvgs.length >= 5, `Power-up overlay must render multiple floating 5-point SVG stars, got ${starSvgs.length}`);
+        const sizes = new Set();
+        const delays = new Set();
+        const lefts = new Set();
+        for (const svg of starSvgs) {
+          const poly = svg.querySelector('polygon');
+          assert.ok(poly && (poly.getAttribute('points') || '').split(/\s+/).length >= 10, 'Star SVG must render a 5-point polygon');
+          assert.ok(!svg.textContent.includes('✨') && !svg.textContent.includes('▲'), 'Must use actual star SVG, not sparkle emoji or arrow');
+          const cls = svg.getAttribute('class') || '';
+          assert.ok(cls.includes('animate-powerup-star-float'), 'Star SVG must use animate-powerup-star-float');
+          assert.ok(cls.includes('motion-reduce:animate-none'), 'Star SVG must respect reduced motion');
+          const w = Number(svg.getAttribute('width'));
+          assert.ok(w >= 8 && w <= 14, `Star SVG width must be between 8px and 14px, got ${w}`);
+          const delayNum = parseFloat(svg.style.animationDelay);
+          assert.ok(!Number.isNaN(delayNum) && delayNum <= 0, `Floating star delay must be <= 0s to avoid mount flash, got ${svg.style.animationDelay}`);
+          sizes.add(svg.getAttribute('width'));
+          delays.add(svg.style.animationDelay);
+          lefts.add(svg.style.left);
+        }
+        assert.ok(sizes.size >= 2, 'Floating stars must have varied sizes');
+        assert.ok(delays.size >= 3, 'Floating stars must have staggered timing delays');
+        assert.ok(lefts.size >= 4, 'Floating stars must be distributed across varied horizontal positions');
+      }
+      for (const card of nonDominantCards) {
+        const node = card.querySelector('[data-testid="oracle-node"]');
+        assert.ok(node && !node.className.includes('shadow-[0_0_16px_rgba('), 'Non-dominant Oracle node must not glow');
+        assert.equal(card.querySelectorAll('[data-testid="oracle-powerup-stars"]').length, 0, 'Non-dominant card must render 0 floating stars');
+      }
+      cleanup();
+
+      // Edge Cases: Kickoff fallback display ('Time TBA' / 'Bye week') and zero arrows on even/open splits
+      const edgeMatchup = {
+        ...testDraftState.weekly_matchup,
+        user_team: {
+          ...testDraftState.weekly_matchup?.user_team,
+          starters: ['p_tba_kickoff', 'p_even_user', 'p_open_user'],
+        },
+        opponent_team: {
+          ...testDraftState.weekly_matchup?.opponent_team,
+          starters: ['p_bye_player', 'p_even_opp'],
+        },
+        player_favorabilities: [
+          {
+            ...userStarters[0],
+            player_id: 'p_tba_kickoff',
+            player_name: 'TBA Kickoff Player',
+            name: 'TBA Kickoff Player',
+            position: 'QB',
+            is_user_team: true,
+            is_starter: true,
+            slot_role: 'QB',
+            game_kickoff: '',
+            stadium: {
+              stadium_name: 'MetLife Stadium',
+              roof_type: 'Open',
+              coordinates: { lat: 40.8, lon: -74.0 },
+            },
+            spirit_score: 85.0,
+            draft_score: 85.0,
+          },
+          {
+            ...userStarters[0],
+            player_id: 'p_bye_player',
+            player_name: 'Bye Week Player',
+            name: 'Bye Week Player',
+            position: 'QB',
+            is_user_team: false,
+            is_starter: true,
+            slot_role: 'QB',
+            bye_week: testDraftState.weekly_matchup?.selected_week || 2,
+            stadium: {
+              stadium_name: 'No game this week',
+              roof_type: '-',
+              coordinates: { lat: null, lon: null },
+            },
+            game_kickoff: 'Bye week',
+            spirit_score: 85.0,
+            draft_score: 85.0,
+          },
+          {
+            ...userStarters[0],
+            player_id: 'p_even_user',
+            player_name: 'Even User Player',
+            name: 'Even User Player',
+            position: 'RB',
+            is_user_team: true,
+            is_starter: true,
+            slot_role: 'RB',
+            spirit_score: 80.0,
+            draft_score: 80.0,
+          },
+          {
+            ...userStarters[0],
+            player_id: 'p_even_opp',
+            player_name: 'Even Opp Player',
+            name: 'Even Opp Player',
+            position: 'RB',
+            is_user_team: false,
+            is_starter: true,
+            slot_role: 'RB',
+            spirit_score: 80.0,
+            draft_score: 80.0,
+          },
+          {
+            ...userStarters[0],
+            player_id: 'p_open_user',
+            player_name: 'Open Slot User Player',
+            name: 'Open Slot User Player',
+            position: 'TE',
+            is_user_team: true,
+            is_starter: true,
+            slot_role: 'TE',
+            spirit_score: 75.0,
+            draft_score: 75.0,
+          },
+        ],
+      };
+
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: { ...testDraftState, weekly_matchup: edgeMatchup } },
+          jsx(MatchupsScreen, { weeklyMatchup: edgeMatchup })
+        )
+      );
+
+      // Verify Time TBA fallback when kickoff is missing
+      const tbaCard = screen.getByTestId('matchup-starter-card-p_tba_kickoff');
+      assert.ok(tbaCard, 'Card with missing kickoff must exist');
+      const tbaKickoffLine = tbaCard.querySelector('[data-testid="matchup-kickoff-line"]');
+      assert.ok(tbaKickoffLine, 'Kickoff line must exist on TBA card');
+      assert.equal(tbaKickoffLine.textContent.trim(), 'Time TBA', 'Kickoff line must display "Time TBA" when kickoff is missing');
+
+      // Verify Bye week display when player is on bye, and non-dominance for bye starters
+      const byeCard = screen.getByTestId('matchup-starter-card-p_bye_player');
+      assert.ok(byeCard, 'Card on bye must exist');
+      const byeKickoffLine = byeCard.querySelector('[data-testid="matchup-kickoff-line"]');
+      assert.ok(byeKickoffLine, 'Kickoff line must exist on bye card');
+      assert.equal(byeKickoffLine.textContent.trim(), 'Bye week', 'Kickoff line must display "Bye week" when player is on bye');
+      assert.equal(byeCard.getAttribute('data-dominant'), 'false', 'Starter on bye must never be marked data-dominant="true"');
+      assert.equal(byeCard.querySelectorAll('[data-testid="oracle-powerup-stars"]').length, 0, 'Starter on bye must render 0 floating stars');
+
+      // Verify RB Even tie pair has equal non-zero Oracle values and '- Even' sr-only status
+      const srSummaries = Array.from(document.querySelectorAll('span.sr-only')).map((el) => el.textContent.trim());
+      const evenSummary = srSummaries.find((text) => text.includes('Even User Player') && text.includes('Even Opp Player'));
+      assert.ok(evenSummary, 'Tie pair must render accessible sr-only summary');
+      const oracleMatches = [...evenSummary.matchAll(/Oracle ([\d.]+)/g)].map((m) => Number(m[1]));
+      assert.equal(oracleMatches.length, 2, 'Tie pair sr-only summary must report both player Oracle scores');
+      assert.ok(oracleMatches[0] > 0 && Math.abs(oracleMatches[0] - oracleMatches[1]) <= 0.05, 'Tie pair must exercise equal non-zero Oracle values');
+      assert.ok(evenSummary.endsWith(' - Even'), `Equal non-zero pair must report Even status, got: ${evenSummary}`);
+
+      // Negative assertion for even splits and open slots: 0 dominant Oracle nodes and 0 floating stars
+      for (const pid of ['p_even_user', 'p_even_opp', 'p_open_user']) {
+        const card = screen.getByTestId(`matchup-starter-card-${pid}`);
+        assert.equal(card.getAttribute('data-dominant'), 'false', `Even or open card ${pid} must have data-dominant="false"`);
+        assert.equal(card.querySelectorAll('[data-testid="oracle-powerup-stars"]').length, 0, `Even or open card ${pid} must render 0 floating stars`);
+      }
+
+      cleanup();
     });
   });
 
@@ -2794,7 +5197,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       }
     });
 
-    test('8.5.24 Multi-player comparison, stop propagation, pinned rows, head-to-head, and bottom close removal', () => {
+    test('8.5.24 Multi-player comparison, stop propagation, pinned rows, and bottom close removal', () => {
       try {
         const samplePlayer = mockData.mockCosmicBoard[0];
 
@@ -2817,6 +5220,20 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
 
         const stickyHeader = modalView.querySelector('.sticky.top-0');
         assert.ok(stickyHeader, 'Modal header must be sticky');
+        assert.ok(stickyHeader.className.includes('flex-shrink-0'), 'Modal header must have flex-shrink-0');
+
+        const dialog = modalView.querySelector('[role="dialog"]');
+        assert.ok(dialog, 'Modal dialog must exist');
+        const cardShell = dialog.childNodes.find((c) => c.nodeType === 1);
+        assert.ok(cardShell, 'Outer card container must exist inside dialog');
+        assert.ok(cardShell.className.includes('overflow-hidden'), 'Outer card shell must have overflow-hidden');
+        assert.ok(!cardShell.className.includes('overflow-y-auto'), 'Outer card shell must not have overflow-y-auto');
+        assert.ok(cardShell.className.includes('flex-col'), 'Outer card shell must have flex-col');
+
+        const scrollBody = modalView.querySelector('.overflow-y-auto');
+        assert.ok(scrollBody, 'Inner scrollable body must exist with overflow-y-auto');
+        assert.ok(scrollBody.className.includes('min-h-0'), 'Inner scroll body must have min-h-0');
+        assert.ok(scrollBody.className.includes('flex-1'), 'Inner scroll body must have flex-1');
 
         const statusBadge = screen.getByText(/MY ROSTER|FREE AGENT|ROSTERED/);
         assert.ok(statusBadge, 'Squad status badge must be present');
@@ -2839,11 +5256,36 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         // Compare column header
         const compareHeader = boardView.querySelector('th[data-testid="compare-col-header"]');
         assert.ok(compareHeader, 'Compare column header must be present');
+        assert.ok(compareHeader.className.includes('w-8'), 'Compare header must have w-8 class');
+        assert.ok(!compareHeader.className.includes('w-14'), 'Compare header must not have w-14 class');
+        assert.ok(compareHeader.className.includes('px-1'), 'Compare header must have px-1 class');
+        assert.ok(compareHeader.className.includes('tracking-normal'), 'Compare header must have tracking-normal class');
+        assert.equal(compareHeader.getAttribute('title'), 'Compare', 'Compare header must have title="Compare"');
+
+        const srOnly = compareHeader.querySelector('.sr-only');
+        assert.ok(srOnly, 'Compare header must contain .sr-only accessible text element');
+        assert.equal(srOnly.textContent, 'Compare', 'Accessible text must be "Compare"');
+
+        const scaleGlyph = compareHeader.querySelector('[aria-hidden="true"]');
+        assert.ok(scaleGlyph, 'Compare header must contain an aria-hidden scale glyph');
+        assert.equal(
+          scaleGlyph.tagName.toLowerCase(),
+          'svg',
+          'Compare header scale icon must render as an SVG element',
+        );
 
         // Find compare checkboxes in table
         const allCheckboxes = boardView.querySelectorAll('input[type="checkbox"]');
         const checkboxes = allCheckboxes.filter(cb => (cb.getAttribute('aria-label') || '').startsWith('Compare '));
         assert.ok(checkboxes.length >= 2, 'Compare checkboxes must exist in table rows');
+
+        // Verify table checkbox cell padding
+        const tableCheckboxes = tables[0].querySelectorAll('input[type="checkbox"]');
+        assert.ok(tableCheckboxes.length >= 1, 'Table compare checkboxes must exist');
+        const tableCheckboxCell = tableCheckboxes[0].parentNode;
+        assert.ok(tableCheckboxCell, 'Table checkbox parent td must exist');
+        assert.ok(tableCheckboxCell.className.includes('px-1'), 'Checkbox td must have px-1 padding');
+        assert.ok(!tableCheckboxCell.className.includes('px-2'), 'Checkbox td must not have px-2 padding');
 
         const checkbox0 = checkboxes[0];
         const label0 = checkbox0.getAttribute('aria-label') || '';
@@ -2858,6 +5300,12 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         assert.ok(pinnedTbody, 'compare-pinned tbody must render when player is pinned');
         assert.ok(pinnedTbody.textContent.includes(playerName0), 'Pinned tbody must contain player name');
         assert.ok(pinnedTbody.textContent.includes('PINNED'), 'Pinned row must display PINNED badge');
+
+        const pinnedCheckbox = pinnedTbody.querySelector('input[type="checkbox"]');
+        const pinnedCheckboxCell = pinnedCheckbox ? pinnedCheckbox.parentNode : null;
+        assert.ok(pinnedCheckboxCell, 'Pinned checkbox parent td must exist');
+        assert.ok(pinnedCheckboxCell.className.includes('px-1'), 'Pinned checkbox td must have px-1 padding');
+        assert.ok(!pinnedCheckboxCell.className.includes('px-2'), 'Pinned checkbox td must not have px-2 padding');
 
         // Verify PlayerDetailModal was NOT opened by clicking checkbox
         assert.equal(boardView.querySelector('[role="dialog"]'), null, 'Checkbox click must not open modal (stopPropagation)');
@@ -2877,25 +5325,24 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         const playerName1 = label1.replace('Compare ', '');
         fireEvent.click(checkbox1);
 
-        // Now action bar must show 2 and render Head-to-Head Compare button
+        // Now action bar must show 2, keep sticky bottom-4 layout, and NOT render Head-to-Head button
         assert.ok(actionBar.textContent.includes('Comparing 2 / 6'), 'Action bar must show 2 candidates');
         assert.ok(actionBar.className.includes('sticky') && actionBar.className.includes('bottom-4'), 'Action bar must have sticky bottom-4 layout');
-        const h2hBtn = boardView.querySelector('button[data-testid="head-to-head-btn"]');
-        assert.ok(h2hBtn, 'Head-to-Head Compare button must be present when exactly 2 players pinned');
-        assert.ok(h2hBtn.textContent.includes('Compare Head-to-Head'), 'Button label must be Compare Head-to-Head');
-
-        // Click Head-to-Head button: must open PlayerDetailModal comparing both players
-        fireEvent.click(h2hBtn);
-        const modal = boardView.querySelector('[role="dialog"]');
-        assert.ok(modal, 'Head-to-head button must open PlayerDetailModal');
-        assert.ok(modal.textContent.includes('Head-to-head'), 'Modal must render head-to-head comparison');
-        assert.ok(modal.textContent.includes(playerName0) && modal.textContent.includes(playerName1), 'Modal must show both compared players');
-
-        // Close modal via top-right X button
-        const modalClose = modal.querySelector('button[aria-label="Close dossier"]');
-        assert.ok(modalClose, 'Modal top-right close button must exist');
-        fireEvent.click(modalClose);
-        assert.equal(boardView.querySelector('[role="dialog"]'), null, 'Modal must close');
+        assert.equal(
+          boardView.querySelector('button[data-testid="head-to-head-btn"]'),
+          null,
+          'Head-to-Head Compare button must not be rendered',
+        );
+        assert.ok(
+          !actionBar.textContent.includes('Compare Head-to-Head'),
+          'Action bar must not contain Compare Head-to-Head text',
+        );
+        assert.equal(
+          actionBar.querySelectorAll('button').length,
+          1,
+          'Action bar must only render the Clear All button',
+        );
+        assert.equal(boardView.querySelector('[role="dialog"]'), null, 'Dialog must not open automatically');
 
         // Test filter persistence: type a search query that matches neither player0 nor player1
         const searchInput = boardView.querySelectorAll('input').find(i => (i.getAttribute('placeholder') || '').toLowerCase().includes('search'));
@@ -3061,7 +5508,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       }
     });
 
-    test('8.5.27 Multi-player comparison action button and multi-candidate-grid for 3 to 6 candidates', () => {
+    test('8.5.27 Multi-player comparison action bar without launch button and direct multi-candidate-grid modal rendering', () => {
       try {
         const { container: boardView } = render(
           jsx(
@@ -3081,16 +5528,34 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
           fireEvent.click(unpinned[0]);
         }
 
-        // Action bar button should say "Compare 3 Candidates"
-        const compareBtn = boardView.querySelector('button[data-testid="head-to-head-btn"]');
-        assert.ok(compareBtn, 'Compare button must exist for 3 pinned players');
-        assert.ok(compareBtn.textContent.includes('Compare 3 Candidates'), 'Button text must say Compare 3 Candidates');
+        // Action bar must render count and Clear All only; head-to-head-btn must not exist
+        assert.equal(
+          boardView.querySelector('button[data-testid="head-to-head-btn"]'),
+          null,
+          'Compare launch button must not exist when 3 players are pinned',
+        );
+        const actionBar = boardView.querySelector('[data-testid="compare-action-bar"]');
+        assert.ok(actionBar, 'Action bar must still render when 3 players are pinned');
+        assert.ok(actionBar.textContent.includes('Comparing 3 / 6'), 'Action bar must display 3 pinned count');
+        assert.equal(actionBar.querySelectorAll('button').length, 1, 'Only Clear All button should remain in action bar');
+        cleanup();
 
-        // Click Compare 3 Candidates
-        fireEvent.click(compareBtn);
+        // Render PlayerDetailModal directly with compareCandidates to preserve multi-candidate grid coverage
+        const candidates = mockData.mockCosmicBoard.slice(0, 3);
+        let closed = false;
+        const { container: modalView } = render(
+          jsx(PlayerDetailModal, {
+            player: candidates[0],
+            compareCandidates: candidates,
+            isOpen: true,
+            onClose: () => {
+              closed = true;
+            },
+          }),
+        );
 
-        const modal = boardView.querySelector('[role="dialog"]');
-        assert.ok(modal, 'Modal must open on Compare 3 Candidates click');
+        const modal = modalView.querySelector('[role="dialog"]');
+        assert.ok(modal, 'PlayerDetailModal must render when isOpen is true');
         assert.ok(modal.textContent.includes('Comparing 3 Candidates') || modal.textContent.includes('Comparing 3 Selected Candidates'), 'Modal header must reflect 3 candidates');
 
         // multi-candidate-grid must be present
@@ -3112,11 +5577,86 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         assert.ok(grid.textContent.includes('Stars'), 'Grid must display Stars');
         assert.ok(grid.textContent.includes('Leader'), 'Grid must highlight leader');
 
-        // Close modal
+        // Close modal callback fires on X click
         const closeBtn = modal.querySelector('button[aria-label="Close dossier"]');
         assert.ok(closeBtn);
         fireEvent.click(closeBtn);
-        assert.equal(boardView.querySelector('[role="dialog"]'), null, 'Modal must close');
+        assert.equal(closed, true, 'Closing modal must invoke onClose');
+
+        cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.2 CelestialLeaderboardGraph tier badges match displayed rating across Oracle, Stars, Stats, and Harmony tabs', () => {
+      try {
+        const mismatchedTeams = [
+          {
+            slot: 1,
+            roster_id: 1,
+            name: 'HighComposite LowSpirit',
+            avg_spirit_score: 72.0,
+            avg_draft_score: 82.0,
+            harmony_score: 84.8,
+            picks: [],
+          },
+          {
+            slot: 4,
+            roster_id: 4,
+            name: 'LowComposite HighSpirit',
+            avg_spirit_score: 76.0,
+            avg_draft_score: 70.0,
+            harmony_score: 74.9,
+            picks: [],
+          },
+        ];
+
+        render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: { ...testDraftState, competitor_teams: mismatchedTeams } },
+            jsx(CelestialLeaderboardGraph, { competitorTeams: mismatchedTeams }),
+          ),
+        );
+
+        const rank1Oracle = screen.getByTestId('leaderboard-row-rank-1');
+        assert.ok(rank1Oracle.textContent.includes('HighComposite LowSpirit'), 'Oracle tab #1 must be 78.8 composite team');
+        assert.ok(rank1Oracle.textContent.includes('78.8'), 'Oracle tab #1 must display 78.8');
+        assert.ok(rank1Oracle.textContent.includes('Harmonic (Stable)'), 'Oracle tab #1 (78.8) must show Harmonic (Stable)');
+        assert.ok(!rank1Oracle.textContent.includes('Discordant'), 'Oracle tab #1 (78.8) must never show Discordant');
+
+        const row4Oracle = screen.getByTestId('leaderboard-row-slot-4');
+        assert.ok(row4Oracle.textContent.includes('73.9'), 'Oracle tab row #2 must display 73.9');
+        assert.ok(row4Oracle.textContent.includes('Discordant (At Risk)'), 'Oracle tab row (73.9) must show Discordant (At Risk)');
+
+        // Switch to Stars tab (spiritScore: 76.0 vs 72.0)
+        fireEvent.click(screen.getByTestId('leaderboard-toggle-spirit'));
+        const rank1Stars = screen.getByTestId('leaderboard-row-rank-1');
+        assert.ok(rank1Stars.textContent.includes('LowComposite HighSpirit'), 'Stars tab #1 must be 76.0 spirit team');
+        assert.ok(rank1Stars.textContent.includes('Harmonic (Stable)'), 'Stars tab #1 (76.0) must show Harmonic (Stable)');
+        const row1StarsSecond = screen.getByTestId('leaderboard-row-slot-1');
+        assert.ok(row1StarsSecond.textContent.includes('72.0'), 'Stars tab row #2 must display 72.0');
+        assert.ok(row1StarsSecond.textContent.includes('Discordant (At Risk)'), 'Stars tab row #2 (72.0) must show Discordant (At Risk)');
+
+        // Switch to Stats tab (draftScore: 82.0 vs 70.0)
+        fireEvent.click(screen.getByTestId('leaderboard-toggle-draft'));
+        const rank1Stats = screen.getByTestId('leaderboard-row-rank-1');
+        assert.ok(rank1Stats.textContent.includes('HighComposite LowSpirit'), 'Stats tab #1 must be 82.0 draft team');
+        assert.ok(rank1Stats.textContent.includes('82.0'), 'Stats tab #1 must display 82.0');
+        assert.ok(rank1Stats.textContent.includes('Harmonic (Stable)'), 'Stats tab #1 (82.0) must show Harmonic (Stable)');
+        const row4Stats = screen.getByTestId('leaderboard-row-slot-4');
+        assert.ok(row4Stats.textContent.includes('70.0'), 'Stats tab row #2 must display 70.0');
+        assert.ok(row4Stats.textContent.includes('Discordant (At Risk)'), 'Stats tab row #2 (70.0) must show Discordant (At Risk)');
+
+        // Switch to Harmony tab: rounded 84.8 -> 85% must show Favorable (Optimal); rounded 74.9 -> 75% must show Harmonic (Stable)
+        fireEvent.click(screen.getByTestId('leaderboard-toggle-harmony'));
+        const rank1Harmony = screen.getByTestId('leaderboard-row-rank-1');
+        assert.ok(rank1Harmony.textContent.includes('85%'), 'Harmony tab #1 must display rounded 85%');
+        assert.ok(rank1Harmony.textContent.includes('Favorable (Apex)'), 'Harmony tab #1 (85%) must show Favorable (Apex)');
+        const row4Harmony = screen.getByTestId('leaderboard-row-slot-4');
+        assert.ok(row4Harmony.textContent.includes('75%'), 'Harmony tab row #2 must display rounded 75%');
+        assert.ok(row4Harmony.textContent.includes('Harmonic (Stable)'), 'Harmony tab row #2 (75%) must show Harmonic (Stable)');
 
         cleanup();
       } finally {

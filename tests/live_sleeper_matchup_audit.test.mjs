@@ -714,12 +714,12 @@ describe('Live Sleeper API & Multi-User Matchup Audit', () => {
       for (const wk of [1, 2, 3, 4, 7]) {
         fireEvent.click(view.getByTestId(`matchup-week-btn-${wk}`));
         const grid = view.getByTestId('positional-matchup-grid');
-        const rows = Array.from(grid.children).slice(1);
+        const rows = Array.from(grid.children);
         assert.equal(rows.length, 8, `Week ${wk} must render 8 positional starter rows`);
         let userStarterSum = 0;
         let oppStarterSum = 0;
         for (const row of rows) {
-          const pairContainer = row.children[1];
+          const pairContainer = Array.from(row.children).find((el) => el.className && el.className.includes('grid-cols-1')) || row.children[row.children.length - 1];
           const cells = Array.from(pairContainer.children);
           const leftStatsMatch = cells[0].textContent.match(/STATS\s*([\d.]+)/i) || cells[0].textContent.match(/([\d.]+)\s*Stats/i);
           const rightStatsMatch = cells[1].textContent.match(/STATS\s*([\d.]+)/i) || cells[1].textContent.match(/([\d.]+)\s*Stats/i);

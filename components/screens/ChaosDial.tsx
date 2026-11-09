@@ -173,7 +173,7 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
             <div className="flex justify-between items-center">
               <span className="text-xs font-mono uppercase tracking-wider text-purple-400 font-semibold flex items-center gap-1">
                 <Sparkles className="w-3.5 h-3.5 text-purple-400" />
-                Master Chaos Factor (λ)
+                Stars vs. Stats Dial (λ)
               </span>
               <span className="font-mono text-base font-bold text-cyan-300 bg-slate-900/90 px-2.5 py-0.5 rounded-lg border border-cyan-500/30">
                 {lambda.toFixed(2)}
@@ -184,7 +184,7 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
               min="0"
               max="1"
               step="0.01"
-              aria-label="Master Chaos Factor (lambda)"
+              aria-label="Stars vs. Stats Dial (lambda)"
               value={lambda}
               onChange={(e) => {
                 const val = parseFloat(e.target.value);
@@ -356,13 +356,21 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
           <div className="space-y-4">
             {/* Formula Summary Card (shown only when standalone; OraclePanel already displays the formula above) */}
             {!embedded && (
-              <div className="p-3 rounded-xl bg-slate-950/80 border border-purple-500/30 font-mono text-xs space-y-1">
+              <div className="p-3 rounded-xl bg-slate-950/80 border border-purple-500/30 font-mono text-xs space-y-2">
                 <div className="text-purple-300 font-bold">
                   Oracle = (1 &minus; &lambda;) &times; Stats + &lambda; &times; Stars
                 </div>
                 <p className="text-[11px] text-slate-400 font-sans">
-                  Blends baseline football strength (Stats) with weekly alignment (Stars), powered by the 5-pillar Spirit weights above.
+                  Blends projected fantasy points (Stats) with astrological alignment (Stars) into a single Oracle rating. Use the dial to set your mix from pure statistics to pure cosmic alignment.
                 </p>
+                <div className="pt-1 border-t border-white/5 space-y-1 text-[11px] text-slate-400 font-sans">
+                  <p>
+                    <strong className="text-slate-300">Unit Conversion:</strong> Raw projected fantasy points (Stats) are rescaled to a 0&ndash;100 index (where 25 points = 100) before blending with Stars (0&ndash;100).
+                  </p>
+                  <p>
+                    <strong className="text-slate-300">Worked Example (Ja&apos;Marr Chase):</strong> 19.8 projected points rescales to 79.2 Stats. With 85 Stars and the dial set to 75% Stars (&lambda; = 0.75): (1 &minus; 0.75) &times; 79.2 + 0.75 &times; 85 = 19.8 + 63.75 = 83.55 (rounds to 83.6 Oracle).
+                  </p>
+                </div>
               </div>
             )}
 
@@ -372,28 +380,28 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
             <Orbit className="w-3.5 h-3.5" /> Natal Chart Planetary Aspects
           </h4>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
-            <div className="p-2.5 rounded-lg bg-slate-900/70 border border-rose-500/20">
-              <div className="font-mono font-bold text-rose-300">Mars Aspects (Aggression &amp; Red-Zone Burst)</div>
+            <div className="p-2.5 rounded-lg bg-rose-950/20 border border-rose-500/20">
+              <div className="font-mono font-bold text-rose-300">Mars Aspects (Red-Zone Power)</div>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Measures explosive red-zone carries, yards after contact, and pass-rush disruption.
+                Measures physical burst on short-yardage carries and broken tackles near the goal line.
               </p>
             </div>
-            <div className="p-2.5 rounded-lg bg-slate-900/70 border border-amber-500/20">
+            <div className="p-2.5 rounded-lg bg-amber-950/20 border border-amber-500/20">
               <div className="font-mono font-bold text-amber-300">Saturn Transits (Durability &amp; Snap Share)</div>
               <p className="text-[11px] text-slate-400 mt-0.5">
                 Tracks snap-count reliability, pass protection, and four-quarter workload resilience.
               </p>
             </div>
-            <div className="p-2.5 rounded-lg bg-slate-900/70 border border-sky-500/20">
-              <div className="font-mono font-bold text-sky-300">Mercury Retrogrades (Route Timing &amp; Turnovers)</div>
+            <div className="p-2.5 rounded-lg bg-sky-950/20 border border-sky-500/20">
+              <div className="font-mono font-bold text-sky-300">Mercury Retrogrades (Route Timing &amp; Mix-ups)</div>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Flags audible miscommunications, broken option routes, and turnover volatility.
+                Flags audible miscommunications, broken routes, and turnover volatility.
               </p>
             </div>
-            <div className="p-2.5 rounded-lg bg-slate-900/70 border border-emerald-500/20">
-              <div className="font-mono font-bold text-emerald-300">Jupiter Alignments (Ceiling &amp; Big Plays)</div>
+            <div className="p-2.5 rounded-lg bg-emerald-950/20 border border-emerald-500/20">
+              <div className="font-mono font-bold text-emerald-300">Jupiter Alignments (Big-Play Upside)</div>
               <p className="text-[11px] text-slate-400 mt-0.5">
-                Amplifies multi-touchdown ceiling games and deep-ball connection probability.
+                Boosts probability for explosive gains, multi-touchdown spikes, and ceiling weeks.
               </p>
             </div>
           </div>
@@ -409,19 +417,19 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
               <span className="font-mono font-bold text-rose-300 flex items-center gap-1">
                 <Flame className="w-3 h-3" /> Fire
               </span>
-              <span className="text-slate-400 block text-[10px]">Aries · Leo · Sagittarius - Deep-threat ceiling</span>
+              <span className="text-slate-400 block text-[10px]">Aries · Leo · Sagittarius - Explosive big-play ceiling</span>
             </div>
             <div className="p-2 rounded-lg bg-teal-950/20 border border-teal-500/25">
               <span className="font-mono font-bold text-teal-300 flex items-center gap-1">
                 <Mountain className="w-3 h-3" /> Earth
               </span>
-              <span className="text-slate-400 block text-[10px]">Taurus · Virgo · Capricorn - High-volume floor</span>
+              <span className="text-slate-400 block text-[10px]">Taurus · Virgo · Capricorn - High-volume, steady floor</span>
             </div>
             <div className="p-2 rounded-lg bg-sky-950/20 border border-sky-500/25">
               <span className="font-mono font-bold text-sky-300 flex items-center gap-1">
                 <Wind className="w-3 h-3" /> Air
               </span>
-              <span className="text-slate-400 block text-[10px]">Gemini · Libra · Aquarius - Tempo &amp; route precision</span>
+              <span className="text-slate-400 block text-[10px]">Gemini · Libra · Aquarius - Quick, precise passing &amp; timing</span>
             </div>
             <div className="p-2 rounded-lg bg-blue-950/20 border border-blue-500/25">
               <span className="font-mono font-bold text-blue-300 flex items-center gap-1">
@@ -444,12 +452,12 @@ export const ChaosDial: React.FC<ChaosDialProps> = ({
             <ExternalLink className="w-3 h-3" />
           </a>
           <a
-            href="https://www.astro.com/astrology/in_sports_e.htm"
+            href="https://en.wikipedia.org/wiki/Astrology"
             target="_blank"
             rel="noopener noreferrer"
             className="text-purple-300 hover:text-purple-200 underline flex items-center gap-1"
           >
-            <span>Sports Astrology</span>
+            <span>What is astrology? (Wikipedia)</span>
             <ExternalLink className="w-3 h-3" />
           </a>
           <a

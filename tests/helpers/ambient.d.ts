@@ -138,6 +138,7 @@ declare module 'react' {
   export function useCallback<T extends Function>(callback: T, deps?: any[]): T;
   export function useRef<T>(initial?: T): { current: T };
   export function useContext<T>(context: any): T;
+  export function useId(): string;
   export function createContext<T>(defaultValue: T): any;
   export const Fragment: any;
   export function createElement(type: any, props?: any, ...children: any[]): any;

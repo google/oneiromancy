@@ -294,8 +294,81 @@ describe('Component Identity Audit: Single Global YOU & Zero Collisions', () => 
       );
       const userRows = view.getAllByTestId('leaderboard-user-team');
       assert.equal(userRows.length, 1, 'CelestialLeaderboardGraph renders exactly 1 leaderboard-user-team row');
-      assert.ok(userRows[0].textContent.includes('YOU'), 'CelestialLeaderboardGraph renders YOU marker for user team');
+      assert.ok(!userRows[0].textContent.includes('YOU'), 'CelestialLeaderboardGraph must not render YOU pill label on user row');
+      assert.ok(userRows[0].className.includes('border-purple-400'), 'CelestialLeaderboardGraph preserves purple border highlight for active team');
       view.unmount();
+    });
+
+    it('3.5 should strip case-varied (YOU)/(you) markers and enforce Team/Manager fallbacks across Leaderboard, LeagueScreen, MatchupsScreen, and PlayerCardRow', async () => {
+      const { render, jsx, cleanup } = await import('./helpers/react_testing_wrapper.mjs');
+      const { default: OneiromancyContext } = await import('./dist/context/OneiromancyContext.js');
+      const { CelestialLeaderboardGraph } = await import('./dist/components/oneiromancy/CelestialLeaderboardGraph.js');
+      const { LeagueScreen } = await import('./dist/components/screens/LeagueScreen.js');
+      const { MatchupsScreen } = await import('./dist/components/screens/MatchupsScreen.js');
+      const { default: PlayerCardRow } = await import('./dist/components/board/PlayerCardRow.js');
+
+      const baseState = mock.mock_oneiromancy_draft_2025;
+      const teamsWithCaseVariants = [
+        { ...baseState.competitor_teams[0], roster_id: 1, slot: 1, is_user: true, name: 'Astral Kings (YOU)', owner_name: 'Alice', points_for: 100 },
+        { ...baseState.competitor_teams[1], roster_id: 2, slot: 2, is_user: false, name: '   (You)  ', owner_name: 'Bob', points_for: 90 },
+        { ...baseState.competitor_teams[2], roster_id: 3, slot: 3, is_user: false, name: 'Comets (you)', owner_name: 'Cara', points_for: 80 },
+      ];
+      const variantState = {
+        ...baseState,
+        competitor_teams: teamsWithCaseVariants,
+        weekly_matchup: {
+          ...baseState.weekly_matchup,
+          user_team: { ...baseState.weekly_matchup.user_team, team_name: 'Astral Kings (YOU)', owner_name: '' },
+          opponent_team: { ...baseState.weekly_matchup.opponent_team, team_name: 'Comets (you)', owner_name: '   ' },
+        },
+      };
+      const ctxVal = { draftState: variantState, userSlot: 1, userRosterId: 1, isUserTeam: (t) => Boolean(t?.is_user) };
+
+      const lbView = render(
+        jsx(OneiromancyContext.Provider, {
+          value: ctxVal,
+          children: jsx(CelestialLeaderboardGraph, { competitorTeams: teamsWithCaseVariants }),
+        })
+      );
+      const lbText = lbView.container.textContent || '';
+      assert.ok(!/\(you\)/i.test(lbText), 'CelestialLeaderboardGraph must strip (YOU)/(you)/(You)');
+      assert.ok(lbText.includes('Astral Kings'), 'CelestialLeaderboardGraph keeps cleaned team name');
+      assert.ok(lbText.includes('Team'), 'CelestialLeaderboardGraph falls back to Team when name was only (You)');
+      cleanup();
+
+      const leagueView = render(
+        jsx(OneiromancyContext.Provider, {
+          value: ctxVal,
+          children: jsx(LeagueScreen, {}),
+        })
+      );
+      const optionTexts = Array.from(leagueView.container.querySelectorAll('option')).map((o) => o.textContent || '');
+      assert.ok(optionTexts.every((t) => !/\(you\)/i.test(t) && t.trim().length > 0), 'LeagueScreen select options must strip (YOU)/(you) with non-empty Team fallback');
+      assert.ok(optionTexts.some((t) => t.startsWith('Team')), 'LeagueScreen uses Team fallback for empty/(You) team names');
+      cleanup();
+
+      const matchupView = render(
+        jsx(OneiromancyContext.Provider, {
+          value: ctxVal,
+          children: jsx(MatchupsScreen, { weeklyMatchup: variantState.weekly_matchup }),
+        })
+      );
+      const matchupText = matchupView.container.textContent || '';
+      assert.ok(!/\(you\)/i.test(matchupText), 'MatchupsScreen must strip (YOU)/(you)');
+      assert.equal((matchupText.match(/Mgr:\s*Manager/g) || []).length, 2, 'MatchupsScreen falls back to Mgr: Manager for both blank owner names');
+      cleanup();
+
+      const samplePlayer = { ...baseState.cosmic_board[0], draft_status: 'drafted', drafted_by: 'Astral Kings (You)' };
+      const rowView = render(
+        jsx(OneiromancyContext.Provider, {
+          value: ctxVal,
+          children: jsx(PlayerCardRow, { player: samplePlayer, rank: 1, onInspect: () => {} }),
+        })
+      );
+      const rowText = rowView.container.textContent || '';
+      assert.ok(!/\(you\)/i.test(rowText), 'PlayerCardRow must strip (You) from drafted_by');
+      assert.ok(rowText.includes('Astral Kings'), 'PlayerCardRow renders stripped team name');
+      cleanup();
     });
 
     it('3.2 should verify that evaluating CelestialLeaderboardGraph isUser logic against live competitor teams flags exactly 1 team', () => {

@@ -70,6 +70,7 @@ export const Mountain = createIcon('Mountain');
 export const Orbit = createIcon('Orbit');
 export const RefreshCw = createIcon('RefreshCw');
 export const RotateCcw = createIcon('RotateCcw');
+export const Scale = createIcon('Scale');
 export const Search = createIcon('Search');
 export const Settings = createIcon('Settings');
 export const Shield = createIcon('Shield');

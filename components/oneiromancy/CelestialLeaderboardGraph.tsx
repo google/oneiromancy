@@ -21,7 +21,7 @@ import React, { useState, useMemo } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import UserAvatar from '@/components/common/UserAvatar';
 import { CompetitorTeam, CosmicPlayer } from '@/types/oneiromancy';
-import { calculateTeamCelestialMetrics } from '@/lib/scoring';
+import { calculateTeamCelestialMetrics, classifySpiritScoreTier, hasUserSuffix, stripUserSuffix } from '@/lib/scoring';
 import { Trophy, ChevronDown, ChevronUp } from 'lucide-react';
 
 export type LeaderboardMetric = 'overall' | 'spirit' | 'draft' | 'harmony';
@@ -49,32 +49,37 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
   const rankedTeams = useMemo(() => {
     const teamsWithMetrics = competitorTeams.map((team, idx) => {
       const slotNum = team.slot || team.roster_id || idx + 1;
-      const isUser = team.is_user === true || team.name.includes('(You)');
+      const isUser = team.is_user === true || hasUserSuffix(team.name);
       const metrics = calculateTeamCelestialMetrics(team, cosmicBoard);
 
-      let value = metrics.compositeScore;
-      let displayValue = metrics.compositeScore.toFixed(1);
+      let sortValue = metrics.compositeScore;
+      let value = Number(metrics.compositeScore.toFixed(1));
+      let displayValue = value.toFixed(1);
       let metricUnit = 'PTS';
 
       if (metric === 'spirit') {
-        value = metrics.spiritScore;
-        displayValue = metrics.spiritScore.toFixed(1);
+        sortValue = metrics.spiritScore;
+        value = Number(metrics.spiritScore.toFixed(1));
+        displayValue = value.toFixed(1);
         metricUnit = 'SPIRIT';
       } else if (metric === 'draft') {
-        value = metrics.draftScore;
-        displayValue = metrics.draftScore.toFixed(1);
+        sortValue = metrics.draftScore;
+        value = Number(metrics.draftScore.toFixed(1));
+        displayValue = value.toFixed(1);
         metricUnit = 'DRAFT';
       } else if (metric === 'harmony') {
-        value = metrics.harmonyScore;
-        displayValue = `${Math.round(metrics.harmonyScore)}%`;
+        sortValue = metrics.harmonyScore;
+        value = Math.round(metrics.harmonyScore);
+        displayValue = `${value}%`;
         metricUnit = 'HARMONY';
       } else {
-        value = metrics.compositeScore;
-        displayValue = metrics.compositeScore.toFixed(1);
+        sortValue = metrics.compositeScore;
+        value = Number(metrics.compositeScore.toFixed(1));
+        displayValue = value.toFixed(1);
         metricUnit = 'COMPOSITE';
       }
 
-      const cleanName = team.name.replace(/\s*\(You\)\s*/g, '').trim();
+      const cleanName = stripUserSuffix(team.name, 'Team');
 
       return {
         team,
@@ -82,13 +87,14 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
         cleanName,
         isUser,
         metrics,
+        sortValue,
         value,
         displayValue,
         metricUnit,
       };
     });
 
-    return teamsWithMetrics.sort((a, b) => b.value - a.value);
+    return teamsWithMetrics.sort((a, b) => b.sortValue - a.sortValue);
   }, [competitorTeams, cosmicBoard, userSlot, metric]);
 
   const displayedTeams = showAllTeams ? rankedTeams : rankedTeams.slice(0, 5);
@@ -206,6 +212,7 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
           const rank = index + 1;
           const isRankOne = rank === 1;
           const barWidth = Math.min(100, Math.max(15, ((item.value - 50) / 50) * 100));
+          const rowTier = classifySpiritScoreTier(item.value);
 
           return (
             <div
@@ -257,29 +264,20 @@ export const CelestialLeaderboardGraph: React.FC<CelestialLeaderboardGraphProps>
                     >
                       {item.cleanName}
                     </span>
-                    {item.isUser && (
-                      <span
-                        className="text-[9px] font-mono uppercase px-1.5 py-0.2 rounded-full bg-gradient-to-r from-purple-700 to-indigo-800 text-amber-300 border border-amber-400/80 shrink-0 font-bold"
-                      >
-                        YOU
-                      </span>
-                    )}
                   </div>
                 </div>
 
                 <div className="flex items-center gap-2 shrink-0">
                   <span
                     className={`text-[9px] px-1.5 py-0.5 rounded-full border whitespace-nowrap hidden sm:inline ${
-                      item.metrics.tier === 'Favorable'
+                      rowTier.tier === 'Favorable'
                         ? 'bg-emerald-950/60 border-emerald-500/30 text-emerald-300'
-                        : item.metrics.tier === 'Volatile'
-                        ? 'bg-amber-950/60 border-amber-500/30 text-amber-300'
-                        : item.metrics.tier === 'Discordant'
+                        : rowTier.tier === 'Discordant'
                         ? 'bg-rose-950/60 border-rose-500/30 text-rose-300'
                         : 'bg-sky-950/60 border-sky-500/30 text-sky-300'
                     }`}
                   >
-                    {item.metrics.verdict}
+                    {rowTier.badgeLabel}
                   </span>
 
                   <span

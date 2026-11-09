@@ -70,8 +70,15 @@ const config: Config = {
         'spin-reverse': 'spin-reverse 40s linear infinite',
         'spin-inner': 'spin 20s linear infinite',
         'pulse-glow': 'pulse-glow 2.5s ease-in-out infinite',
+        'powerup-star-float': 'powerup-star-float 2.2s ease-out infinite both',
       },
       keyframes: {
+        'powerup-star-float': {
+          '0%': { transform: 'translateY(2px) scale(0.75) rotate(-8deg)', opacity: '0' },
+          '20%': { opacity: '0.95' },
+          '70%': { opacity: '0.65' },
+          '100%': { transform: 'translateY(-24px) scale(1.05) rotate(12deg)', opacity: '0' },
+        },
         'spin-reverse': {
           from: { transform: 'rotate(360deg)' },
           to: { transform: 'rotate(0deg)' },
