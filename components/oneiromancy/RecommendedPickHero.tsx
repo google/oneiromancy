@@ -20,6 +20,7 @@
 import React, { useState } from 'react';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import { CosmicPlayer } from '@/types/oneiromancy';
 import { DEFAULT_CHAOS_LAMBDA, DIVINATION_PILLARS, starsVerdictLabel } from '@/lib/scoring';
@@ -147,18 +148,11 @@ export const RecommendedPickHero: React.FC<RecommendedPickHeroProps> = ({
                   Oracle
                 </span>
                 <span
-                  title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
                   className="font-mono text-2xl font-bold text-cyan-300 tabular-nums flex items-center"
                 >
                   {oracleScore(player, lambda, { currentWeek: activeWeek }).toFixed(1)}
                   {placeholder.hasPlaceholder && (
-                    <span
-                      data-testid="oracle-placeholder-marker"
-                      title={placeholder.tooltipText}
-                      className="ml-1 text-amber-300 font-bold"
-                    >
-                      ~
-                    </span>
+                    <OraclePlaceholderMarker placeholder={placeholder} className="ml-1 text-base" />
                   )}
                 </span>
                 <span className="text-[9px] font-mono text-slate-500">Blended Stats &amp; Stars</span>

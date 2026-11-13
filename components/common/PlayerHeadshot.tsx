@@ -30,7 +30,15 @@ export function headshotUrl(id?: string | number | null): string | null {
   return /^\d+$/.test(s) ? `https://sleepercdn.com/content/nfl/players/thumb/${s}.jpg` : null;
 }
 
-const SIZES = { sm: 'w-7 h-7', md: 'w-10 h-10', matchup: 'w-12 h-12 sm:w-16 sm:h-16', lg: 'w-16 h-16' } as const;
+const SIZES = {
+  sm: 'w-7 h-7',
+  md: 'w-10 h-10',
+  trade: 'w-10 h-10 sm:w-11 sm:h-11',
+  row: 'w-12 h-12 sm:w-16 sm:h-16',
+  roster: 'w-10 h-10 sm:w-[72px] sm:h-[72px]',
+  matchup: 'w-12 h-12 sm:w-20 sm:h-20 lg:w-16 lg:h-16',
+  lg: 'w-16 h-16',
+} as const;
 
 /**
  * Round headshot. Defenses (and players whose photo fails to load) fall back
@@ -56,7 +64,12 @@ export const PlayerHeadshot: React.FC<{
       .join('')
       .slice(0, 2)
       .toUpperCase();
-    const initialsSize = size === 'matchup' || size === 'lg' ? 'text-sm sm:text-base font-bold' : 'text-[10px]';
+    const initialsSize =
+      size === 'matchup' || size === 'roster' || size === 'row' || size === 'lg'
+        ? 'text-sm sm:text-base font-bold'
+        : size === 'trade'
+          ? 'text-xs font-semibold'
+          : 'text-[10px]';
     return (
       <span aria-hidden="true" className={`${box} flex items-center justify-center ${initialsSize} font-mono text-slate-400 ${className}`}>
         {initials}

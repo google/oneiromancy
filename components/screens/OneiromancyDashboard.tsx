@@ -23,6 +23,7 @@ import PositionalBadge from '@/components/common/PositionalBadge';
 import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import { type InspectTarget } from '@/components/common/PlayerLink';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import { ElementIcon, HealthTag } from '@/components/common/PlayerTiles';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { useOneiromancy } from '@/context/OneiromancyContext';
@@ -356,14 +357,9 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
         key={slot.slot_id}
         data-testid={`roster-card-${slot.slot_id}`}
         data-bye={onBye ? 'true' : undefined}
-        role="button"
-        tabIndex={0}
-        onClick={() => handleOpenPlayer(p, compareTarget)}
-        onKeyDown={(e: React.KeyboardEvent<HTMLDivElement>) => {
-          if (e.key === 'Enter' || e.key === ' ') {
-            e.preventDefault();
-            handleOpenPlayer(p, compareTarget);
-          }
+        onClick={(e: React.MouseEvent<HTMLDivElement>) => {
+          if ((e.target as HTMLElement)?.closest?.('button, a, input, select, textarea')) return;
+          handleOpenPlayer(p, compareTarget);
         }}
         className={`group relative p-3 rounded-xl border-2 transition-all cursor-pointer ${
           onBye
@@ -377,11 +373,17 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
                   : 'bg-slate-900/85 border-purple-500/60 hover:border-purple-400 hover:bg-slate-900'
         }`}
       >
-        <div className="flex items-center justify-between gap-2">
+        <button
+          type="button"
+          aria-label={`Inspect ${p.name}`}
+          onClick={() => handleOpenPlayer(p, compareTarget)}
+          className="absolute inset-0 z-0 w-full h-full rounded-xl cursor-pointer bg-transparent border-0 p-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-purple-400"
+        />
+        <div className="relative z-10 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0 flex-1">
             {/* Divination Aura Headshot */}
             <div data-testid="player-divination-aura" title={`${aura.label} (Stars ${stars.toFixed(0)})`} className={`relative rounded-full p-0.5 shrink-0 ${aura.ring} ${aura.glow} transition-transform group-hover:scale-105`}>
-              <PlayerHeadshot player={p} size="md" />
+              <PlayerHeadshot player={p} size="roster" />
             </div>
             <div data-testid="roster-card-text-col" className="min-w-0 flex-1 space-y-0.5">
               <div className="flex items-center gap-1.5 whitespace-nowrap overflow-hidden min-w-0">
@@ -445,7 +447,7 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
             </div>
             <div
               className="min-w-[46px] px-2 py-1 rounded-lg bg-slate-950/80 border border-purple-500/30"
-              title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Combined Oracle Score at λ ${lambda.toFixed(2)}`}
+              title={placeholder.hasPlaceholder ? undefined : `Combined Oracle Score at λ ${lambda.toFixed(2)}`}
             >
               <span className="text-[8px] text-purple-300/80 block uppercase">
                 Oracle
@@ -453,12 +455,8 @@ export const OneiromancyDashboard: React.FC<OneiromancyDashboardProps> = ({
               <span className="text-xs font-bold text-purple-200 tabular-nums">
                 {oracle.toFixed(1)}
                 {placeholder.hasPlaceholder && (
-                  <span
-                    data-testid="oracle-placeholder-marker"
-                    title={placeholder.tooltipText}
-                    className="ml-0.5 text-amber-300 font-bold"
-                  >
-                    ~
+                  <span className="inline-flex pointer-events-auto relative z-20">
+                    <OraclePlaceholderMarker placeholder={placeholder} />
                   </span>
                 )}
               </span>

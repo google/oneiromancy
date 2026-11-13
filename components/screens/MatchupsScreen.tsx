@@ -24,6 +24,7 @@ import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import PowerupStars from '@/components/common/PowerupStars';
 import UserAvatar from '@/components/common/UserAvatar';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import type { InspectTarget } from '@/components/common/PlayerLink';
 import { useOneiromancy } from '@/context/OneiromancyContext';
@@ -141,21 +142,25 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
           ...(derived || {}),
           week: matchForWeek.week,
           matchup_id: matchForWeek.matchup_id || derived?.matchup_id || existing.matchup_id,
-          status: matchForWeek.status || derived?.status || existing.status,
-          date_range: matchForWeek.date_range || derived?.date_range || existing.date_range,
+          status:
+            matchForWeek.status ||
+            derived?.status ||
+            (selectedWeek < existing.week ? 'completed' : 'upcoming'),
+          date_range: matchForWeek.date_range || derived?.date_range,
+          score_user: matchForWeek.score_user ?? derived?.score_user,
+          score_opponent: matchForWeek.score_opponent ?? derived?.score_opponent,
+          result: matchForWeek.result ?? derived?.result,
           upcoming_matchups: existing.upcoming_matchups,
-          user_team: derived?.user_team || matchForWeek.user_team || existing.user_team,
-          opponent_team: derived?.opponent_team || matchForWeek.opponent_team || existing.opponent_team,
-          win_probability: derived?.win_probability ?? matchForWeek.win_probability ?? existing.win_probability,
+          user_team: derived?.user_team || matchForWeek.user_team,
+          opponent_team: derived?.opponent_team || matchForWeek.opponent_team,
+          win_probability: derived?.win_probability ?? matchForWeek.win_probability,
           win_probability_label:
-            derived?.win_probability_label ?? matchForWeek.win_probability_label ?? existing.win_probability_label,
-          team_comparison: derived?.team_comparison || matchForWeek.team_comparison || existing.team_comparison,
+            derived?.win_probability_label ?? matchForWeek.win_probability_label,
+          team_comparison: derived?.team_comparison || matchForWeek.team_comparison,
           player_favorabilities:
             derived?.player_favorabilities?.length
               ? derived.player_favorabilities
-              : matchForWeek.player_favorabilities?.length
-                ? matchForWeek.player_favorabilities
-                : existing.player_favorabilities,
+              : matchForWeek.player_favorabilities || [],
         };
       }
     }
@@ -179,6 +184,9 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   ]);
 
   const [positionFilter, setPositionFilter] = useState<string>('ALL');
+  const [headerScoreMode, setHeaderScoreMode] = useState<'oracle' | 'stats'>('oracle');
+  const oracleRadioRef = useRef<HTMLButtonElement | null>(null);
+  const statsRadioRef = useRef<HTMLButtonElement | null>(null);
   const isLiveMode = Boolean(context.draftState?.isLive || context.draftState?.mode === 'live');
 
   const teamComparison: TeamCelestialComparison = useMemo(
@@ -210,11 +218,26 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     };
   }, [matchupWeeks, selectedWeek, matchupData, context.draftState?.weekly_matchup?.week]);
 
-  const fallbackUserAstral = Number(teamComparison.user_astral_favorability ?? teamComparison.user_favorability_index ?? (isLiveMode ? 0 : 92.4));
-  const fallbackOppAstral = Number(teamComparison.opponent_astral_favorability ?? teamComparison.opponent_favorability_index ?? (isLiveMode ? 0 : 68.1));
-  const userHarmony = Number(teamComparison.user_harmony_score ?? matchupData.user_team?.harmony_score ?? (isLiveMode ? 0 : 85.0));
-  const oppHarmony = Number(teamComparison.opponent_harmony_score ?? matchupData.opponent_team?.harmony_score ?? (isLiveMode ? 0 : 78.0));
-  const hasMatchupMetrics = !isLiveMode || (matchupData.user_team?.projected_points !== undefined && matchupData.opponent_team?.projected_points !== undefined);
+  const fallbackUserAstralRaw = Number(teamComparison.user_astral_favorability ?? teamComparison.user_favorability_index ?? (isLiveMode ? 0 : 92.4));
+  const fallbackOppAstralRaw = Number(teamComparison.opponent_astral_favorability ?? teamComparison.opponent_favorability_index ?? (isLiveMode ? 0 : 68.1));
+  const userHarmonyRaw = Number(teamComparison.user_harmony_score ?? matchupData.user_team?.harmony_score ?? (isLiveMode ? 0 : 85.0));
+  const oppHarmonyRaw = Number(teamComparison.opponent_harmony_score ?? matchupData.opponent_team?.harmony_score ?? (isLiveMode ? 0 : 78.0));
+  const fallbackUserAstral = Number.isFinite(fallbackUserAstralRaw) ? fallbackUserAstralRaw : 0;
+  const fallbackOppAstral = Number.isFinite(fallbackOppAstralRaw) ? fallbackOppAstralRaw : 0;
+  const userHarmony = Number.isFinite(userHarmonyRaw) ? userHarmonyRaw : 0;
+  const oppHarmony = Number.isFinite(oppHarmonyRaw) ? oppHarmonyRaw : 0;
+  const isFiniteNum = (v: unknown): v is number =>
+    typeof v === 'number' && Number.isFinite(v);
+  const userProjRaw = matchupData.user_team?.projected_points;
+  const oppProjRaw = matchupData.opponent_team?.projected_points;
+  const hasValidFinalScores =
+    matchupData.status === 'completed' &&
+    isFiniteNum(matchupData.score_user) &&
+    isFiniteNum(matchupData.score_opponent);
+  const hasExplicitInvalidProj =
+    (userProjRaw !== undefined && !isFiniteNum(userProjRaw)) ||
+    (oppProjRaw !== undefined && !isFiniteNum(oppProjRaw));
+  const showFinalLabel = hasValidFinalScores;
   const userTeamName = stripUserSuffix(matchupData.user_team?.team_name, 'Team');
   const oppTeamName = stripUserSuffix(matchupData.opponent_team?.team_name, 'Matchup');
 
@@ -395,34 +418,46 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
     [byePlayerIds, toCosmicPlayer],
   );
 
+  const hasFiniteTeamProj = isFiniteNum(userProjRaw) && isFiniteNum(oppProjRaw);
+  const hasStarterMatchupInputs =
+    allUserStarters.length > 0 &&
+    allOppStarters.length > 0 &&
+    !hasExplicitInvalidProj;
+  const hasMatchupMetrics = !isLiveMode
+    ? !hasExplicitInvalidProj
+    : hasStarterMatchupInputs || hasFiniteTeamProj;
+
   const userProj = useMemo(() => {
     if (allUserStarters.length > 0) {
       const sum = allUserStarters.reduce((acc, s) => acc + starterCardStats(s), 0);
-      return Math.round(sum * 100) / 100;
+      return Number.isFinite(sum) ? Math.round(sum * 100) / 100 : 0;
     }
-    return Number(matchupData.user_team?.projected_points ?? (isLiveMode ? 0 : 125.0));
-  }, [allUserStarters, starterCardStats, matchupData.user_team?.projected_points, isLiveMode]);
+    if (isFiniteNum(userProjRaw)) return userProjRaw;
+    return !hasExplicitInvalidProj && !isLiveMode ? 125.0 : 0;
+  }, [allUserStarters, starterCardStats, userProjRaw, hasExplicitInvalidProj, isLiveMode]);
 
   const oppProj = useMemo(() => {
     if (allOppStarters.length > 0) {
       const sum = allOppStarters.reduce((acc, s) => acc + starterCardStats(s), 0);
-      return Math.round(sum * 100) / 100;
+      return Number.isFinite(sum) ? Math.round(sum * 100) / 100 : 0;
     }
-    return Number(matchupData.opponent_team?.projected_points ?? (isLiveMode ? 0 : 110.0));
-  }, [allOppStarters, starterCardStats, matchupData.opponent_team?.projected_points, isLiveMode]);
+    if (isFiniteNum(oppProjRaw)) return oppProjRaw;
+    return !hasExplicitInvalidProj && !isLiveMode ? 110.0 : 0;
+  }, [allOppStarters, starterCardStats, oppProjRaw, hasExplicitInvalidProj, isLiveMode]);
 
   const winProbCalc = useMemo(() => {
     if (!hasMatchupMetrics) return { winProb: 50.0, label: '-', isFavorite: true };
     const calc = calculateWinProbability(userProj, oppProj, userHarmony, oppHarmony);
     const useCalcDirectly = allUserStarters.length > 0 && allOppStarters.length > 0;
-    const winProb = Number((useCalcDirectly ? calc.winProbability : matchupData.win_probability) ?? calc.winProbability ?? 50.0);
+    const rawWinProb = Number((useCalcDirectly ? calc.winProbability : matchupData.win_probability) ?? calc.winProbability ?? 50.0);
+    const finiteWinProb = Number.isFinite(rawWinProb) ? Math.min(100, Math.max(0, rawWinProb)) : 50.0;
     const label = (useCalcDirectly ? calc.favorabilityLabel : matchupData.win_probability_label) ?? calc.favorabilityLabel;
-    return { winProb: Number.isFinite(winProb) ? winProb : 50.0, label, isFavorite: winProb >= 50.0 };
+    return { winProb: finiteWinProb, label, isFavorite: finiteWinProb >= 50.0 };
   }, [hasMatchupMetrics, allUserStarters.length, allOppStarters.length, matchupData.win_probability, matchupData.win_probability_label, userProj, oppProj, userHarmony, oppHarmony]);
 
   const userAstral = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
-    if (allUserStarters.length === 0) return fallbackUserAstral;
+    if (allUserStarters.length === 0) return Number.isFinite(fallbackUserAstral) ? fallbackUserAstral : 0;
     const sum = allUserStarters.reduce((acc, s) => {
       const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s), { currentWeek: selectedWeek }) : Number(s.favorability_score ?? 75);
       return acc + (Number.isFinite(val) ? val : 75);
@@ -431,7 +466,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   }, [hasMatchupMetrics, allUserStarters, fallbackUserAstral, toCosmicPlayer, boardMap, selectedWeek]);
   const oppAstral = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
-    if (allOppStarters.length === 0) return fallbackOppAstral;
+    if (allOppStarters.length === 0) return Number.isFinite(fallbackOppAstral) ? fallbackOppAstral : 0;
     const sum = allOppStarters.reduce((acc, s) => {
       const val = boardMap.has(String(s.player_id)) ? starsScore(toCosmicPlayer(s), { currentWeek: selectedWeek }) : Number(s.favorability_score ?? 75);
       return acc + (Number.isFinite(val) ? val : 75);
@@ -440,14 +475,30 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
   }, [hasMatchupMetrics, allOppStarters, fallbackOppAstral, toCosmicPlayer, boardMap, selectedWeek]);
   const userOracle = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
-    if (allUserStarters.length === 0) return Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((userProj / 8) / 25) * 100)) + lambda * userAstral) * 10) / 10;
-    const sum = allUserStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek }), 0);
+    if (allUserStarters.length === 0) {
+      const safeProj = Number.isFinite(userProj) ? userProj : 0;
+      const safeAstral = Number.isFinite(userAstral) ? userAstral : 0;
+      const val = Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((safeProj / 8) / 25) * 100)) + lambda * safeAstral) * 10) / 10;
+      return Number.isFinite(val) ? val : 0;
+    }
+    const sum = allUserStarters.reduce((acc, s) => {
+      const score = oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek });
+      return acc + (Number.isFinite(score) ? score : 0);
+    }, 0);
     return Math.round((sum / allUserStarters.length) * 10) / 10;
   }, [hasMatchupMetrics, allUserStarters, toCosmicPlayer, lambda, userProj, userAstral, selectedWeek]);
   const oppOracle = useMemo(() => {
     if (!hasMatchupMetrics) return 0;
-    if (allOppStarters.length === 0) return Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((oppProj / 8) / 25) * 100)) + lambda * oppAstral) * 10) / 10;
-    const sum = allOppStarters.reduce((acc, s) => acc + oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek }), 0);
+    if (allOppStarters.length === 0) {
+      const safeProj = Number.isFinite(oppProj) ? oppProj : 0;
+      const safeAstral = Number.isFinite(oppAstral) ? oppAstral : 0;
+      const val = Math.round(((1 - lambda) * Math.min(100, Math.max(0, ((safeProj / 8) / 25) * 100)) + lambda * safeAstral) * 10) / 10;
+      return Number.isFinite(val) ? val : 0;
+    }
+    const sum = allOppStarters.reduce((acc, s) => {
+      const score = oracleScore(toCosmicPlayer(s), lambda, { currentWeek: selectedWeek });
+      return acc + (Number.isFinite(score) ? score : 0);
+    }, 0);
     return Math.round((sum / allOppStarters.length) * 10) / 10;
   }, [hasMatchupMetrics, allOppStarters, toCosmicPlayer, lambda, oppProj, oppAstral, selectedWeek]);
 
@@ -620,12 +671,10 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
             <div
               data-testid="oracle-node"
               title={
-                isCardDominant
-                  ? placeholder.hasPlaceholder
-                    ? `${placeholder.tooltipText} (Matchup leader)`
-                    : `Matchup Leader: ${oracle.toFixed(1)} Oracle (dominant score)`
-                  : placeholder.hasPlaceholder
-                  ? placeholder.tooltipText
+                placeholder.hasPlaceholder
+                  ? undefined
+                  : isCardDominant
+                  ? `Matchup Leader: ${oracle.toFixed(1)} Oracle (dominant score)`
                   : 'Combined Oracle Score (Stats + Stars)'
               }
               className={`relative w-[88px] sm:w-[94px] px-1.5 py-0.5 rounded-lg border text-center transition-all ${
@@ -656,13 +705,7 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
               <span className="text-xs font-bold tabular-nums leading-tight relative z-[1]">
                 {oracle.toFixed(1)}
                 {placeholder.hasPlaceholder && (
-                  <span
-                    data-testid="oracle-placeholder-marker"
-                    title={placeholder.tooltipText}
-                    className="ml-0.5 text-amber-300 font-bold"
-                  >
-                    ~
-                  </span>
+                  <OraclePlaceholderMarker placeholder={placeholder} />
                 )}
               </span>
             </div>
@@ -881,9 +924,9 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
       {/* Single Cohesive Team Head-to-Head Card (Left = You with Purple Border, Right = Opponent) */}
       {showComparison && (
         <GlassCard variant="panel" className="p-4 sm:p-5 space-y-4 border-purple-500/30">
-          <div className="grid grid-cols-1 sm:grid-cols-7 gap-4 items-center bg-slate-950/70 p-4 rounded-xl border border-white/5">
-            {/* LEFT: YOUR TEAM (Purple Identity) */}
-            <div className="sm:col-span-3 flex items-center gap-3.5 p-3 rounded-xl bg-purple-950/35 border-2 border-purple-500/60 shadow-[0_0_16px_rgba(168,85,247,0.2)]">
+          <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-4 items-center bg-slate-950/70 p-4 rounded-xl border border-white/5">
+            {/* LEFT: YOUR TEAM (Purple Identity; mobile single-column aligns left via justify-self-start) */}
+            <div className="w-fit max-w-full min-w-0 justify-self-start flex items-center gap-3.5 p-3 rounded-xl bg-purple-950/35 border-2 border-purple-500/60 shadow-[0_0_16px_rgba(168,85,247,0.2)]">
               <UserAvatar
                 src={matchupData.user_team?.avatar_url || matchupData.user_team?.avatar}
                 alt={`${userTeamName} avatar`}
@@ -893,35 +936,120 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 testId="user-team-avatar"
                 data-testid="user-team-avatar"
               />
-              <div className="min-w-0 flex-1">
+              <div className="min-w-0">
                 <div className="flex items-center gap-1.5">
                   <span className="font-serif font-bold text-base text-purple-100 truncate">{userTeamName}</span>
                 </div>
                 <div className="text-xs font-mono text-slate-400 truncate">
                   Mgr: {matchupData.user_team?.owner_name?.trim() || 'Manager'}
                 </div>
-                <div className="text-lg font-mono font-bold text-purple-300 mt-0.5 tabular-nums">
-                  {hasMatchupMetrics
-                    ? Number(
-                        matchupData.status === 'completed' && matchupData.score_user !== undefined
-                          ? matchupData.score_user
-                          : userProj,
-                      ).toFixed(2)
+                <div
+                  data-testid="matchup-header-user-score"
+                  className="text-lg font-mono font-bold text-purple-300 mt-0.5 tabular-nums min-w-[7ch]"
+                >
+                  {hasMatchupMetrics || (headerScoreMode === 'stats' && showFinalLabel)
+                    ? headerScoreMode === 'oracle'
+                      ? userOracle.toFixed(1)
+                      : Number(
+                          showFinalLabel
+                            ? matchupData.score_user
+                            : userProj,
+                        ).toFixed(2)
                     : '-'}{' '}
                   <span className="text-[10px] text-slate-400 font-normal">
-                    {matchupData.status === 'completed' ? 'Final' : 'Stats'}
+                    {headerScoreMode === 'oracle' ? 'Oracle' : showFinalLabel ? 'Final' : 'Stats'}
                   </span>
                 </div>
               </div>
             </div>
 
-            {/* CENTER: VS & Win Probability Gauge */}
-            <div className="sm:col-span-1 flex flex-col items-center justify-center text-center py-1">
+            {/* CENTER: VS, Header Score Mode Toggle & Win Probability Gauge */}
+            <div className="flex flex-col items-center justify-center text-center py-1">
               <span className="text-xs font-serif font-bold text-slate-300 px-2.5 py-1 rounded-full bg-slate-900 border border-white/10">
                 VS
               </span>
-              <div className="mt-2 flex flex-col items-center gap-1">
-                <span className={`text-xs font-mono font-bold ${winProbCalc.isFavorite ? 'text-emerald-400' : 'text-rose-400'}`}>
+              <div
+                role="radiogroup"
+                aria-label="Matchup header score mode"
+                className="mt-1 inline-flex items-center rounded-lg bg-slate-900/90 border border-white/10 px-0.5"
+              >
+                <button
+                  ref={oracleRadioRef}
+                  type="button"
+                  role="radio"
+                  aria-checked={headerScoreMode === 'oracle'}
+                  tabIndex={headerScoreMode === 'oracle' ? 0 : -1}
+                  data-testid="matchup-score-mode-oracle"
+                  onClick={() => setHeaderScoreMode('oracle')}
+                  onKeyDown={(e: { key: string; preventDefault: () => void }) => {
+                    if (
+                      e.key === 'ArrowRight' ||
+                      e.key === 'ArrowDown' ||
+                      e.key === 'ArrowLeft' ||
+                      e.key === 'ArrowUp' ||
+                      e.key === 'End'
+                    ) {
+                      e.preventDefault();
+                      setHeaderScoreMode('stats');
+                      statsRadioRef.current?.focus();
+                    } else if (e.key === 'Home') {
+                      e.preventDefault();
+                      setHeaderScoreMode('oracle');
+                      oracleRadioRef.current?.focus();
+                    }
+                  }}
+                  className="min-h-[44px] min-w-[44px] px-0.5 inline-flex items-center justify-center cursor-pointer"
+                >
+                  <span
+                    className={`px-2 py-1 text-[10px] font-mono rounded-md transition-colors ${
+                      headerScoreMode === 'oracle'
+                        ? 'bg-purple-600/80 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    Oracle
+                  </span>
+                </button>
+                <button
+                  ref={statsRadioRef}
+                  type="button"
+                  role="radio"
+                  aria-checked={headerScoreMode === 'stats'}
+                  tabIndex={headerScoreMode === 'stats' ? 0 : -1}
+                  data-testid="matchup-score-mode-stats"
+                  onClick={() => setHeaderScoreMode('stats')}
+                  onKeyDown={(e: { key: string; preventDefault: () => void }) => {
+                    if (
+                      e.key === 'ArrowRight' ||
+                      e.key === 'ArrowDown' ||
+                      e.key === 'ArrowLeft' ||
+                      e.key === 'ArrowUp' ||
+                      e.key === 'Home'
+                    ) {
+                      e.preventDefault();
+                      setHeaderScoreMode('oracle');
+                      oracleRadioRef.current?.focus();
+                    } else if (e.key === 'End') {
+                      e.preventDefault();
+                      setHeaderScoreMode('stats');
+                      statsRadioRef.current?.focus();
+                    }
+                  }}
+                  className="min-h-[44px] min-w-[44px] px-0.5 inline-flex items-center justify-center cursor-pointer"
+                >
+                  <span
+                    className={`px-2 py-1 text-[10px] font-mono rounded-md transition-colors ${
+                      headerScoreMode === 'stats'
+                        ? 'bg-cyan-600/80 text-white font-semibold'
+                        : 'text-slate-400 hover:text-slate-200'
+                    }`}
+                  >
+                    {showFinalLabel ? 'Final' : 'Stats'}
+                  </span>
+                </button>
+              </div>
+              <div className="mt-1 flex flex-col items-center gap-1">
+                <span className={`text-xs font-mono font-bold whitespace-nowrap ${winProbCalc.isFavorite ? 'text-emerald-400' : 'text-rose-400'}`}>
                   {hasMatchupMetrics ? `${winProbCalc.winProb.toFixed(1)}% Win Prob` : '-'}
                 </span>
                 <span className="text-[8px] font-mono uppercase tracking-wider text-purple-200 font-semibold px-1.5 py-0.5 rounded bg-purple-950/80 border border-purple-500/30 max-w-[110px] truncate text-center block">
@@ -942,8 +1070,8 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
               </div>
             </div>
 
-            {/* RIGHT: OPPONENT TEAM */}
-            <div className="sm:col-span-3 flex flex-row-reverse items-center gap-3.5 p-3 rounded-xl bg-cyan-950/20 border-2 border-cyan-500/40 text-right">
+            {/* RIGHT: OPPONENT TEAM (mobile single-column aligns right via justify-self-end) */}
+            <div className="w-fit max-w-full min-w-0 justify-self-end flex flex-row-reverse items-center gap-3.5 p-3 rounded-xl bg-cyan-950/20 border-2 border-cyan-500/40 text-right">
               <UserAvatar
                 src={matchupData.opponent_team?.avatar_url || matchupData.opponent_team?.avatar}
                 alt={`${oppTeamName} avatar`}
@@ -953,23 +1081,28 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 testId="opponent-team-avatar"
                 data-testid="opponent-team-avatar"
               />
-              <div className="min-w-0 flex-1 text-right">
+              <div className="min-w-0 text-right">
                 <div className="flex items-center justify-end gap-1.5">
                   <span className="font-serif font-bold text-base text-cyan-100 truncate">{oppTeamName}</span>
                 </div>
                 <div className="text-xs font-mono text-slate-400 truncate">
                   Mgr: {matchupData.opponent_team?.owner_name?.trim() || 'Manager'}
                 </div>
-                <div className="text-lg font-mono font-bold text-cyan-300 mt-0.5 tabular-nums">
-                  {hasMatchupMetrics
-                    ? Number(
-                        matchupData.status === 'completed' && matchupData.score_opponent !== undefined
-                          ? matchupData.score_opponent
-                          : oppProj,
-                      ).toFixed(2)
+                <div
+                  data-testid="matchup-header-opp-score"
+                  className="text-lg font-mono font-bold text-cyan-300 mt-0.5 tabular-nums min-w-[7ch]"
+                >
+                  {hasMatchupMetrics || (headerScoreMode === 'stats' && showFinalLabel)
+                    ? headerScoreMode === 'oracle'
+                      ? oppOracle.toFixed(1)
+                      : Number(
+                          showFinalLabel
+                            ? matchupData.score_opponent
+                            : oppProj,
+                        ).toFixed(2)
                     : '-'}{' '}
                   <span className="text-[10px] text-slate-400 font-normal">
-                    {matchupData.status === 'completed' ? 'Final' : 'Stats'}
+                    {headerScoreMode === 'oracle' ? 'Oracle' : showFinalLabel ? 'Final' : 'Stats'}
                   </span>
                 </div>
               </div>
@@ -1083,20 +1216,13 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                 : 'Even';
 
               return (
-                <div key={`slot-pair-${pair.slotRole}-${idx}`} className="relative p-2 rounded-xl bg-slate-900/40 border border-white/5">
-                  <RosterSlotBadge
-                    slotId={pair.slotRole}
-                    slotLabel={pair.slotLabel}
-                    dataTestId="matchup-slot-label"
-                    size="sm"
-                    className="absolute -top-2.5 left-3 tracking-wider z-10"
-                  />
+                <div key={`slot-pair-${pair.slotRole}-${idx}`} className="p-2 rounded-xl bg-slate-900/40 border border-white/5">
                   <span className="sr-only">
                     {`${pair.slotLabel}: ${pair.user ? `${pair.user.player_name} Oracle ${uOracle.toFixed(1)}` : 'Empty'} vs ${pair.opp ? `${pair.opp.player_name} Oracle ${oOracle.toFixed(1)}` : 'Empty'} - ${comparisonStatus}`}
                   </span>
-                  {/* Paired Starter Cards (Left = Yours in Purple, Right = Opponent in Cyan) */}
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-3 items-stretch">
-                    <div className="h-full flex flex-col">
+                  {/* Paired Starter Cards (Left = Yours in Purple, Middle = Slot Badge, Right = Opponent in Cyan) */}
+                  <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] gap-2.5 lg:gap-3 items-stretch">
+                    <div data-slot-side="user" className="h-full flex flex-col">
                       {pair.user ? (
                         renderPlayerCard(pair.user, false, idx, pair.opp, isUserFavored)
                       ) : (
@@ -1105,7 +1231,14 @@ export const MatchupsScreen: React.FC<MatchupsScreenProps> = ({
                         </div>
                       )}
                     </div>
-                    <div className="h-full flex flex-col">
+                    <RosterSlotBadge
+                      slotId={pair.slotRole}
+                      slotLabel={pair.slotLabel}
+                      dataTestId="matchup-slot-label"
+                      size="sm"
+                      className="place-self-center tracking-wider"
+                    />
+                    <div data-slot-side="opponent" className="h-full flex flex-col">
                       {pair.opp ? (
                         renderPlayerCard(pair.opp, false, idx, pair.user, isOppFavored)
                       ) : (

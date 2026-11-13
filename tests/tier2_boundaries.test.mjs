@@ -393,6 +393,9 @@ describe('Tier 2: Boundary & Corner Cases (19 Features x 5 Boundary Tests = 95 T
         React.createElement(NavigationShell, { activeTab: 'oneiromancy' }, React.createElement('div'))
       );
       assert.ok(html.includes('aria-label="Draft Settings"'), 'Settings button must specify aria-label="Draft Settings"');
+      assert.ok(html.includes('data-testid="nav-settings-gear"'), 'Settings button must render nav-settings-gear');
+      assert.ok(html.includes('data-testid="nav-manager-fallback-icon"'), 'Default mode Settings button must render nav-manager-fallback-icon');
+      assert.ok(html.includes('w-8 h-8') && html.includes('before:-inset-1.5'), 'Settings button must preserve w-8 h-8 layout box and 44px touch target pseudo-element');
     });
   });
 

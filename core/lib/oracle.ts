@@ -194,6 +194,8 @@ export interface OraclePlaceholderInfo {
   reason: string;
   tooltipText: string;
   statsTooltipText: string;
+  markerExplainerText: string;
+  statsMarkerExplainerText: string;
 }
 
 /**
@@ -211,6 +213,8 @@ export function oraclePlaceholderInfo(
       reason: '',
       tooltipText: '',
       statsTooltipText: '',
+      markerExplainerText: '',
+      statsMarkerExplainerText: '',
     };
   }
 
@@ -234,6 +238,8 @@ export function oraclePlaceholderInfo(
 
   const tooltipText = `Oracle score uses average projection (${avg.toFixed(1)} pts) as a placeholder while ${reason}. Will update once active.`;
   const statsTooltipText = `0.0 pts (${reason}). Oracle rating uses ${avg.toFixed(1)} pt average projection placeholder.`;
+  const markerExplainerText = `~ Estimated Oracle: Weekly stats are 0.0 (${reason}), so Oracle uses the ${avg.toFixed(1)} pt season average instead of 0.0.`;
+  const statsMarkerExplainerText = `~ Zero weekly stats (${reason}): 0.0 projected pts for this week; Oracle beside it uses the ${avg.toFixed(1)} pt average projection.`;
 
   return {
     hasPlaceholder: true,
@@ -241,6 +247,8 @@ export function oraclePlaceholderInfo(
     reason,
     tooltipText,
     statsTooltipText,
+    markerExplainerText,
+    statsMarkerExplainerText,
   };
 }
 

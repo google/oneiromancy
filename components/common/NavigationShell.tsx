@@ -19,7 +19,7 @@
 
 import React from 'react';
 import UserAvatar from '@/components/common/UserAvatar';
-import { Sparkles, Swords, Users, Trophy, Settings, Compass } from 'lucide-react';
+import { Sparkles, Swords, Users, Trophy, Settings, Compass, User } from 'lucide-react';
 
 export type OneiromancyTab =
   | 'oneiromancy'
@@ -208,21 +208,33 @@ export const NavigationShell: React.FC<NavigationShellProps> = ({
             type="button"
             onClick={onOpenSettings}
             aria-label="Draft Settings"
-            className="p-1 rounded-lg text-slate-400 hover:text-cyan-400 hover:bg-slate-800/80 transition-all border border-transparent hover:border-cyan-500/30"
+            title="Draft & Manager Settings"
+            className="relative inline-flex items-center justify-center w-8 h-8 shrink-0 rounded-lg text-slate-300 hover:text-cyan-400 hover:bg-slate-800/80 transition-all border border-transparent hover:border-cyan-500/30 before:content-[''] before:absolute before:-inset-1.5"
           >
-            {userAvatarUrl && mode === 'live' ? (
-              <UserAvatar
-                src={userAvatarUrl}
-                alt={`${sleeperUsername || 'User'} avatar`}
-                fallbackText={sleeperUsername || 'U'}
-                size="xs"
-                isUser={true}
-                testId="nav-user-avatar"
-                data-testid="nav-user-avatar"
-              />
-            ) : (
-              <Settings className="w-5 h-5" />
-            )}
+            <Settings className="w-8 h-8 shrink-0" strokeWidth={1.75} aria-hidden="true" data-testid="nav-settings-gear" />
+            <span className="pointer-events-none absolute inset-0 flex items-center justify-center">
+              <span className="w-4 h-4 rounded-full bg-slate-950/95 ring-1 ring-slate-900 flex items-center justify-center overflow-hidden">
+                {userAvatarUrl && mode === 'live' ? (
+                  <UserAvatar
+                    src={userAvatarUrl}
+                    alt={`${sleeperUsername || 'User'} avatar`}
+                    fallbackText={sleeperUsername || 'U'}
+                    size="xs"
+                    isUser={false}
+                    className="!w-3.5 !h-3.5 !ring-1 !ring-purple-400/70 !shadow-none"
+                    testId="nav-user-avatar"
+                    data-testid="nav-user-avatar"
+                  />
+                ) : (
+                  <User
+                    className="w-3.5 h-3.5 text-slate-200"
+                    strokeWidth={2.25}
+                    aria-hidden="true"
+                    data-testid="nav-manager-fallback-icon"
+                  />
+                )}
+              </span>
+            </span>
           </button>
         </div>
       </header>

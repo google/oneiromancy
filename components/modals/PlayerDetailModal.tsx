@@ -20,6 +20,7 @@
 import React, { useEffect, useId, useRef, useState } from 'react';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import { CosmicPlayer, RosterSlot } from '@/types/oneiromancy';
 import { useOptionalOneiromancy } from '@/context/OneiromancyContext';
 import {
@@ -778,7 +779,6 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
           </div>
           <div
             className="p-3 rounded-xl bg-cyan-950/40 border border-cyan-500/30"
-            title={candidateMetrics.placeholder.hasPlaceholder ? candidateMetrics.placeholder.tooltipText : undefined}
           >
             <span className="text-[10px] text-cyan-400 uppercase font-bold block">
               Oracle <span className="normal-case">(λ {modalLambda.toFixed(2)})</span>
@@ -786,13 +786,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
             <span className="text-xl font-bold text-cyan-300 tabular-nums">
               {candidateOracle.toFixed(1)}
               {candidateMetrics.placeholder.hasPlaceholder && (
-                <span
-                  data-testid="oracle-placeholder-marker"
-                  title={candidateMetrics.placeholder.tooltipText}
-                  className="ml-0.5 text-amber-300 font-bold"
-                >
-                  ~
-                </span>
+                <OraclePlaceholderMarker placeholder={candidateMetrics.placeholder} />
               )}
             </span>
             <span className="text-[9px] text-purple-300 block">
@@ -1009,7 +1003,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         className="p-1 rounded bg-slate-950/70"
                         title={
                           candMetrics.placeholder.hasPlaceholder
-                            ? candMetrics.placeholder.tooltipText
+                            ? undefined
                             : 'Weekly stats projection'
                         }
                       >
@@ -1017,13 +1011,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         <span className="text-slate-200 font-bold block">
                           {candMetrics.stats.toFixed(1)}
                           {candMetrics.placeholder.hasPlaceholder && (
-                            <span
-                              data-testid="stats-placeholder-marker"
-                              title={candMetrics.placeholder.statsTooltipText}
-                              className="ml-0.5 text-amber-300 font-bold"
-                            >
-                              ~
-                            </span>
+                            <OraclePlaceholderMarker placeholder={candMetrics.placeholder} kind="stats" />
                           )}
                         </span>
                       </div>
@@ -1031,7 +1019,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         className="p-1 rounded bg-slate-950/70"
                         title={
                           candMetrics.placeholder.hasPlaceholder
-                            ? candMetrics.placeholder.tooltipText
+                            ? undefined
                             : 'Oracle rating'
                         }
                       >
@@ -1039,13 +1027,7 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                         <span className="text-purple-300 font-bold block">
                           {candMetrics.oracle.toFixed(1)}
                           {candMetrics.placeholder.hasPlaceholder && (
-                            <span
-                              data-testid="oracle-placeholder-marker"
-                              title={candMetrics.placeholder.tooltipText}
-                              className="ml-0.5 text-amber-300 font-bold"
-                            >
-                              ~
-                            </span>
+                            <OraclePlaceholderMarker placeholder={candMetrics.placeholder} />
                           )}
                         </span>
                       </div>
@@ -1166,17 +1148,10 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                             className={`text-xs font-bold block ${
                               isLeftMine ? 'text-purple-200' : 'text-slate-200'
                             }`}
-                            title={leftMetrics.placeholder.hasPlaceholder ? leftMetrics.placeholder.tooltipText : undefined}
                           >
                             {leftOracle.toFixed(1)}
                             {leftMetrics.placeholder.hasPlaceholder && (
-                              <span
-                                data-testid="oracle-placeholder-marker"
-                                title={leftMetrics.placeholder.tooltipText}
-                                className="ml-0.5 text-amber-300 font-bold"
-                              >
-                                ~
-                              </span>
+                              <OraclePlaceholderMarker placeholder={leftMetrics.placeholder} />
                             )}
                           </span>
                         </div>
@@ -1207,17 +1182,10 @@ export const PlayerDetailModal: React.FC<PlayerDetailModalProps> = ({
                             className={`text-xs font-bold block ${
                               isRightMine ? 'text-purple-200' : 'text-cyan-300'
                             }`}
-                            title={rightMetrics.placeholder.hasPlaceholder ? rightMetrics.placeholder.tooltipText : undefined}
                           >
                             {rightOracle.toFixed(1)}
                             {rightMetrics.placeholder.hasPlaceholder && (
-                              <span
-                                data-testid="oracle-placeholder-marker"
-                                title={rightMetrics.placeholder.tooltipText}
-                                className="ml-0.5 text-amber-300 font-bold"
-                              >
-                                ~
-                              </span>
+                              <OraclePlaceholderMarker placeholder={rightMetrics.placeholder} />
                             )}
                           </span>
                         </div>

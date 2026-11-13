@@ -20,6 +20,7 @@
 import React, { useMemo, useState } from 'react';
 import PlayerHeadshot from '@/components/common/PlayerHeadshot';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import RosterSlotBadge from '@/components/common/RosterSlotBadge';
 import UserAvatar from '@/components/common/UserAvatar';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
@@ -94,18 +95,12 @@ export const LeagueScreen: React.FC = () => {
           </>
         )}
         <span
-          title={placeholder.hasPlaceholder ? placeholder.tooltipText : `Oracle at λ ${lambda.toFixed(2)}`}
-          className="ml-auto font-mono font-semibold text-purple-200 tabular-nums shrink-0 w-10 text-right flex items-center justify-end"
+          title={placeholder.hasPlaceholder ? undefined : `Oracle at λ ${lambda.toFixed(2)}`}
+          className="ml-auto font-mono font-semibold text-purple-200 tabular-nums shrink-0 min-w-[3.5rem] sm:min-w-[3.75rem] text-right inline-flex items-center justify-end"
         >
           {oracleScore(p, lambda, { currentWeek: activeWeek }).toFixed(1)}
           {placeholder.hasPlaceholder && (
-            <span
-              data-testid="oracle-placeholder-marker"
-              title={placeholder.tooltipText}
-              className="ml-0.5 text-amber-300 font-bold"
-            >
-              ~
-            </span>
+            <OraclePlaceholderMarker placeholder={placeholder} />
           )}
         </span>
         <span

@@ -21,6 +21,7 @@ import React, { useMemo, useState } from 'react';
 import UserAvatar from '@/components/common/UserAvatar';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import PlayerLink, { type InspectTarget } from '@/components/common/PlayerLink';
 import GlassCard from '@/components/common/GlassCard';
@@ -48,18 +49,11 @@ const ValueLine: React.FC<{ p: CosmicPlayer; lambda: number; activeWeek?: number
   return (
     <span className="inline-flex flex-wrap items-center gap-1.5 font-mono text-[11px] text-slate-400">
       <span
-        title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
         className="text-purple-200 font-semibold inline-flex items-center"
       >
         Oracle {oracleScore(p, lambda, { currentWeek: activeWeek }).toFixed(1)}
         {placeholder.hasPlaceholder && (
-          <span
-            data-testid="oracle-placeholder-marker"
-            title={placeholder.tooltipText}
-            className="ml-0.5 text-amber-300 font-bold"
-          >
-            ~
-          </span>
+          <OraclePlaceholderMarker placeholder={placeholder} />
         )}
       </span>
       <span title={placeholder.hasPlaceholder ? placeholder.statsTooltipText : undefined}>
@@ -173,7 +167,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
                   <HealthTag player={piece.player} activeWeek={activeWeek} />
                 </div>
                 <div className="flex items-center gap-2 min-w-0">
-                  <PlayerHeadshot player={piece.player} size="sm" />
+                  <PlayerHeadshot player={piece.player} size="trade" />
                   <div className="min-w-0 flex-1 space-y-0.5">
                     <div className="flex items-center gap-1.5 min-w-0">
                       <PositionalBadge position={piece.player.position} size="sm" depth={piece.player.depth_chart_order} />
@@ -181,7 +175,7 @@ export const TradesScreen: React.FC<TradesScreenProps> = ({
                         <PlayerLink player={piece.player} vs={piece.replaces} onOpen={setInspected} />
                       </span>
                     </div>
-                    <div className="text-[10px] font-mono text-slate-400 flex items-center gap-1 whitespace-nowrap">
+                    <div className="text-[10px] font-mono text-slate-400 flex flex-wrap items-center gap-1 min-w-0">
                       <TeamLogo team={piece.player.team} />
                       <span>{piece.player.team} · Bye {piece.player.bye_week || '-'}</span>
                       <Tag tone="purple">{kind === 'send' ? 'Your bench' : 'Their bench'}</Tag>

@@ -58,6 +58,7 @@ const { PositionalBadge } = await import('../components/common/PositionalBadge.t
 const { RosterSlotBadge, normalizeRosterSlot } = await import('../components/common/RosterSlotBadge.tsx');
 const { UserAvatar } = await import('../components/common/UserAvatar.tsx');
 const { NavigationShell } = await import('../components/common/NavigationShell.tsx');
+const { OraclePlaceholderMarker, computeTooltipPosition } = await import('../components/common/OraclePlaceholderMarker.tsx');
 const {
   StarfieldBackground,
   initStarfield,
@@ -2235,7 +2236,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       fireEvent.click(nameElement);
       assert.equal(inspectedPlayer?.id, player.id, 'Clicking row or nested text must trigger onInspect');
 
-      // Verify mobile compare checkbox label has >= 44x44px touch target
+      // Verify mobile compare checkbox label uses compact >= 24x24px touch target
       cleanup();
       let toggledId = null;
       let inspectedAfter = null;
@@ -2253,9 +2254,22 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
       const compareLabel = compareRowView.container.querySelector('label');
       assert.ok(compareLabel, 'Compare checkbox label must exist in PlayerCardRow');
+      const cardRowEl = compareRowView.getByTestId(`player-card-row-${player.id}`);
+      const cardTokens = cardRowEl.className.trim().split(/\s+/);
+      const labelTokens = compareLabel.className.trim().split(/\s+/);
       assert.ok(
-        compareLabel.className.includes('min-w-[44px]') && compareLabel.className.includes('min-h-[44px]'),
-        'Compare touch target label must satisfy >= 44x44px minimum touch target size',
+        cardTokens.includes('p-2.5') && cardTokens.includes('gap-2'),
+        'PlayerCardRow must use compact mobile spacing (p-2.5 gap-2)',
+      );
+      assert.ok(
+        labelTokens.includes('min-w-[24px]') && labelTokens.includes('min-h-[24px]'),
+        'Compare touch target label must satisfy >= 24x24px minimum touch target size with compact padding',
+      );
+      const rowHeadshot = cardRowEl.querySelector('img, span[aria-hidden="true"]');
+      const rowHeadshotTokens = rowHeadshot ? rowHeadshot.className.trim().split(/\s+/) : [];
+      assert.ok(
+        rowHeadshotTokens.includes('w-12') && rowHeadshotTokens.includes('sm:w-16'),
+        'PlayerCardRow headshot must use row sizing (w-12 sm:w-16)',
       );
       const compareInput = compareLabel.querySelector('input[type="checkbox"]');
       assert.ok(compareInput, 'Checkbox input must be inside label');
@@ -2263,14 +2277,17 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.equal(toggledId, String(player.id), 'Toggling compare checkbox must invoke onToggleCompare');
       assert.equal(inspectedAfter, null, 'Clicking compare checkbox must stopPropagation and not open modal');
 
-      // Test clicking label padding directly invokes onToggleCompare exactly once without double-toggle
+      // Test clicking label padding directly invokes onToggleCompare exactly once without bubbling into onInspect
       let labelToggledCount = 0;
+      let labelInspected = null;
       cleanup();
       const labelTestView = render(
         jsx(PlayerCardRow, {
           player,
           rank: 1,
-          onInspect: () => {},
+          onInspect: (p) => {
+            labelInspected = p;
+          },
           onToggleCompare: () => {
             labelToggledCount++;
           },
@@ -2280,6 +2297,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(testLabel, 'Label must exist');
       fireEvent.click(testLabel);
       assert.equal(labelToggledCount, 1, 'Clicking label padding must toggle compare exactly once');
+      assert.equal(labelInspected, null, 'Clicking 24px label padding must stopPropagation and not invoke onInspect');
     });
 
     test('8.2.4 RecommendedPickHero should render Divination Spotlight and handle inspection', () => {
@@ -2647,13 +2665,26 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
   // ==========================================================================
   describe('8.4 Primary Application Screens (Roster, Matchup, Players, League & Weights)', () => {
     test('8.4.1 OneiromancyDashboard (Roster) should render My Roster, Visual Stack Constellation SVG, and Lineup Swap Arrows', () => {
-      render(
+      const { container } = render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(OneiromancyDashboard, {}))
       );
 
       assert.ok(screen.getByText(/Roster Aura & Stack Constellation/i), 'Must render Roster Aura & Stack Constellation title');
       assert.ok(screen.getByTestId('synergy-constellation-svg'), 'Must render visual Synergy Constellation SVG');
       assert.ok(screen.getByTestId('18-week-coverage-strip'), 'Must render 18-Week Coverage strip');
+      const auraWrappers = Array.from(container.querySelectorAll('[data-testid="player-divination-aura"]'));
+      assert.ok(auraWrappers.length > 0, 'Dashboard roster must render at least one player-divination-aura wrapper');
+      const rosterHeadshots = auraWrappers.flatMap((wrap) =>
+        Array.from(wrap.querySelectorAll('img, span[aria-hidden="true"]'))
+      );
+      assert.ok(rosterHeadshots.length > 0, 'Dashboard roster must render at least one player headshot');
+      assert.ok(
+        rosterHeadshots.every((el) => {
+          const t = el.className.trim().split(/\s+/);
+          return t.includes('w-10') && t.includes('sm:w-[72px]');
+        }),
+        'All dashboard roster player headshots must use roster sizing (w-10 sm:w-[72px])'
+      );
     });
 
     test('8.4.2 MatchupsScreen (Matchup) should render unified starting lineup without duplicate bench section and Your Team on Left with purple border', () => {
@@ -2719,18 +2750,43 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
     });
 
     test('8.4.4 PlayerMarketplace & TradesScreen should render waivers and trade proposals', () => {
-      render(
+      const mktView = render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(PlayerMarketplace, {}))
       );
 
       assert.ok(screen.getByText('Waiver Upgrades'), 'Must render Waiver Upgrades title');
       assert.equal(screen.queryByTestId('allow-signed-drop-toggle'), null, 'Must not render redundant drop protection toggle');
+      const mktHeadshots = Array.from(mktView.container.querySelectorAll('img, span[aria-hidden="true"]')).filter(
+        (el) => el.className.includes('rounded-full') && el.className.includes('bg-slate-800')
+      );
+      assert.ok(mktHeadshots.length > 0, 'PlayerMarketplace must render candidate player headshots');
+      assert.ok(
+        mktHeadshots.every((el) => {
+          const t = el.className.trim().split(/\s+/);
+          return t.includes('w-10') && t.includes('sm:w-11');
+        }),
+        'All PlayerMarketplace candidate headshots must use trade sizing (w-10 sm:w-11)'
+      );
       cleanup();
 
-      render(
+      const tradesView = render(
         jsx(OneiromancyProvider, { initialDraftState: testDraftState }, jsx(TradesScreen, {}))
       );
       assert.ok(screen.getByText('Trades'), 'Must render Trades title');
+      const tradeHeadshots = Array.from(tradesView.container.querySelectorAll('img, span[aria-hidden="true"]')).filter(
+        (el) =>
+          el.className.includes('rounded-full') &&
+          el.className.includes('bg-slate-800') &&
+          !(el.getAttribute('alt') || '').endsWith(' avatar')
+      );
+      assert.ok(tradeHeadshots.length > 0, 'TradesScreen must render player headshots');
+      assert.ok(
+        tradeHeadshots.every((el) => {
+          const t = el.className.trim().split(/\s+/);
+          return t.includes('w-10') && t.includes('sm:w-11');
+        }),
+        'All TradesScreen player headshots must use trade sizing (w-10 sm:w-11)'
+      );
     });
 
     test('8.4.5 LeagueScreen (League) should render League Standings & Rosters and CelestialLeaderboardGraph', () => {
@@ -2854,26 +2910,39 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         )
       );
 
-      // Opponent header comparison card has flex-row-reverse and right alignment
+      // Opponent header comparison card has flex-row-reverse and right alignment inside symmetric 3-track grid
       const oppAvatar = screen.getByTestId('opponent-team-avatar');
       let curr = oppAvatar;
       let oppHeaderCard = null;
       while (curr && curr.parentNode) {
-        if (curr.className && curr.className.includes('sm:col-span-3')) {
+        if (curr.className && curr.className.includes('justify-self-end')) {
           oppHeaderCard = curr;
           break;
         }
         curr = curr.parentNode;
       }
       assert.ok(oppHeaderCard, 'Opponent header card must exist');
+      assert.ok(
+        oppHeaderCard.parentNode &&
+          oppHeaderCard.parentNode.className &&
+          oppHeaderCard.parentNode.className.includes('sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]'),
+        'Matchup header container must use balanced sm:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] tracks',
+      );
       assert.ok(oppHeaderCard.className.includes('flex-row-reverse'), 'Opponent header card must use flex-row-reverse');
       assert.ok(oppHeaderCard.className.includes('text-right'), 'Opponent header card must have text-right');
+      assert.ok(
+        oppHeaderCard.className.includes('w-fit') &&
+          oppHeaderCard.className.includes('max-w-full') &&
+          oppHeaderCard.className.includes('min-w-0') &&
+          oppHeaderCard.className.includes('justify-self-end'),
+        'Opponent header card must shrink around content with right alignment',
+      );
 
       const userAvatar = screen.getByTestId('user-team-avatar');
       curr = userAvatar;
       let userHeaderCard = null;
       while (curr && curr.parentNode) {
-        if (curr.className && curr.className.includes('sm:col-span-3')) {
+        if (curr.className && curr.className.includes('justify-self-start')) {
           userHeaderCard = curr;
           break;
         }
@@ -2881,6 +2950,25 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       }
       assert.ok(userHeaderCard, 'User header card must exist');
       assert.ok(!userHeaderCard.className.includes('flex-row-reverse'), 'User header card must retain left alignment');
+      assert.ok(
+        userHeaderCard.className.includes('w-fit') &&
+          userHeaderCard.className.includes('max-w-full') &&
+          userHeaderCard.className.includes('min-w-0') &&
+          userHeaderCard.className.includes('justify-self-start'),
+        'User header card must shrink around content with left alignment',
+      );
+
+      // Slot badge renders centered between paired user and opponent cards
+      const matchupGrid = screen.getByTestId('positional-matchup-grid');
+      const firstRowGrid = Array.from(matchupGrid.children[0].children).find(
+        (el) => el.className && el.className.includes('lg:grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)]'),
+      );
+      assert.ok(firstRowGrid, 'Paired starter grid must reserve middle auto track for RosterSlotBadge');
+      assert.equal(firstRowGrid.children.length, 3, 'Paired starter grid must have [user, badge, opponent] children');
+      const middleBadge = firstRowGrid.children[1];
+      assert.equal(middleBadge.getAttribute('data-testid'), 'matchup-slot-label', 'Middle grid child must be matchup-slot-label');
+      assert.ok(!middleBadge.className.includes('absolute'), 'matchup-slot-label must not use absolute overlay positioning');
+      assert.ok(middleBadge.className.includes('place-self-center'), 'matchup-slot-label must center in both mobile and desktop grid tracks');
 
       // Starters from matchup: user starters vs opponent starters
       const userStarters = (testDraftState.weekly_matchup?.player_favorabilities || []).filter(
@@ -2905,7 +2993,7 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       assert.ok(oppTextCol.className.includes('text-right'), 'Opponent text column must have text-right');
       assert.equal(oppTextCol.children.length, 2, 'Layout invariant A: matchup-card-text-col must have strictly 2 children');
       const oppHeadshot = oppTopRow.querySelector('img, span[aria-hidden="true"]');
-      assert.ok(oppHeadshot && oppHeadshot.className.includes('w-12') && oppHeadshot.className.includes('sm:w-16'), 'Starter headshot must scale to fill identity area (w-12 sm:w-16)');
+      assert.ok(oppHeadshot && oppHeadshot.className.includes('w-12') && oppHeadshot.className.includes('sm:w-20') && oppHeadshot.className.includes('lg:w-16'), 'Starter headshot must keep non-clipping mobile sizing and expand on desktop (w-12 sm:w-20 lg:w-16)');
       const oppNameSpan = oppTextCol.children[0].querySelector('span[title]');
       assert.ok(oppNameSpan && oppNameSpan.className.includes('text-base') && oppNameSpan.className.includes('sm:text-lg'), 'Starter name must use scaled typography (text-base sm:text-lg) with title tooltip');
       assert.ok(oppTextCol.children[1].className.includes('text-xs'), 'Starter team/bye row must use readable text-xs+ typography');
@@ -3031,6 +3119,88 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         assert.ok(node && !node.className.includes('shadow-[0_0_16px_rgba('), 'Non-dominant Oracle node must not glow');
         assert.equal(card.querySelectorAll('[data-testid="oracle-powerup-stars"]').length, 0, 'Non-dominant card must render 0 floating stars');
       }
+      // Header radiogroup touch target + ARIA ArrowLeft/ArrowRight keyboard switching + completed Final scores
+      const oracleBtn = screen.getByTestId('matchup-score-mode-oracle');
+      const statsBtn = screen.getByTestId('matchup-score-mode-stats');
+      assert.ok(
+        oracleBtn.className.split(/\s+/).includes('min-h-[44px]') && oracleBtn.className.split(/\s+/).includes('min-w-[44px]'),
+        'Oracle radio toggle must include >= 44x44px touch target classes',
+      );
+      assert.ok(
+        statsBtn.className.split(/\s+/).includes('min-h-[44px]') && statsBtn.className.split(/\s+/).includes('min-w-[44px]'),
+        'Stats radio toggle must include >= 44x44px touch target classes',
+      );
+      assert.equal(oracleBtn.getAttribute('tabindex'), '0', 'Selected Oracle radio must have roving tabIndex=0');
+      assert.equal(statsBtn.getAttribute('tabindex'), '-1', 'Unselected Stats radio must have roving tabIndex=-1');
+      const sendKey = (el, key) => {
+        act(() => {
+          el.dispatchEvent({
+            type: 'keydown',
+            key,
+            bubbles: true,
+            cancelable: true,
+            defaultPrevented: false,
+            preventDefault() { this.defaultPrevented = true; },
+            stopPropagation() { this._propagationStopped = true; },
+          });
+        });
+      };
+      oracleBtn.focus();
+      sendKey(oracleBtn, 'ArrowRight');
+      assert.equal(screen.getByTestId('matchup-score-mode-stats').getAttribute('aria-checked'), 'true', 'ArrowRight must switch to Stats');
+      assert.equal(screen.getByTestId('matchup-score-mode-stats').getAttribute('tabindex'), '0', 'Selected Stats radio must get tabIndex=0');
+      assert.equal(screen.getByTestId('matchup-score-mode-oracle').getAttribute('tabindex'), '-1', 'Unselected Oracle radio must get tabIndex=-1');
+      assert.equal(oracleBtn.ownerDocument.activeElement, screen.getByTestId('matchup-score-mode-stats'), 'ArrowRight must move focus to Stats radio');
+
+      sendKey(screen.getByTestId('matchup-score-mode-stats'), 'ArrowLeft');
+      assert.equal(screen.getByTestId('matchup-score-mode-oracle').getAttribute('aria-checked'), 'true', 'ArrowLeft must switch back to Oracle');
+      assert.equal(oracleBtn.ownerDocument.activeElement, screen.getByTestId('matchup-score-mode-oracle'), 'ArrowLeft must move focus back to Oracle radio');
+
+      sendKey(screen.getByTestId('matchup-score-mode-oracle'), 'End');
+      assert.equal(screen.getByTestId('matchup-score-mode-stats').getAttribute('aria-checked'), 'true', 'End key must select last (Stats) radio');
+      assert.equal(oracleBtn.ownerDocument.activeElement, screen.getByTestId('matchup-score-mode-stats'), 'End key must focus Stats radio');
+
+      sendKey(screen.getByTestId('matchup-score-mode-stats'), 'Home');
+      assert.equal(screen.getByTestId('matchup-score-mode-oracle').getAttribute('aria-checked'), 'true', 'Home key must select first (Oracle) radio');
+      assert.equal(oracleBtn.ownerDocument.activeElement, screen.getByTestId('matchup-score-mode-oracle'), 'Home key must focus Oracle radio');
+      cleanup();
+
+      const completedMatchup = {
+        ...testDraftState.weekly_matchup,
+        status: 'completed',
+        score_user: 142.35,
+        score_opponent: 119.8,
+      };
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: { ...testDraftState, weekly_matchup: completedMatchup } },
+          jsx(MatchupsScreen, { weeklyMatchup: completedMatchup }),
+        ),
+      );
+      assert.equal(screen.getByTestId('matchup-score-mode-oracle').getAttribute('aria-checked'), 'true', 'Completed matchup must still default to Oracle');
+      assert.equal(screen.getByTestId('matchup-score-mode-stats').textContent.trim(), 'Final', 'Completed matchup with scores must label Stats mode as Final');
+      fireEvent.click(screen.getByTestId('matchup-score-mode-stats'));
+      assert.equal(screen.getByTestId('matchup-header-user-score').textContent.trim(), '142.35 Final');
+      assert.equal(screen.getByTestId('matchup-header-opp-score').textContent.trim(), '119.80 Final');
+      cleanup();
+
+      const completedNoScoreMatchup = {
+        ...testDraftState.weekly_matchup,
+        status: 'completed',
+        score_user: undefined,
+        score_opponent: undefined,
+      };
+      render(
+        jsx(
+          OneiromancyProvider,
+          { initialDraftState: { ...testDraftState, weekly_matchup: completedNoScoreMatchup } },
+          jsx(MatchupsScreen, { weeklyMatchup: completedNoScoreMatchup }),
+        ),
+      );
+      assert.equal(screen.getByTestId('matchup-score-mode-stats').textContent.trim(), 'Stats', 'Completed matchup missing official scores must keep Stats label instead of Final');
+      fireEvent.click(screen.getByTestId('matchup-score-mode-stats'));
+      assert.ok(screen.getByTestId('matchup-header-user-score').textContent.trim().endsWith('Stats'), 'Header must display Stats label when completed week lacks score_user');
       cleanup();
 
       // Edge Cases: Kickoff fallback display ('Time TBA' / 'Bye week') and zero arrows on even/open splits
@@ -3317,7 +3487,10 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         assert.ok(dashView.container.textContent.includes('0.0'), 'Dashboard must show 0.0 stats projection');
         const dashMarker = dashView.container.querySelector('[data-testid="oracle-placeholder-marker"]');
         assert.ok(dashMarker, 'Dashboard must render oracle placeholder marker for bye player');
-        assert.ok(dashMarker.getAttribute('title')?.includes('uses average projection (15.0 pts) as a placeholder while on bye'));
+        assert.equal(dashMarker.getAttribute('title'), null, 'Dashboard placeholder marker must not use native title attribute');
+        fireEvent.click(dashMarker);
+        const dashTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+        assert.ok(dashTooltip?.textContent?.includes('15.0 pt season average'), 'Dashboard marker tooltip must explain 15.0 pt placeholder');
         cleanup();
 
         const rowView = render(
@@ -3351,7 +3524,10 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         assert.match(modalView.container.textContent, /0\.0\s+pts/, 'PlayerDetailModal must show 0.0 pts stats');
         const modalMarker = modalView.container.querySelector('[data-testid="oracle-placeholder-marker"]');
         assert.ok(modalMarker, 'PlayerDetailModal must render oracle placeholder marker');
-        assert.ok(modalMarker.getAttribute('title')?.includes('uses average projection (15.0 pts) as a placeholder while on bye'));
+        assert.equal(modalMarker.getAttribute('title'), null, 'Modal placeholder marker must not use native title attribute');
+        fireEvent.click(modalMarker);
+        const modalTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+        assert.ok(modalTooltip?.textContent?.includes('15.0 pt season average'), 'Modal marker tooltip must explain 15.0 pt placeholder');
         cleanup();
 
         // Player without average projection must not render placeholder marker
@@ -4504,8 +4680,11 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
       );
       const marker = container.querySelector('[data-testid="oracle-placeholder-marker"]');
       assert.ok(marker, 'PlayerDetailModal must render oracle placeholder marker');
+      assert.equal(marker.getAttribute('title'), null, 'Marker must not expose native browser title');
+      fireEvent.click(marker);
+      const markerTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
       assert.ok(
-        marker.getAttribute('title')?.includes('uses average projection (19.4 pts) as a placeholder while on bye'),
+        markerTooltip?.textContent?.includes('uses the 19.4 pt season average instead of 0.0'),
         'Marker tooltip must explain placeholder',
       );
       cleanup();
@@ -5061,10 +5240,14 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
 
         const oracleMarker = oracleTile.querySelector('[data-testid="oracle-placeholder-marker"]');
         assert.ok(oracleMarker, 'Oracle tile must render placeholder marker ~');
+        assert.equal(oracleMarker.getAttribute('title'), null, 'Oracle marker must not expose native title attribute');
+        fireEvent.click(oracleMarker);
+        const oracleTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
         assert.ok(
-          oracleMarker.getAttribute('title')?.includes('uses average projection (16.5 pts) as a placeholder while on bye'),
+          oracleTooltip?.textContent?.includes('uses the 16.5 pt season average instead of 0.0'),
           'Oracle marker tooltip must explain placeholder',
         );
+        fireEvent.click(oracleMarker);
 
         // 1b. Comparison row scoped check
         const compRow = modalView.container.querySelector('[data-testid="role-comp-row-7083"]');
@@ -5192,6 +5375,78 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         );
         assert.ok(tradesView, 'TradesScreen renders with leagueState');
         cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('8.5.23b OneiromancyDashboard roster card foreground allows tooltips and isolates card clicks', () => {
+      try {
+        const byePlayer = {
+          ...mockData.mockCosmicBoard[0],
+          id: 'dash_bye_qb',
+          player_id: 'dash_bye_qb',
+          name: 'Patrick Mahomes',
+          position: 'QB',
+          team: 'KC',
+          bye_week: 7,
+          injury_status: undefined,
+          status: 'Active',
+          sleeper_projected_points: 0,
+          average_projected_points: 18.4,
+        };
+        const firstSlot = testDraftState.my_roster[0];
+        const dashState = {
+          ...testDraftState,
+          mode: 'mock',
+          weekly_matchup: {
+            ...testDraftState.weekly_matchup,
+            week: 7,
+          },
+          my_roster: [
+            { ...firstSlot, player: byePlayer },
+          ],
+          cosmic_board: [byePlayer, ...testDraftState.cosmic_board.slice(0, 12)],
+        };
+        const inspected = [];
+        const { container } = render(
+          jsx(OneiromancyProvider, {
+            initialDraftState: dashState,
+            children: jsx(OneiromancyDashboard, {
+              onInspectPlayer: (p) => inspected.push(p),
+            }),
+          }),
+        );
+        const rosterCard = container.querySelector(`[data-testid="roster-card-${firstSlot.slot_id}"]`);
+        assert.ok(rosterCard, 'Roster card must render for QB starter slot');
+
+        const oracleMarker = rosterCard.querySelector('[data-testid="oracle-placeholder-marker"]');
+        assert.ok(oracleMarker, 'Bye starter on dashboard must render Oracle placeholder ~ marker');
+
+        let node = oracleMarker;
+        while (node && node !== rosterCard) {
+          const cls = typeof node.className === 'string' ? node.className : '';
+          assert.equal(
+            cls.split(/\s+/).includes('pointer-events-none'),
+            false,
+            `Roster foreground element (${cls}) must not have pointer-events-none blocking tooltips or selection`,
+          );
+          node = node.parentElement;
+        }
+
+        fireEvent.click(oracleMarker);
+        const tooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+        assert.ok(tooltip, 'Clicking ~ marker inside dashboard roster card must open tooltip portal');
+        assert.equal(inspected.length, 0, 'Clicking ~ marker must not invoke onInspectPlayer');
+
+        const playerTextCol = rosterCard.querySelector('[data-testid="roster-card-text-col"]');
+        assert.ok(
+          playerTextCol && (playerTextCol.textContent || '').includes('Patrick Mahomes'),
+          'Player name must render inside roster card foreground text column',
+        );
+        fireEvent.click(playerTextCol);
+        assert.equal(inspected.length, 1, 'Clicking non-button card foreground must invoke onInspectPlayer');
+        assert.equal(inspected[0].player_id, 'dash_bye_qb');
       } finally {
         cleanup();
       }
@@ -5663,6 +5918,561 @@ describe('Tier 8: React Component RTL Iteration & UI Suite', () => {
         cleanup();
       }
     });
+
+    test('9.4.3 NavigationShell keeps 44x44 hit target with w-8 h-8 Lucide Settings gear framing UserAvatar or fallback User icon', () => {
+      try {
+        let opened = 0;
+        const { container: liveContainer, unmount: unmountLive } = render(
+          jsx(NavigationShell, {
+            activeTab: 'oneiromancy',
+            onSelectTab: () => {},
+            onOpenSettings: () => { opened += 1; },
+            mode: 'live',
+            sleeperUsername: 'SeerAlpha',
+            userAvatarUrl: 'https://sleepercdn.com/avatars/abc123',
+          }),
+        );
+        const liveBtn = liveContainer.querySelector('button[aria-label="Draft Settings"]');
+        assert.ok(liveBtn, 'Draft Settings button must preserve accessible label');
+        const liveBtnClass = liveBtn.getAttribute('class') || '';
+        assert.ok(liveBtnClass.includes('w-8') && liveBtnClass.includes('h-8') && liveBtnClass.includes('shrink-0'), 'Draft Settings button layout box must stay w-8 h-8 shrink-0 (~49px header height)');
+        assert.ok(liveBtnClass.includes("before:content-['']") && liveBtnClass.includes('before:-inset-1.5'), 'Draft Settings button must expand invisible hit area to 44x44 via before:-inset-1.5');
+        const gear = liveBtn.querySelector('[data-testid="nav-settings-gear"]');
+        assert.ok(gear, 'Draft Settings button must render Lucide Settings icon with data-testid="nav-settings-gear"');
+        assert.ok((gear.getAttribute('class') || '').includes('w-8') && (gear.getAttribute('class') || '').includes('h-8'), 'nav-settings-gear must be 32x32 (w-8 h-8)');
+        const avatar = liveBtn.querySelector('[data-testid="nav-user-avatar"]');
+        assert.ok(avatar, 'Live mode with avatar must render nav-user-avatar centered inside Draft Settings button');
+        const avatarClass = avatar.getAttribute('class') || '';
+        assert.ok(avatarClass.includes('!w-3.5') && avatarClass.includes('!h-3.5'), 'Centered avatar must be framed at 14x14 (!w-3.5 !h-3.5)');
+        assert.ok(avatarClass.includes('!ring-purple-400/70') && avatarClass.includes('!shadow-none'), 'Centered avatar must keep subtle purple ring with !shadow-none (no glowing box halo)');
+        assert.equal(liveBtn.querySelector('[data-testid="nav-manager-fallback-icon"]'), null, 'Live mode with avatar must not render fallback User glyph');
+        fireEvent.click(liveBtn);
+        assert.equal(opened, 1, 'Clicking settings gear must invoke onOpenSettings');
+        unmountLive();
+
+        const { container: mockContainer, unmount: unmountMock } = render(
+          jsx(NavigationShell, {
+            activeTab: 'matchups',
+            onSelectTab: () => {},
+            onOpenSettings: () => {},
+            mode: 'mock',
+            sleeperUsername: 'MockManager',
+            userAvatarUrl: 'https://sleepercdn.com/avatars/abc123',
+          }),
+        );
+        const mockBtn = mockContainer.querySelector('button[aria-label="Draft Settings"]');
+        assert.ok(mockBtn.querySelector('[data-testid="nav-settings-gear"]'), 'Mock mode must render nav-settings-gear');
+        assert.equal(mockBtn.querySelector('[data-testid="nav-user-avatar"]'), null, 'Mock mode must not render live UserAvatar');
+        assert.ok(mockBtn.querySelector('[data-testid="nav-manager-fallback-icon"]'), 'Mock mode must render fallback User icon');
+        unmountMock();
+
+        const { container: avatarlessLiveContainer } = render(
+          jsx(NavigationShell, {
+            activeTab: 'board',
+            onSelectTab: () => {},
+            onOpenSettings: () => {},
+            mode: 'live',
+            sleeperUsername: 'NoAvatarSeer',
+          }),
+        );
+        const avatarlessBtn = avatarlessLiveContainer.querySelector('button[aria-label="Draft Settings"]');
+        assert.ok(avatarlessBtn.querySelector('[data-testid="nav-settings-gear"]'), 'Avatarless live mode must render nav-settings-gear');
+        assert.equal(avatarlessBtn.querySelector('[data-testid="nav-user-avatar"]'), null, 'Avatarless live mode must not render nav-user-avatar');
+        assert.ok(avatarlessBtn.querySelector('[data-testid="nav-manager-fallback-icon"]'), 'Avatarless live mode must render nav-manager-fallback-icon');
+        cleanup();
+
+        const { container: drawerContainer } = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: testDraftState },
+            jsx(SettingsDrawer, { isOpen: true, onClose: () => {} }),
+          ),
+        );
+        const closeSettingsBtn = drawerContainer.querySelector('button[aria-label="Close Settings"]');
+        assert.ok(closeSettingsBtn, 'SettingsDrawer must render Close Settings button');
+        const closeBtnClass = closeSettingsBtn.getAttribute('class') || '';
+        assert.ok(closeBtnClass.includes('min-w-[44px]') && closeBtnClass.includes('min-h-[44px]'), 'Close Settings button must meet 44x44 touch target minimum');
+        cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.4 OraclePlaceholderMarker renders portal explainer cleanly without sr-only, native title, or touch/hover click race', () => {
+      try {
+        const placeholderInfo = oracle.oraclePlaceholderInfo({
+          id: 'p_race',
+          name: 'Bye Star',
+          team: 'DAL',
+          position: 'WR',
+          sleeper_projected_points: 0,
+          projected_points: 0,
+          bye_week: 7,
+          average_projected_points: 19.5,
+          draft_score: 0,
+        }, 7);
+
+        const { container } = render(
+          jsx(
+            'div',
+            {},
+            jsx(OraclePlaceholderMarker, { placeholder: placeholderInfo }),
+            jsx(OraclePlaceholderMarker, { placeholder: placeholderInfo, kind: 'stats' }),
+          ),
+        );
+
+        const marker = container.querySelector('[data-testid="oracle-placeholder-marker"]');
+        const peerMarker = container.querySelector('[data-testid="stats-placeholder-marker"]');
+        assert.ok(marker && peerMarker, 'Must render both placeholder marker triggers');
+        assert.equal(marker.tagName, 'BUTTON', 'Marker trigger must be a real button element');
+        assert.equal(marker.getAttribute('type'), 'button', 'Marker trigger must set type="button"');
+        assert.equal(marker.textContent, '~', 'Collapsed marker textContent must remain compact ~ with zero sr-only span');
+        assert.equal(marker.querySelector('.sr-only'), null, 'Marker must not contain sr-only fallback span');
+        assert.equal(marker.getAttribute('title'), null, 'Marker must not expose native browser title');
+        assert.equal(marker.getAttribute('aria-label'), 'Explain estimated Oracle placeholder', 'Oracle marker must expose clear aria-label');
+        assert.equal(peerMarker.getAttribute('aria-label'), 'Explain zero weekly stats placeholder', 'Stats marker must expose clear stats aria-label');
+        assert.equal(marker.getAttribute('aria-expanded'), 'false', 'Marker must start collapsed');
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Tooltip must start closed');
+
+        // 1. Touch pointerEnter + click race safety: touch pointerEnter must not toggle hover before click
+        fireEvent.pointerEnter(marker, { pointerType: 'touch' });
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Touch pointerEnter must not set hovered state');
+        fireEvent.click(marker);
+        assert.equal(marker.getAttribute('aria-expanded'), 'true', 'Click after touch pointerEnter must pin tooltip open');
+        const portaledTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+        assert.ok(portaledTooltip, 'Tooltip must render in document.body via createPortal');
+        assert.equal(container.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Tooltip must NOT render inside local container subtree');
+        assert.equal(portaledTooltip.textContent, placeholderInfo.markerExplainerText, 'Tooltip must render concise markerExplainerText');
+
+        // Clicking again unpins and closes
+        fireEvent.click(marker);
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Second click must close pinned tooltip');
+
+        // 2. Focus only opens tooltip when :focus-visible matches
+        fireEvent.focus(marker);
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Focus without :focus-visible must not open tooltip');
+        fireEvent.blur(marker);
+
+        marker.matches = (selector) => selector === ':focus-visible';
+        fireEvent.focus(marker);
+        assert.ok(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), 'Keyboard :focus-visible focus must open tooltip');
+
+        // 3. Mouse hover + focus + click + pointerLeave stability
+        fireEvent.pointerEnter(marker, { pointerType: 'mouse' });
+        fireEvent.click(marker);
+        fireEvent.pointerLeave(marker, { pointerType: 'mouse' });
+        fireEvent.blur(marker);
+        assert.ok(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), 'Pinned tooltip must remain open after mouse pointerLeave and blur');
+
+        // 4. Peer trigger dismissal: mouse hover over peer dismisses pinned first trigger
+        fireEvent.pointerEnter(peerMarker, { pointerType: 'mouse' });
+        assert.equal(marker.getAttribute('aria-expanded'), 'false', 'Hovering peer trigger must dismiss previously open trigger');
+        assert.equal(peerMarker.getAttribute('aria-expanded'), 'true', 'Hovered peer trigger must open');
+
+        // 5. Peer click & capture pointerdown outside closes open tooltip
+        fireEvent.click(peerMarker);
+        const activeTooltips = document.body.querySelectorAll('[data-testid="oracle-placeholder-tooltip"]');
+        assert.equal(activeTooltips.length, 1, 'At most one portaled placeholder tooltip may be open at a time');
+        assert.equal(activeTooltips[0].textContent, placeholderInfo.statsMarkerExplainerText, 'Peer stats marker must render statsMarkerExplainerText');
+
+        fireEvent.pointerDown(document.body, { target: document.body });
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'Outside capture pointerdown must dismiss tooltip');
+        assert.equal(peerMarker.getAttribute('aria-expanded'), 'false', 'Outside pointerdown must reset aria-expanded');
+
+        cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.5 Placeholder markers and portaled tooltips isolate card clicks across dashboard, CosmicBoard, LeagueScreen, MatchupsScreen, and PlayerDetailModal', () => {
+      try {
+        const zeroBye = {
+          ...mockData.mockCosmicBoard[0],
+          id: 'iso_bye_player',
+          name: 'Bye Star',
+          team: 'DAL',
+          position: 'WR',
+          sleeper_projected_points: 0,
+          projected_points: 0,
+          bye_week: 7,
+          average_projected_points: 18.4,
+          draft_score: 0,
+        };
+        const activePeer = {
+          ...mockData.mockCosmicBoard[1],
+          id: 'iso_active_peer',
+          name: 'Healthy Peer',
+          team: 'KC',
+          position: 'WR',
+          sleeper_projected_points: 14.2,
+          projected_points: 14.2,
+          bye_week: 10,
+          average_projected_points: 14.2,
+        };
+        const draftState = {
+          ...testDraftState,
+          activeWeek: 7,
+          cosmic_board: [zeroBye, activePeer],
+          my_roster: [
+            { slot_id: 'WR', slot_name: 'Wide Receiver', position: 'WR', eligible_positions: ['WR'], player: zeroBye, is_locked: false },
+            { slot_id: 'BN1', slot_name: 'Bench 1', position: 'WR', eligible_positions: ['WR'], player: activePeer, is_locked: false },
+          ],
+          weekly_matchup: {
+            ...testDraftState.weekly_matchup,
+            week: 7,
+            user_team: {
+              ...testDraftState.weekly_matchup.user_team,
+              starters: [zeroBye.id],
+            },
+            opponent_team: {
+              ...testDraftState.weekly_matchup.opponent_team,
+              starters: [activePeer.id],
+            },
+            player_favorabilities: [
+              {
+                ...mockData.mockPlayerFavorabilities[0],
+                player_id: zeroBye.id,
+                player_name: zeroBye.name,
+                position: zeroBye.position,
+                nfl_team: zeroBye.team,
+                projected_points: 0,
+                sleeper_projected_points: 0,
+                average_projected_points: 18.4,
+                bye_week: 7,
+                is_user_team: true,
+                is_benched: false,
+              },
+              {
+                ...mockData.mockPlayerFavorabilities[1],
+                player_id: activePeer.id,
+                player_name: activePeer.name,
+                position: activePeer.position,
+                nfl_team: activePeer.team,
+                projected_points: 14.2,
+                sleeper_projected_points: 14.2,
+                average_projected_points: 14.2,
+                bye_week: 10,
+                is_user_team: false,
+                is_benched: false,
+              },
+            ],
+          },
+          competitor_teams: [
+            {
+              roster_id: 1,
+              team_name: 'Seer Squad',
+              owner_name: 'Seer',
+              is_user: true,
+              starters: [zeroBye.id],
+              players: [zeroBye.id],
+            },
+            {
+              roster_id: 2,
+              team_name: 'Rival Squad',
+              owner_name: 'Rival',
+              is_user: false,
+              starters: [activePeer.id],
+              players: [activePeer.id],
+            },
+          ],
+          settings: {
+            ...testDraftState.settings,
+            roster_positions: ['WR'],
+          },
+        };
+
+        const verifyTriggerAndPortaledTooltipIsolated = (viewContainer, wrapperSpies, scopeName) => {
+          const marker = viewContainer.querySelector('[data-testid="oracle-placeholder-marker"]');
+          assert.ok(marker, `${scopeName} must render oracle-placeholder-marker`);
+          fireEvent.click(marker);
+          const tooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+          assert.ok(tooltip, `${scopeName} marker click must open portaled tooltip`);
+          assert.ok(tooltip.textContent?.includes('18.4 pt season average'), `${scopeName} tooltip must display 18.4 pt placeholder explainer`);
+          fireEvent.click(tooltip);
+          assert.equal(wrapperSpies.count, 0, `${scopeName} parent card/inspect handler must stay at 0 after clicking marker & tooltip`);
+          fireEvent.click(marker);
+        };
+
+        // PlayerCardRow + parent wrapper
+        const rowSpy = { count: 0 };
+        const rowView = render(
+          jsx('div', { onClick: () => { rowSpy.count += 1; } }, jsx(PlayerCardRow, { player: zeroBye, activeWeek: 7, onInspect: () => { rowSpy.count += 1; } })),
+        );
+        verifyTriggerAndPortaledTooltipIsolated(rowView.container, rowSpy, 'PlayerCardRow');
+        cleanup();
+
+        // OneiromancyDashboard
+        const dashSpy = { count: 0 };
+        const dashView = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: draftState },
+            jsx('div', { onClick: () => { dashSpy.count += 1; } }, jsx(OneiromancyDashboard, { myRoster: [{ slot_id: 'WR', player: zeroBye }], onInspectPlayer: () => { dashSpy.count += 1; } })),
+          ),
+        );
+        verifyTriggerAndPortaledTooltipIsolated(dashView.container, dashSpy, 'OneiromancyDashboard');
+        cleanup();
+
+        // CosmicBoard
+        const boardSpy = { count: 0 };
+        const boardView = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: draftState },
+            jsx('div', { onClick: () => { boardSpy.count += 1; } }, jsx(CosmicBoard, { onInspectPlayer: () => { boardSpy.count += 1; } })),
+          ),
+        );
+        verifyTriggerAndPortaledTooltipIsolated(boardView.container, boardSpy, 'CosmicBoard');
+        cleanup();
+
+        // LeagueScreen (must not bubble to parent or open internal PlayerDetailModal)
+        const leagueSpy = { count: 0 };
+        const leagueView = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: draftState },
+            jsx('div', { onClick: () => { leagueSpy.count += 1; } }, jsx(LeagueScreen, {})),
+          ),
+        );
+        verifyTriggerAndPortaledTooltipIsolated(leagueView.container, leagueSpy, 'LeagueScreen');
+        assert.equal(leagueView.container.querySelector('[data-testid="player-detail-modal"]'), null, 'LeagueScreen marker click must not open PlayerDetailModal');
+        cleanup();
+
+        // MatchupsScreen (must not bubble or open internal PlayerDetailModal)
+        const matchSpy = { count: 0 };
+        const matchView = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: draftState },
+            jsx('div', { onClick: () => { matchSpy.count += 1; } }, jsx(MatchupsScreen, { weeklyMatchup: draftState.weekly_matchup })),
+          ),
+        );
+        verifyTriggerAndPortaledTooltipIsolated(matchView.container, matchSpy, 'MatchupsScreen');
+        assert.equal(matchView.container.querySelector('[data-testid="player-detail-modal"]'), null, 'MatchupsScreen marker click must not open PlayerDetailModal');
+        cleanup();
+
+        // PlayerDetailModal stats-placeholder-marker opens statsMarkerExplainerText with no native title on enclosing cell
+        resetPlayerDetailModalHistoryForTest();
+        const modalView = render(
+          jsx(
+            OneiromancyProvider,
+            { initialDraftState: draftState },
+            jsx(PlayerDetailModal, { player: zeroBye, compareCandidates: [zeroBye, activePeer, { ...activePeer, id: 'iso_peer_3', name: 'Third Peer' }], activeWeek: 7, isOpen: true, onClose: () => {} }),
+          ),
+        );
+        const statsMarker = modalView.container.querySelector('[data-testid="stats-placeholder-marker"]');
+        assert.ok(statsMarker, 'PlayerDetailModal must render interactive stats-placeholder-marker for bye player');
+        assert.equal(statsMarker.getAttribute('title'), null, 'Stats placeholder marker itself must not use native title attribute');
+        assert.equal(statsMarker.parentElement?.parentElement?.getAttribute('title'), null, 'Compare Stats cell enclosing OraclePlaceholderMarker must not keep native title attribute');
+        fireEvent.click(statsMarker);
+        const statsTooltip = document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]');
+        assert.ok(statsTooltip?.textContent?.includes('Zero weekly stats (on bye): 0.0 projected pts'), 'Stats marker tooltip must render statsMarkerExplainerText');
+        cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.6 PlayerDetailModal Escape key dismisses open placeholder tooltip first without closing modal, then closes modal on next Escape', () => {
+      try {
+        const zeroBye = {
+          ...mockData.mockCosmicBoard[0],
+          id: 'esc_bye_player',
+          name: 'Bye Star',
+          team: 'DAL',
+          position: 'WR',
+          sleeper_projected_points: 0,
+          projected_points: 0,
+          bye_week: 7,
+          average_projected_points: 17.2,
+          draft_score: 0,
+        };
+        let modalCloseCount = 0;
+        const { container } = render(
+          jsx(
+            OneiromancyProvider,
+            {
+              initialDraftState: {
+                ...testDraftState,
+                weekly_matchup: { ...testDraftState.weekly_matchup, week: 7 },
+              },
+            },
+            jsx(PlayerDetailModal, {
+              player: zeroBye,
+              isOpen: true,
+              onClose: () => { modalCloseCount += 1; },
+            }),
+          ),
+        );
+
+        const marker = container.querySelector('[data-testid="oracle-placeholder-marker"]');
+        assert.ok(marker, 'PlayerDetailModal must render oracle-placeholder-marker');
+        marker.matches = (sel) => sel === ':focus-visible';
+        fireEvent.focus(marker);
+        fireEvent.click(marker);
+        assert.ok(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), 'Placeholder tooltip must be open before first Escape');
+
+        // First Escape: tooltip captures & stops propagation -> closes tooltip, modal remains open
+        fireEvent.keyDown(marker, { key: 'Escape' });
+        assert.equal(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), null, 'First Escape must dismiss open tooltip');
+        assert.equal(modalCloseCount, 0, 'First Escape while tooltip open must NOT close PlayerDetailModal');
+
+        // Second Escape while focus remains on marker (tooltip already closed): closes modal
+        fireEvent.keyDown(marker, { key: 'Escape' });
+        assert.equal(modalCloseCount, 1, 'Second Escape once tooltip is closed must close PlayerDetailModal even while marker retains focus');
+        cleanup();
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.7 computeTooltipPosition handles above placement, <56px header flip, and 8px viewport clamping at 375px & 1280px', () => {
+      const tip = { width: 240, height: 84 };
+
+      // Room above center
+      const abovePos = computeTooltipPosition(
+        { top: 300, bottom: 320, left: 180, right: 196, width: 16, height: 20 },
+        { width: 375, height: 812 },
+        tip,
+      );
+      assert.equal(abovePos.placement, 'top', 'Sufficient clearance above header must place tooltip on top');
+      assert.equal(abovePos.top, 210, 'Top coordinate must sit 6px above anchor top (300 - 84 - 6)');
+      assert.equal(abovePos.left, 68, 'Horizontal position must center over anchor when inside viewport');
+
+      // Near sticky header (<56px top clearance) flips below anchor
+      const headerFlipPos = computeTooltipPosition(
+        { top: 70, bottom: 88, left: 180, right: 196, width: 16, height: 18 },
+        { width: 375, height: 812 },
+        tip,
+      );
+      assert.equal(headerFlipPos.placement, 'bottom', 'Insufficient header clearance (<56px) must flip tooltip below anchor');
+      assert.equal(headerFlipPos.top, 94, 'Bottom placement must sit 6px below anchor bottom (88 + 6)');
+
+      // Left edge clamp >= 8px on mobile
+      const leftClamp = computeTooltipPosition(
+        { top: 240, bottom: 256, left: 4, right: 18, width: 14, height: 16 },
+        { width: 375, height: 812 },
+        tip,
+      );
+      assert.equal(leftClamp.left, 8, 'Left edge must clamp at minimum 8px margin');
+
+      // Right edge clamp <= viewport - width - 8 on 375px mobile & 1280px desktop
+      const mobileRightClamp = computeTooltipPosition(
+        { top: 240, bottom: 256, left: 355, right: 369, width: 14, height: 16 },
+        { width: 375, height: 812 },
+        tip,
+      );
+      assert.equal(mobileRightClamp.left, 127, '375px viewport must clamp tooltip right edge within 8px margin (375 - 240 - 8)');
+
+      const desktopRightClamp = computeTooltipPosition(
+        { top: 240, bottom: 256, left: 1260, right: 1274, width: 14, height: 16 },
+        { width: 1280, height: 800 },
+        tip,
+      );
+      assert.equal(desktopRightClamp.left, 1032, '1280px viewport must clamp tooltip right edge within 8px margin (1280 - 240 - 8)');
+
+      // Clamping must never push tooltip under sticky 56px header even on short viewports
+      const headerClamp = computeTooltipPosition(
+        { top: 20, bottom: 38, left: 180, right: 196, width: 16, height: 18 },
+        { width: 375, height: 180 },
+        tip,
+      );
+      assert.ok(headerClamp.top >= 56, `Tooltip top (${headerClamp.top}) must clamp below 56px header clearance`);
+
+      // Scroll-dismiss: scrolling anchor behind 56px header closes open portaled tooltip
+      try {
+        const scrollView = render(
+          jsx(OraclePlaceholderMarker, {
+            placeholder: {
+              hasPlaceholder: true,
+              markerExplainerText: 'Scroll test explainer',
+              statsMarkerExplainerText: 'Stats scroll explainer',
+              tooltipText: 'Scroll test tooltip',
+              statsTooltipText: 'Stats scroll tooltip',
+              reason: 'bye',
+            },
+          }),
+        );
+        const markerBtn = scrollView.container.querySelector('[data-testid="oracle-placeholder-marker"]');
+        assert.ok(markerBtn, 'OraclePlaceholderMarker button must render');
+        let currentRect = { top: 240, bottom: 256, left: 180, right: 196, width: 16, height: 16 };
+        markerBtn.getBoundingClientRect = () => currentRect;
+        fireEvent.click(markerBtn);
+        assert.ok(document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'), 'Click must open tooltip');
+        currentRect = { top: 10, bottom: 24, left: 180, right: 196, width: 16, height: 14 };
+        act(() => {
+          window.dispatchEvent(new window.Event('scroll'));
+        });
+        assert.equal(
+          document.body.querySelector('[data-testid="oracle-placeholder-tooltip"]'),
+          null,
+          'Scrolling anchor under 56px header must auto-close open tooltip'
+        );
+      } finally {
+        cleanup();
+      }
+    });
+
+    test('9.4.8 OneiromancyDashboard keeps OraclePlaceholderMarker as non-nested sibling outside card button', () => {
+      try {
+        const dashView = render(
+          jsx(
+            OneiromancyProvider,
+            {
+              initialDraftState: {
+                ...testDraftState,
+                weekly_matchup: { ...testDraftState.weekly_matchup, week: 7 },
+                my_roster: [
+                  {
+                    slot_id: 'QB',
+                    slot_name: 'QB',
+                    player: {
+                      ...mockData.mockCosmicBoard[0],
+                      id: 'non_nested_qb',
+                      name: 'Non Nested QB',
+                      position: 'QB',
+                      team: 'DAL',
+                      projected_points: 0,
+                      sleeper_projected_points: 0,
+                      bye_week: 7,
+                      average_projected_points: 18.4,
+                    },
+                  },
+                ],
+              },
+            },
+            jsx(OneiromancyDashboard, {}),
+          ),
+        );
+        const qbCard = dashView.container.querySelector('[data-testid="roster-card-QB"]');
+        const marker = qbCard?.querySelector('[data-testid="oracle-placeholder-marker"]');
+        assert.ok(qbCard, 'QB roster card must render');
+        assert.ok(marker, 'QB roster card must render OraclePlaceholderMarker');
+        assert.equal(qbCard.getAttribute('role'), null, 'Outer roster card div must not carry role="button"');
+        let ancestor = marker.parentElement;
+        while (ancestor) {
+          const tag = String(ancestor.tagName || '').toLowerCase();
+          assert.notEqual(tag, 'button', 'OraclePlaceholderMarker must not have an ancestor <button>');
+          assert.notEqual(tag, 'a', 'OraclePlaceholderMarker must not have an ancestor <a>');
+          assert.notEqual(ancestor.getAttribute?.('role'), 'button', 'OraclePlaceholderMarker must not have an ancestor role="button"');
+          ancestor = ancestor.parentElement;
+        }
+        const cardBtn = Array.from(qbCard.querySelectorAll('button')).find((b) =>
+          String(b.getAttribute?.('aria-label') || '').startsWith('Inspect ')
+        );
+        assert.ok(cardBtn, 'Roster card must expose non-nested sibling Inspect button');
+        assert.equal(
+          cardBtn.querySelector('[data-testid="oracle-placeholder-marker"]'),
+          null,
+          'Inspect card button must not contain OraclePlaceholderMarker'
+        );
+      } finally {
+        cleanup();
+      }
+    });
   });
 });
+
+
 

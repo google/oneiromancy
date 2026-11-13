@@ -24,6 +24,7 @@
 
 import React from 'react';
 import { Droplet, Flame, Mountain, Wind } from 'lucide-react';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import {
   favorabilityTone,
   oraclePlaceholderInfo,
@@ -179,7 +180,7 @@ export const StatTiles: React.FC<{
           className={tile}
           title={
             placeholder.hasPlaceholder
-              ? placeholder.tooltipText
+              ? undefined
               : `Oracle at λ ${lambda.toFixed(2)} (Spirit ${(player.spirit_score ?? 0).toFixed(1)})`
           }
         >
@@ -187,13 +188,7 @@ export const StatTiles: React.FC<{
           <span className={`font-bold ${muted ? 'text-slate-300' : 'text-purple-300'}`}>
             {oracleVal.toFixed(1)}
             {placeholder.hasPlaceholder && (
-              <span
-                data-testid="oracle-placeholder-marker"
-                title={placeholder.tooltipText}
-                className="ml-0.5 text-amber-300 font-bold"
-              >
-                ~
-              </span>
+              <OraclePlaceholderMarker placeholder={placeholder} />
             )}
           </span>
         </div>

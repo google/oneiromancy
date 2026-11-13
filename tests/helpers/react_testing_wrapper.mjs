@@ -253,6 +253,18 @@ export class DOMNode {
 
   dispatchEvent(event) {
     if (!event) return true;
+    if (typeof event.stopPropagation !== 'function') {
+      event._propagationStopped = Boolean(event._propagationStopped);
+      event.stopPropagation = function stopPropagation() {
+        this._propagationStopped = true;
+      };
+    }
+    if (typeof event.preventDefault !== 'function') {
+      event.defaultPrevented = Boolean(event.defaultPrevented);
+      event.preventDefault = function preventDefault() {
+        this.defaultPrevented = true;
+      };
+    }
     event.target = this;
     const prevWindowEvent = globalThis.window ? globalThis.window.event : undefined;
     if (globalThis.window) {
@@ -267,6 +279,13 @@ export class DOMNode {
       }
       if (this.ownerDocument && path[path.length - 1] !== this.ownerDocument) {
         path.push(this.ownerDocument);
+      }
+
+      const reachesDoc = this.ownerDocument && path[path.length - 1] === this.ownerDocument;
+      if (reachesDoc && globalThis.window && typeof globalThis.window._invokePhase === 'function') {
+        event.currentTarget = globalThis.window;
+        event.eventPhase = 1;
+        globalThis.window._invokePhase(event, true);
       }
 
       // Capture phase (top -> down)
@@ -294,6 +313,16 @@ export class DOMNode {
           event.currentTarget = path[i];
           event.eventPhase = 3;
           path[i]._invokeListeners(event.type, event, false, false);
+        }
+        if (
+          !event._propagationStopped &&
+          reachesDoc &&
+          globalThis.window &&
+          typeof globalThis.window._invokePhase === 'function'
+        ) {
+          event.currentTarget = globalThis.window;
+          event.eventPhase = 3;
+          globalThis.window._invokePhase(event, false);
         }
       }
 
@@ -1077,20 +1106,41 @@ function createDefaultWindow(doc) {
         }
       }
     },
+    _invokePhase(event, capturePhase) {
+      const list = listeners.get(event.type);
+      if (!list || list.length === 0) return;
+      for (const entry of [...list]) {
+        if (event._immediatePropagationStopped) break;
+        if (Boolean(entry.capture) !== Boolean(capturePhase)) continue;
+        entry.listener.call(win, event);
+      }
+    },
     dispatchEvent(event) {
       if (!event) return true;
-      event.target = win;
+      if (typeof event.stopPropagation !== 'function') {
+        event._propagationStopped = Boolean(event._propagationStopped);
+        event.stopPropagation = function stopPropagation() {
+          this._propagationStopped = true;
+        };
+      }
+      if (typeof event.preventDefault !== 'function') {
+        event.defaultPrevented = Boolean(event.defaultPrevented);
+        event.preventDefault = function preventDefault() {
+          this.defaultPrevented = true;
+        };
+      }
+      if (!event.target) event.target = win;
       event.currentTarget = win;
       const prevEvent = win.event;
       win.event = event;
       try {
-        const list = listeners.get(event.type);
-        if (list) {
-          for (const entry of [...list]) {
-            if (event._immediatePropagationStopped) break;
-            entry.listener.call(win, event);
-          }
+        event.eventPhase = 1;
+        win._invokePhase(event, true);
+        if (!event._propagationStopped) {
+          event.eventPhase = 3;
+          win._invokePhase(event, false);
         }
+        event.eventPhase = 0;
         return !event.defaultPrevented;
       } finally {
         win.event = prevEvent;
@@ -1403,6 +1453,62 @@ export const fireEvent = {
   input: (element, eventData = {}) => {
     assert.ok(element, 'fireEvent.input called on null/undefined element');
     dispatchDomValueEvent(element, 'input', eventData);
+  },
+  keyDown: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.keyDown called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        element.dispatchEvent(new DOMEvent('keydown', { bubbles: true, cancelable: true, ...eventData }));
+      });
+    });
+  },
+  focus: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.focus called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        if (element.ownerDocument) {
+          element.ownerDocument.activeElement = element;
+        }
+        element.dispatchEvent(new DOMEvent('focusin', { bubbles: true, cancelable: false, ...eventData }));
+      });
+    });
+  },
+  blur: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.blur called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        if (element.ownerDocument && element.ownerDocument.activeElement === element) {
+          element.ownerDocument.activeElement = null;
+        }
+        element.dispatchEvent(new DOMEvent('focusout', { bubbles: true, cancelable: false, ...eventData }));
+      });
+    });
+  },
+  pointerDown: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.pointerDown called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        element.dispatchEvent(new DOMEvent('pointerdown', { bubbles: true, cancelable: true, pointerType: 'mouse', ...eventData }));
+      });
+    });
+  },
+  pointerEnter: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.pointerEnter called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        element.dispatchEvent(new DOMEvent('pointerover', { bubbles: true, cancelable: false, pointerType: 'mouse', ...eventData }));
+        element.dispatchEvent(new DOMEvent('pointerenter', { bubbles: false, cancelable: false, pointerType: 'mouse', ...eventData }));
+      });
+    });
+  },
+  pointerLeave: (element, eventData = {}) => {
+    assert.ok(element, 'fireEvent.pointerLeave called on null/undefined element');
+    runWithUnrefTimers(() => {
+      reactAct(() => {
+        element.dispatchEvent(new DOMEvent('pointerout', { bubbles: true, cancelable: false, pointerType: 'mouse', ...eventData }));
+        element.dispatchEvent(new DOMEvent('pointerleave', { bubbles: false, cancelable: false, pointerType: 'mouse', ...eventData }));
+      });
+    });
   },
 };
 

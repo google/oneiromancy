@@ -199,7 +199,7 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
                           <HealthTag player={move.drop} activeWeek={activeWeek} />
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
-                          <PlayerHeadshot player={move.drop} size="sm" />
+                          <PlayerHeadshot player={move.drop} size="trade" />
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <PositionalBadge position={move.drop.position} size="sm" depth={move.drop.depth_chart_order} />
@@ -224,7 +224,7 @@ export const PlayerMarketplace: React.FC<PlayerMarketplaceProps> = ({
                           <HealthTag player={move.add} activeWeek={activeWeek} />
                         </div>
                         <div className="flex items-center gap-2 min-w-0">
-                          <PlayerHeadshot player={move.add} size="sm" />
+                          <PlayerHeadshot player={move.add} size="trade" />
                           <div className="min-w-0 flex-1 space-y-0.5">
                             <div className="flex items-center gap-1.5 min-w-0">
                               <PositionalBadge position={move.add.position} size="sm" depth={move.add.depth_chart_order} />

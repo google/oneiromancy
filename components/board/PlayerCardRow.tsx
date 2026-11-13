@@ -20,6 +20,7 @@
 import React from 'react';
 import PositionalBadge from '@/components/common/PositionalBadge';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import { CosmicPlayer } from '@/types/oneiromancy';
 import { User } from 'lucide-react';
 import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, stripUserSuffix } from '@/lib/scoring';
@@ -105,7 +106,7 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
     <div
       onClick={() => onInspect(player)}
       data-testid={`player-card-row-${player.id}`}
-      className={`group p-3 rounded-xl border transition-all cursor-pointer select-none flex items-center gap-3 ${
+      className={`group p-2.5 rounded-xl border transition-all cursor-pointer select-none flex items-center gap-2 ${
         isCompared
           ? 'bg-amber-500/10 border-amber-500/30 ring-1 ring-amber-500/20'
           : onByeNow
@@ -128,7 +129,7 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
               }
             }
           }}
-          className="shrink-0 flex items-center justify-center min-w-[44px] min-h-[44px] cursor-pointer"
+          className="shrink-0 flex items-center justify-center min-w-[24px] min-h-[24px] p-1 -m-1 cursor-pointer"
         >
           <input
             type="checkbox"
@@ -149,8 +150,8 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
           />
         </label>
       )}
-      <span className="font-mono text-xs text-slate-500 w-6 shrink-0 text-right">{rank}</span>
-      <PlayerHeadshot player={player} size="md" />
+      <span className="font-mono text-xs text-slate-500 min-w-[1.25rem] shrink-0 text-right tabular-nums">{rank}</span>
+      <PlayerHeadshot player={player} size="row" />
       <div className="min-w-0 flex-1 flex flex-col gap-0.5">
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="font-sans font-semibold text-sm text-slate-100 break-words">
@@ -236,19 +237,12 @@ export const PlayerCardRow: React.FC<PlayerCardRowProps> = ({
         </span>
         <span
           className="flex flex-col"
-          title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
         >
           <span className="text-[9px] text-slate-500 uppercase">Oracle</span>
           <span className="text-sm font-bold text-cyan-300 tabular-nums">
             {oracleVal.toFixed(1)}
             {placeholder.hasPlaceholder && (
-              <span
-                data-testid="oracle-placeholder-marker"
-                title={placeholder.tooltipText}
-                className="ml-0.5 text-amber-300 font-bold"
-              >
-                ~
-              </span>
+              <OraclePlaceholderMarker placeholder={placeholder} />
             )}
           </span>
         </span>

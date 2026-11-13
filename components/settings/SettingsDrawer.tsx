@@ -16,7 +16,7 @@
 
 'use client';
 
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { useOneiromancy } from '@/context/OneiromancyContext';
 import UserAvatar from '@/components/common/UserAvatar';
 import { resetRateLimit } from '@/lib/sleeper';
@@ -34,6 +34,23 @@ export interface SettingsDrawerProps {
   className?: string;
 }
 
+function getUrlLaunchUsername(): string {
+  if (typeof window === 'undefined' || !window.location?.search) return '';
+  const params = new URLSearchParams(window.location.search);
+  return (params.get('user') || params.get('username') || '').trim();
+}
+
+function hasUrlLaunchState(): boolean {
+  if (typeof window === 'undefined' || !window.location?.search) return false;
+  const params = new URLSearchParams(window.location.search);
+  return Boolean(
+    params.get('user')?.trim() ||
+      params.get('username')?.trim() ||
+      params.get('draft_id')?.trim() ||
+      params.get('draft')?.trim()
+  );
+}
+
 export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   isOpen,
   onClose,
@@ -45,7 +62,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     isLoading,
     toggleAutoUpdate,
     setPollInterval,
-    setSleeperUsername,
     setLeagueId,
     updateChaosLambda,
     refreshDraft,
@@ -55,21 +71,29 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     syncError,
   } = useOneiromancy();
 
+  const welcomeDismissedRef = useRef<boolean>(false);
   const [isFirstLaunch, setIsFirstLaunch] = useState<boolean>(() => {
     if (typeof window === 'undefined') return false;
     try {
       const saved = localStorage.getItem('oneiromancy_active_username');
-      return !saved || !saved.trim();
+      if (saved && saved.trim()) return false;
+      if (hasUrlLaunchState()) return false;
+      if (draftState?.isLive && draftState?.settings?.sleeper_username?.trim()) return false;
+      return true;
     } catch {
       return false;
     }
   });
   const isMock = mode === 'mock';
-  const hasConfiguredUsername =
-    !isFirstLaunch && Boolean(draftState?.settings?.sleeper_username?.trim());
+  const configuredUsername = (
+    draftState?.settings?.sleeper_username ||
+    getUrlLaunchUsername() ||
+    ''
+  ).trim();
+  const hasConfiguredUsername = !isFirstLaunch && Boolean(configuredUsername);
   // Shown in a highlighted box until a real Sleeper account is connected.
   const needsUsername = !hasConfiguredUsername;
-  const currentUsername = draftState?.settings?.sleeper_username || '';
+  const currentUsername = configuredUsername;
   // Sample data has no Sleeper leagues; never present it as if it were connected.
   const availableLeagues = hasConfiguredUsername && !isMock
     ? draftState?.available_leagues || draftState?.settings?.available_leagues || []
@@ -85,7 +109,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
   );
   const [isFetchingLeagues, setIsFetchingLeagues] = useState<boolean>(false);
   const [manualLeagueId, setManualLeagueId] = useState<string>('');
-  const [isEditing, setIsEditing] = useState<boolean>(false);
+  const isEditingRef = useRef<boolean>(false);
   const [tiltPermission, setTiltPermission] = useState<OrientationPermissionState>(() =>
     getOrientationPermissionStatus()
   );
@@ -132,32 +156,66 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     }
   };
 
-  // Detect very first browser launch when no Sleeper username is stored yet
+  // Detect very first browser launch when no Sleeper username or URL launch state exists
   useEffect(() => {
     if (typeof window === 'undefined') return;
     try {
-      const saved = localStorage.getItem('oneiromancy_active_username');
-      if (!saved || !saved.trim()) {
-        setIsFirstLaunch(true);
-        setInputUsername('');
-      } else {
+      const saved = localStorage.getItem('oneiromancy_active_username')?.trim() || '';
+      const urlUser = getUrlLaunchUsername();
+      const draftUser = draftState?.settings?.sleeper_username?.trim() || '';
+      const urlLaunched = hasUrlLaunchState();
+      if (urlUser || urlLaunched) {
         setIsFirstLaunch(false);
-        setInputUsername(saved.trim());
+        if (!isEditingRef.current) {
+          setInputUsername(draftState?.isLive && draftUser ? draftUser : (urlUser || draftUser || saved));
+        }
+      } else if (saved) {
+        setIsFirstLaunch(false);
+        if (!isEditingRef.current) setInputUsername(saved);
+      } else if (draftState?.isLive && Boolean(draftUser) && !draftState?.sync_error) {
+        setIsFirstLaunch(false);
+        if (!isEditingRef.current) setInputUsername(draftUser);
+      } else if (!welcomeDismissedRef.current && !draftState?.sync_error) {
+        setIsFirstLaunch(true);
+        if (!isEditingRef.current) setInputUsername('');
       }
     } catch {
       // Ignore localStorage access failures
     }
-  }, []);
+  }, [draftState?.isLive, draftState?.settings?.sleeper_username, draftState?.sync_error]);
 
-  // Sync internal state when draftState updates
+  // Sync internal state when draftState updates or drawer reopens
   // Only update from draftState if the user is not actively editing and there is no active sync error
+  const prevOpenForInputResetRef = useRef<boolean>(isOpen);
   useEffect(() => {
-    if (isEditing || isFirstLaunch) return;
+    const justOpened = !prevOpenForInputResetRef.current && isOpen;
+    prevOpenForInputResetRef.current = isOpen;
+    if (justOpened) {
+      isEditingRef.current = false;
+      let savedLocal = '';
+      if (typeof window !== 'undefined') {
+        try {
+          savedLocal = localStorage.getItem('oneiromancy_active_username')?.trim() || '';
+        } catch {
+          // Ignore localStorage access failures
+        }
+      }
+      const committedUser =
+        draftState?.isLive && !draftState?.sync_error
+          ? (draftState?.settings?.sleeper_username?.trim() || '')
+          : '';
+      const resetValue = isFirstLaunch
+        ? ''
+        : (getUrlLaunchUsername() || committedUser || savedLocal || '');
+      setInputUsername(resetValue);
+      return;
+    }
+    if (isEditingRef.current || isFirstLaunch) return;
     if (syncError || draftState?.sync_error) return;
     if (draftState?.settings?.sleeper_username) {
       setInputUsername(draftState.settings.sleeper_username);
     }
-  }, [draftState?.settings?.sleeper_username, syncError, draftState?.sync_error, isEditing, isFirstLaunch]);
+  }, [draftState?.isLive, draftState?.settings?.sleeper_username, syncError, draftState?.sync_error, isFirstLaunch, isOpen]);
 
   // Validation telemetry check
   const validatedUsername = inputUsername.trim();
@@ -168,25 +226,40 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     if (!trimmedUsername) return;
     const wasFirstLaunch = isFirstLaunch;
     setInputUsername(trimmedUsername);
-    setIsEditing(false);
-    setIsFirstLaunch(false);
     setIsFetchingLeagues(true);
     resetRateLimit();
-    if (setMode) {
-      setMode('live');
-    }
-    if (setSleeperUsername) {
-      setSleeperUsername(trimmedUsername);
-    }
     try {
-      if (refreshDraft) {
-        await refreshDraft(trimmedUsername);
-      }
-      if (wasFirstLaunch && !draftState?.sync_error) {
-        onClose();
+      const syncResult = refreshDraft
+        ? await refreshDraft(trimmedUsername)
+        : { ok: !draftState?.sync_error, error: draftState?.sync_error ?? null };
+      if (syncResult.ok) {
+        const shouldAutoClose =
+          wasFirstLaunch && !welcomeDismissedRef.current;
+        isEditingRef.current = false;
+        welcomeDismissedRef.current = true;
+        setIsFirstLaunch(false);
+        if (typeof window !== 'undefined') {
+          try {
+            localStorage.setItem('oneiromancy_active_username', trimmedUsername);
+          } catch {
+            // Ignore localStorage access failures
+          }
+        }
+        if (shouldAutoClose) {
+          onClose();
+        }
+      } else if (
+        wasFirstLaunch &&
+        !welcomeDismissedRef.current &&
+        syncResult.error !== 'Stale sync superseded'
+      ) {
+        setIsFirstLaunch(true);
       }
     } catch (saveErr) {
       console.warn('[SettingsDrawer] handleSave error:', saveErr);
+      if (wasFirstLaunch && !welcomeDismissedRef.current) {
+        setIsFirstLaunch(true);
+      }
     } finally {
       setIsFetchingLeagues(false);
     }
@@ -205,7 +278,6 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
 
   // Instant reset to canonical mock oneiromancy draft
   const handleLoadMockData = () => {
-    const wasFirstLaunch = isFirstLaunch;
     if (loadMockData) {
       loadMockData();
     }
@@ -216,12 +288,11 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     } catch {
       // Ignore localStorage access failures
     }
-    setInputUsername(saved);
-    setIsEditing(false);
+    setInputUsername(getUrlLaunchUsername() || saved);
+    isEditingRef.current = false;
+    welcomeDismissedRef.current = true;
     setIsFirstLaunch(false);
-    if (wasFirstLaunch) {
-      onClose();
-    }
+    onClose();
   };
 
   // Ensure telemetry polling interval is wired
@@ -231,13 +302,30 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
     }
   }, [setPollInterval, currentInterval]);
 
+  const prevIsOpenRef = useRef<boolean>(isOpen);
+  const handleDismiss = useCallback(() => {
+    isEditingRef.current = false;
+    welcomeDismissedRef.current = true;
+    setIsFirstLaunch(false);
+    onClose();
+  }, [onClose]);
+
+  useEffect(() => {
+    if (prevIsOpenRef.current && !isOpen) {
+      isEditingRef.current = false;
+      welcomeDismissedRef.current = true;
+      setIsFirstLaunch(false);
+    }
+    prevIsOpenRef.current = isOpen;
+  }, [isOpen]);
+
   // Keyboard Escape key dismissal listener
   useEffect(() => {
     if (!isOpen || typeof window === 'undefined') return;
 
     const handleKeyDown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        onClose();
+        handleDismiss();
       }
     };
 
@@ -247,7 +335,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
         window.removeEventListener('keydown', handleKeyDown);
       }
     };
-  }, [isOpen, onClose]);
+  }, [isOpen, handleDismiss]);
 
   // Body scroll lock while modal is open
   useEffect(() => {
@@ -270,7 +358,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
       aria-modal="true"
       aria-labelledby="settings-drawer-title"
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-4 bg-black/80 backdrop-blur-md animate-fadeIn"
-      onClick={onClose}
+      onClick={handleDismiss}
     >
       <div
         onClick={(e: { stopPropagation: () => void }) => e.stopPropagation()}
@@ -289,9 +377,9 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
           </div>
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleDismiss}
             aria-label="Close Settings"
-            className="p-1.5 rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
+            className="p-2.5 min-w-[44px] min-h-[44px] inline-flex items-center justify-center rounded-lg text-slate-400 hover:text-slate-100 hover:bg-slate-800 transition-colors"
           >
             <X className="w-5 h-5" />
           </button>
@@ -386,8 +474,8 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
               autoFocus={isFirstLaunch}
               value={inputUsername}
               onChange={(e) => {
+                isEditingRef.current = true;
                 setInputUsername(e.target.value);
-                setIsEditing(true);
               }}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') handleSave();
@@ -662,7 +750,7 @@ export const SettingsDrawer: React.FC<SettingsDrawerProps> = ({
         <div className="pt-2 flex items-center justify-end gap-2">
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleDismiss}
             className="w-full py-2.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-xs font-mono text-slate-200 border border-white/10 active:scale-98 transition-all"
           >
             Close Settings

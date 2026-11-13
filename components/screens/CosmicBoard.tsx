@@ -22,6 +22,7 @@ import PlayerCardRow from '@/components/board/PlayerCardRow';
 import PlayerHeadshot, { TeamLogo } from '@/components/common/PlayerHeadshot';
 import GlassCard from '@/components/common/GlassCard';
 import PositionalBadge from '@/components/common/PositionalBadge';
+import OraclePlaceholderMarker from '@/components/common/OraclePlaceholderMarker';
 import PlayerDetailModal from '@/components/modals/PlayerDetailModal';
 import { MAX_COMPARE_PLAYERS, useOneiromancy } from '@/context/OneiromancyContext';
 import { DEFAULT_CHAOS_LAMBDA, isPlayerOnByeWeek, isPlayerSigned, stripUserSuffix } from '@/lib/scoring';
@@ -496,17 +497,10 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                         </td>
                         <td
                           className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums whitespace-nowrap"
-                          title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
                         >
                           {oracle.toFixed(1)}
                           {placeholder.hasPlaceholder && (
-                            <span
-                              data-testid="oracle-placeholder-marker"
-                              title={placeholder.tooltipText}
-                              className="ml-0.5 text-amber-300 font-bold"
-                            >
-                              ~
-                            </span>
+                            <OraclePlaceholderMarker placeholder={placeholder} />
                           )}
                         </td>
                         <td className="py-2.5 px-3 text-center">
@@ -627,17 +621,10 @@ export const CosmicBoard: React.FC<CosmicBoardProps> = ({
                       </td>
                       <td
                         className="py-2.5 px-3 text-right font-bold text-cyan-300 tabular-nums whitespace-nowrap"
-                        title={placeholder.hasPlaceholder ? placeholder.tooltipText : undefined}
                       >
                         {oracle.toFixed(1)}
                         {placeholder.hasPlaceholder && (
-                          <span
-                            data-testid="oracle-placeholder-marker"
-                            title={placeholder.tooltipText}
-                            className="ml-0.5 text-amber-300 font-bold"
-                          >
-                            ~
-                          </span>
+                          <OraclePlaceholderMarker placeholder={placeholder} />
                         )}
                       </td>
                       <td className="py-2.5 px-3 text-center">

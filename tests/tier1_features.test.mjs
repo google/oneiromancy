@@ -1580,7 +1580,32 @@ describe('Tier 1: Feature Coverage (19 Features x >=5 Tests)', () => {
           React.createElement('div')
         )
       );
+      assert.ok(navHtml.includes('data-testid="nav-settings-gear"'), 'NavigationShell live mode must render nav-settings-gear');
       assert.ok(navHtml.includes('data-testid="nav-user-avatar"'), 'NavigationShell must render nav-user-avatar test ID');
+      assert.ok(navHtml.includes('w-8 h-8'), 'NavigationShell gear must use w-8 h-8 compact layout box');
+      assert.ok(navHtml.includes('before:-inset-1.5'), 'Draft Settings button must expand hit target via before:-inset-1.5');
+      assert.ok(navHtml.includes('!shadow-none'), 'Live avatar inside gear must apply !shadow-none');
+
+      const mockNavHtml = renderToStaticMarkup(
+        React.createElement(
+          NavigationShell,
+          { activeTab: 'oneiromancy', mode: 'mock', userAvatarUrl: 'https://sleepercdn.com/avatars/thumbs/123', sleeperUsername: 'Astral' },
+          React.createElement('div')
+        )
+      );
+      assert.ok(mockNavHtml.includes('data-testid="nav-settings-gear"'), 'Mock mode must render nav-settings-gear');
+      assert.ok(mockNavHtml.includes('data-testid="nav-manager-fallback-icon"'), 'Mock mode must render nav-manager-fallback-icon');
+      assert.ok(!mockNavHtml.includes('data-testid="nav-user-avatar"'), 'Mock mode must not render live avatar');
+
+      const avatarlessLiveHtml = renderToStaticMarkup(
+        React.createElement(
+          NavigationShell,
+          { activeTab: 'oneiromancy', mode: 'live', userAvatarUrl: null, sleeperUsername: 'Astral' },
+          React.createElement('div')
+        )
+      );
+      assert.ok(avatarlessLiveHtml.includes('data-testid="nav-settings-gear"'), 'Avatarless live mode must render nav-settings-gear');
+      assert.ok(avatarlessLiveHtml.includes('data-testid="nav-manager-fallback-icon"'), 'Avatarless live mode must render nav-manager-fallback-icon');
     });
   });
 

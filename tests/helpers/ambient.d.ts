@@ -113,6 +113,8 @@ declare namespace React {
   type FC<P = any> = (props: P) => any;
   type ChangeEvent<T = any> = any;
   type MouseEvent<T = any> = any;
+  type PointerEvent<T = any> = any;
+  type FocusEvent<T = any> = any;
   type FormEvent<T = any> = any;
   type KeyboardEvent<T = any> = any;
   type ComponentType<P = any> = any;
@@ -144,6 +146,10 @@ declare module 'react' {
   export function createElement(type: any, props?: any, ...children: any[]): any;
   export function forwardRef<T, P = any>(render: (props: P, ref: any) => any): any;
   export function memo<T>(component: T): T;
+}
+
+declare module 'react-dom' {
+  export function createPortal(children: any, container: any, key?: any): any;
 }
 
 declare module 'react/jsx-runtime' {

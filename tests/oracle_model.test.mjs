@@ -1572,6 +1572,14 @@ describe('Tier 10: Oracle model and recommendations', () => {
         byeInfo.statsTooltipText,
         '0.0 pts (on bye). Oracle rating uses 18.5 pt average projection placeholder.',
       );
+      assert.equal(
+        byeInfo.markerExplainerText,
+        '~ Estimated Oracle: Weekly stats are 0.0 (on bye), so Oracle uses the 18.5 pt season average instead of 0.0.',
+      );
+      assert.equal(
+        byeInfo.statsMarkerExplainerText,
+        '~ Zero weekly stats (on bye): 0.0 projected pts for this week; Oracle beside it uses the 18.5 pt average projection.',
+      );
 
       const irPlayer = player('Injured Star', 'RB', 0, 80, {
         team: 'DET',
@@ -1590,6 +1598,60 @@ describe('Tier 10: Oracle model and recommendations', () => {
         irInfo.statsTooltipText,
         '0.0 pts (on injured reserve). Oracle rating uses 14.0 pt average projection placeholder.',
       );
+      assert.equal(
+        irInfo.markerExplainerText,
+        '~ Estimated Oracle: Weekly stats are 0.0 (on injured reserve), so Oracle uses the 14.0 pt season average instead of 0.0.',
+      );
+      assert.equal(
+        irInfo.statsMarkerExplainerText,
+        '~ Zero weekly stats (on injured reserve): 0.0 projected pts for this week; Oracle beside it uses the 14.0 pt average projection.',
+      );
+
+      const outPlayer = player('Out WR', 'WR', 0, 78, {
+        team: 'KC',
+        bye_week: 10,
+        injury_status: 'Out',
+        average_projected_points: 12.3,
+      });
+      const outInfo = oracle.oraclePlaceholderInfo(outPlayer, 7);
+      assert.equal(outInfo.hasPlaceholder, true);
+      assert.equal(outInfo.reason, 'out');
+      assert.equal(
+        outInfo.markerExplainerText,
+        '~ Estimated Oracle: Weekly stats are 0.0 (out), so Oracle uses the 12.3 pt season average instead of 0.0.',
+      );
+      assert.equal(
+        outInfo.statsMarkerExplainerText,
+        '~ Zero weekly stats (out): 0.0 projected pts for this week; Oracle beside it uses the 12.3 pt average projection.',
+      );
+
+      const inactivePlayer = player('Inactive TE', 'TE', 0, 70, {
+        team: 'BUF',
+        bye_week: 12,
+        status: 'Inactive',
+        average_projected_points: 8.7,
+      });
+      const inactiveInfo = oracle.oraclePlaceholderInfo(inactivePlayer, 7);
+      assert.equal(inactiveInfo.hasPlaceholder, true);
+      assert.equal(inactiveInfo.reason, 'inactive');
+      assert.equal(
+        inactiveInfo.markerExplainerText,
+        '~ Estimated Oracle: Weekly stats are 0.0 (inactive), so Oracle uses the 8.7 pt season average instead of 0.0.',
+      );
+      assert.equal(
+        inactiveInfo.statsMarkerExplainerText,
+        '~ Zero weekly stats (inactive): 0.0 projected pts for this week; Oracle beside it uses the 8.7 pt average projection.',
+      );
+
+      const activePlayer = player('Active RB', 'RB', 16.2, 85, {
+        team: 'BUF',
+        bye_week: 12,
+        average_projected_points: 15.0,
+      });
+      const activeInfo = oracle.oraclePlaceholderInfo(activePlayer, 7);
+      assert.equal(activeInfo.hasPlaceholder, false);
+      assert.equal(activeInfo.markerExplainerText, '');
+      assert.equal(activeInfo.statsMarkerExplainerText, '');
     });
 
     it('10.14.4 oracleScore uses placeholder by default and currentWeekOracleScore evaluates raw 0 for start/sit checks', () => {

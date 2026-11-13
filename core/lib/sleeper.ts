@@ -34,7 +34,7 @@
  *   to immediately clear active cooldowns and unblock lookups.
  */
 
-import { clearNflGames, fetchEspnWeek, kickoffLabel, moonAt, neutralVenueCoords, planetaryHourAt, setWeekGames, teamGame, type NflGame } from './nflGames';
+import { clearNflGames, fetchEspnWeek, kickoffLabel, moonAt, neutralVenueCoords, planetaryHourAt, raceWithAbort, setWeekGames, teamGame, type NflGame } from './nflGames';
 import { clearGameStatus, setGameStatus, teamGameStatus, type GameStatus } from './gameStatus';
 import {
   AscensionStep,
@@ -294,9 +294,19 @@ export function resolvePollInterval(
 async function fetchWithTimeout(
   url: string,
   timeoutMs = REQUEST_TIMEOUT_MS,
+  externalSignal?: AbortSignal,
 ): Promise<Response> {
+  if (externalSignal?.aborted) {
+    throw new Error('Sync aborted');
+  }
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  let timedOut = false;
+  const onExternalAbort = () => controller.abort();
+  externalSignal?.addEventListener('abort', onExternalAbort, { once: true });
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort();
+  }, timeoutMs);
 
   try {
     const res = await fetch(url, {
@@ -306,9 +316,36 @@ async function fetchWithTimeout(
       },
     });
     return res;
+  } catch (err) {
+    if (timedOut) {
+      const timeoutErr = new Error(`Request timed out after ${timeoutMs}ms`);
+      timeoutErr.name = 'TimeoutError';
+      throw timeoutErr;
+    }
+    throw err;
   } finally {
     clearTimeout(timer);
+    externalSignal?.removeEventListener('abort', onExternalAbort);
   }
+}
+
+class SleeperUserNotFoundError extends Error {
+  constructor(username: string) {
+    super(
+      `User '${username}' not found on Sleeper (try checking spelling, e.g. OneiroVangard or OneiroVanguard)`,
+    );
+    this.name = 'SleeperUserNotFoundError';
+  }
+}
+
+function toAbortError(err: unknown): Error {
+  if (
+    err instanceof Error &&
+    (err.name === 'AbortError' || err.message === 'Sync aborted')
+  ) {
+    return err;
+  }
+  return new Error('Sync aborted');
 }
 
 // ============================================================================
@@ -321,7 +358,12 @@ async function fetchWithTimeout(
  */
 export async function fetchDraftMetadata(
   draftId: string,
+  signal?: AbortSignal,
 ): Promise<SleeperDraftMetadata> {
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
+
   if (
     !draftId ||
     draftId === 'mock' ||
@@ -336,7 +378,11 @@ export async function fetchDraftMetadata(
 
   checkRateLimit();
 
-  const res = await fetchWithTimeout(`${SLEEPER_BASE_URL}/draft/${draftId}`);
+  const res = await fetchWithTimeout(
+    `${SLEEPER_BASE_URL}/draft/${draftId}`,
+    REQUEST_TIMEOUT_MS,
+    signal,
+  );
   if (res.status === 429) {
     triggerRateLimitCooldown();
     throw new Error('HTTP_429_TOO_MANY_REQUESTS');
@@ -358,7 +404,14 @@ const completedDraftPicksCache = new Map<string, SleeperPick[]>();
  * Fetch draft picks from Sleeper: GET /v1/draft/<draft_id>/picks
  * Reference: https://docs.sleeper.com/#drafts
  */
-export async function fetchDraftPicks(draftId: string): Promise<SleeperPick[]> {
+export async function fetchDraftPicks(
+  draftId: string,
+  signal?: AbortSignal,
+): Promise<SleeperPick[]> {
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
+
   if (
     !draftId ||
     draftId === 'mock' ||
@@ -380,6 +433,8 @@ export async function fetchDraftPicks(draftId: string): Promise<SleeperPick[]> {
 
   const res = await fetchWithTimeout(
     `${SLEEPER_BASE_URL}/draft/${draftId}/picks`,
+    REQUEST_TIMEOUT_MS,
+    signal,
   );
   if (res.status === 429) {
     triggerRateLimitCooldown();
@@ -400,7 +455,9 @@ export async function fetchDraftPicks(draftId: string): Promise<SleeperPick[]> {
  */
 export async function fetchLeagueUsers(
   leagueId: string,
+  signal?: AbortSignal,
 ): Promise<SleeperUser[]> {
+  if (signal?.aborted) return [];
   if (
     !leagueId ||
     leagueId === 'mock' ||
@@ -412,6 +469,8 @@ export async function fetchLeagueUsers(
   try {
     const res = await fetchWithTimeout(
       `${SLEEPER_BASE_URL}/league/${leagueId}/users`,
+      REQUEST_TIMEOUT_MS,
+      signal,
     );
     if (res.status === 429) {
       triggerRateLimitCooldown();
@@ -421,7 +480,9 @@ export async function fetchLeagueUsers(
       return (await res.json()) as SleeperUser[];
     }
   } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchLeagueUsers warning:', err);
+    if (!signal?.aborted) {
+      logSleeperWarning('[Sleeper] fetchLeagueUsers warning:', err);
+    }
   }
   return [];
 }
@@ -432,7 +493,9 @@ export async function fetchLeagueUsers(
  */
 export async function fetchLeagueRosters(
   leagueId: string,
+  signal?: AbortSignal,
 ): Promise<SleeperRoster[]> {
+  if (signal?.aborted) return [];
   if (
     !leagueId ||
     leagueId === 'mock' ||
@@ -444,6 +507,8 @@ export async function fetchLeagueRosters(
   try {
     const res = await fetchWithTimeout(
       `${SLEEPER_BASE_URL}/league/${leagueId}/rosters`,
+      REQUEST_TIMEOUT_MS,
+      signal,
     );
     if (res.status === 429) {
       triggerRateLimitCooldown();
@@ -453,7 +518,9 @@ export async function fetchLeagueRosters(
       return (await res.json()) as SleeperRoster[];
     }
   } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchLeagueRosters warning:', err);
+    if (!signal?.aborted) {
+      logSleeperWarning('[Sleeper] fetchLeagueRosters warning:', err);
+    }
   }
   return [];
 }
@@ -465,7 +532,9 @@ export async function fetchLeagueRosters(
 export async function fetchLeagueMatchups(
   leagueId: string,
   week = 1,
+  signal?: AbortSignal,
 ): Promise<SleeperMatchup[]> {
+  if (signal?.aborted) return [];
   if (
     !leagueId ||
     leagueId === 'mock' ||
@@ -477,6 +546,8 @@ export async function fetchLeagueMatchups(
   try {
     const res = await fetchWithTimeout(
       `${SLEEPER_BASE_URL}/league/${leagueId}/matchups/${week}`,
+      REQUEST_TIMEOUT_MS,
+      signal,
     );
     if (res.status === 429) {
       triggerRateLimitCooldown();
@@ -486,7 +557,9 @@ export async function fetchLeagueMatchups(
       return (await res.json()) as SleeperMatchup[];
     }
   } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchLeagueMatchups warning:', err);
+    if (!signal?.aborted) {
+      logSleeperWarning('[Sleeper] fetchLeagueMatchups warning:', err);
+    }
   }
   return [];
 }
@@ -497,7 +570,9 @@ export async function fetchLeagueMatchups(
  */
 export async function fetchLeague(
   leagueId: string,
+  signal?: AbortSignal,
 ): Promise<SleeperLeague | null> {
+  if (signal?.aborted) return null;
   if (
     !leagueId ||
     leagueId === 'mock' ||
@@ -509,6 +584,8 @@ export async function fetchLeague(
   try {
     const res = await fetchWithTimeout(
       `${SLEEPER_BASE_URL}/league/${leagueId}`,
+      REQUEST_TIMEOUT_MS,
+      signal,
     );
     if (res.status === 429) {
       triggerRateLimitCooldown();
@@ -518,7 +595,9 @@ export async function fetchLeague(
       return (await res.json()) as SleeperLeague;
     }
   } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchLeague warning:', err);
+    if (!signal?.aborted) {
+      logSleeperWarning('[Sleeper] fetchLeague warning:', err);
+    }
   }
   return null;
 }
@@ -527,11 +606,18 @@ export async function fetchLeague(
  * Fetch current NFL state: GET /v1/state/nfl
  * Reference: https://docs.sleeper.com/#state
  */
-export async function fetchNFLState(): Promise<SleeperNFLState | null> {
+export async function fetchNFLState(
+  signal?: AbortSignal,
+): Promise<SleeperNFLState | null> {
+  if (signal?.aborted) return null;
   if (isRateLimited()) return null;
   checkRateLimit();
   try {
-    const res = await fetchWithTimeout(`${SLEEPER_BASE_URL}/state/nfl`);
+    const res = await fetchWithTimeout(
+      `${SLEEPER_BASE_URL}/state/nfl`,
+      REQUEST_TIMEOUT_MS,
+      signal,
+    );
     if (res.status === 429) {
       triggerRateLimitCooldown();
       return null;
@@ -540,7 +626,9 @@ export async function fetchNFLState(): Promise<SleeperNFLState | null> {
       return (await res.json()) as SleeperNFLState;
     }
   } catch (err: unknown) {
-    logSleeperWarning('[Sleeper] fetchNFLState warning:', err);
+    if (!signal?.aborted) {
+      logSleeperWarning('[Sleeper] fetchNFLState warning:', err);
+    }
   }
   return null;
 }
@@ -566,7 +654,9 @@ export function clearProjectionsCache(): void {
 export async function fetchWeeklyProjections(
   season: string = '2026',
   week: number = 2,
+  signal?: AbortSignal,
 ): Promise<Record<string, any> | null> {
+  if (signal?.aborted) return null;
   // Weekly projections are large (~0.5 MB) and change slowly; reuse them for
   // ten minutes instead of downloading them on every poll.
   const cacheKey = `${season}:${week}`;
@@ -575,13 +665,14 @@ export async function fetchWeeklyProjections(
     return cached.data;
   }
   const inFlight = inFlightProjectionsCache.get(cacheKey);
-  if (inFlight) return inFlight;
+  if (inFlight) return raceWithAbort(inFlight, signal, null);
   if (isRateLimited()) return null;
   checkRateLimit();
   const req = (async (): Promise<Record<string, any> | null> => {
     try {
       const res = await fetchWithTimeout(
         `${SLEEPER_BASE_URL}/projections/nfl/regular/${season}/${week}`,
+        REQUEST_TIMEOUT_MS,
       );
       if (res.status === 429) {
         triggerRateLimitCooldown();
@@ -597,6 +688,9 @@ export async function fetchWeeklyProjections(
       const negativeCacheAt = Date.now() - (PROJECTIONS_TTL_MS - 60 * 1000);
       projectionsCache.set(cacheKey, {at: negativeCacheAt, data: null});
     } catch (err: unknown) {
+      if (err instanceof Error && err.name === 'AbortError' && signal?.aborted) {
+        return null;
+      }
       logSleeperWarning('[Sleeper] fetchWeeklyProjections warning:', err);
       const negativeCacheAt = Date.now() - (PROJECTIONS_TTL_MS - 60 * 1000);
       projectionsCache.set(cacheKey, {at: negativeCacheAt, data: null});
@@ -604,13 +698,12 @@ export async function fetchWeeklyProjections(
     return null;
   })();
   inFlightProjectionsCache.set(cacheKey, req);
-  try {
-    return await req;
-  } finally {
+  void req.finally(() => {
     if (inFlightProjectionsCache.get(cacheKey) === req) {
       inFlightProjectionsCache.delete(cacheKey);
     }
-  }
+  });
+  return raceWithAbort(req, signal, null);
 }
 
 async function fetchNextWeekProjectionsMap(params: {
@@ -621,6 +714,7 @@ async function fetchNextWeekProjectionsMap(params: {
   leagueMatchups?: any[];
   weeklyProjections?: Record<string, any> | null;
   playerDict?: Record<string, SleeperPlayerRecord>;
+  signal?: AbortSignal;
 }): Promise<Record<number, Record<string, any> | null>> {
   const {
     season,
@@ -630,7 +724,9 @@ async function fetchNextWeekProjectionsMap(params: {
     leagueMatchups,
     weeklyProjections,
     playerDict,
+    signal,
   } = params;
+  if (signal?.aborted) throw new Error('Sync aborted');
   const seasonCtx = getSeasonContext();
   const seasonByeWeeks = seasonCtx?.byeWeeks;
   if (!activeWeek || activeWeek >= 18) return {};
@@ -722,9 +818,13 @@ async function fetchNextWeekProjectionsMap(params: {
   const result: Record<number, Record<string, any> | null> = {};
   await Promise.all(
     Array.from(nextWeeks).map(async (wk) => {
-      result[wk] = await fetchWeeklyProjections(season, wk).catch(() => null);
+      if (signal?.aborted) return;
+      result[wk] = await fetchWeeklyProjections(season, wk, signal).catch(() => null);
     }),
   );
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
   return result;
 }
 
@@ -779,15 +879,20 @@ export function getTeamByeWeek(team?: string | null): number | undefined {
  */
 export function fetchNFLSchedule(
   season: string,
+  signal?: AbortSignal,
 ): Promise<SleeperScheduleGame[]> {
+  if (signal?.aborted) return Promise.resolve([]);
   const cached = scheduleCache.get(season);
-  if (cached && Date.now() - (scheduleFetchedAt.get(season) ?? 0) < SCHEDULE_TTL_MS) return cached;
+  if (cached && Date.now() - (scheduleFetchedAt.get(season) ?? 0) < SCHEDULE_TTL_MS) {
+    return raceWithAbort(cached, signal, []);
+  }
   const request = (async (): Promise<SleeperScheduleGame[]> => {
     if (isRateLimited()) return [];
     checkRateLimit();
     try {
       const res = await fetchWithTimeout(
         `https://api.sleeper.app/schedule/nfl/regular/${season}`,
+        REQUEST_TIMEOUT_MS,
       );
       if (res.status === 429) {
         triggerRateLimitCooldown();
@@ -804,16 +909,20 @@ export function fetchNFLSchedule(
         }
       }
     } catch (err: unknown) {
-      logSleeperWarning('[Sleeper] fetchNFLSchedule warning:', err);
+      if (
+        !(err instanceof Error && err.name === 'AbortError' && signal?.aborted)
+      ) {
+        logSleeperWarning('[Sleeper] fetchNFLSchedule warning:', err);
+      }
     }
     return [];
   })();
   scheduleCache.set(season, request);
   scheduleFetchedAt.set(season, Date.now());
-  request.then((games) => {
+  void request.then((games) => {
     if (games.length === 0) scheduleCache.delete(season);
   });
-  return request;
+  return raceWithAbort(request, signal, []);
 }
 
 /** Each team's bye: the regular-season week in which it plays no game. */
@@ -877,12 +986,15 @@ export async function loadSeasonContext(
   currentWeek: number,
   currentWeekMatchups: SleeperMatchup[],
   leagueDetails?: SleeperLeague | null,
+  signal?: AbortSignal,
 ): Promise<SeasonContext | null> {
+  if (signal?.aborted) return null;
   const playoffStart = Number(
     (leagueDetails?.settings as any)?.playoff_week_start || 15,
   );
   const lastRegularWeek = Math.max(1, Math.min(18, playoffStart - 1));
-  const games = await fetchNFLSchedule(season);
+  const games = await fetchNFLSchedule(season, signal);
+  if (signal?.aborted) return null;
 
   const matchupsByWeek: Record<number, SleeperMatchup[]> = {};
   const weekRequests: Promise<void>[] = [];
@@ -906,7 +1018,7 @@ export async function loadSeasonContext(
     }
     const week = w;
     weekRequests.push(
-      request.then((m) => {
+      raceWithAbort(request, signal, []).then((m) => {
         matchupsByWeek[week] = m;
       }),
     );
@@ -914,6 +1026,7 @@ export async function loadSeasonContext(
   // Real games for the matchup cards: Sleeper's dates and home/away teams,
   // overlaid with ESPN's kickoffs and venues where available.
   const sleeperWeekGamesByWeek = new Map<number, NflGame[]>();
+  const pendingWeekGames = new Map<number, NflGame[]>();
   for (let w = 1; w <= lastRegularWeek; w++) {
     const wkGames = games
       .filter((g) => g.week === w)
@@ -927,17 +1040,17 @@ export async function loadSeasonContext(
         neutral: false,
       }));
     sleeperWeekGamesByWeek.set(w, wkGames);
-    setWeekGames(w, wkGames);
+    pendingWeekGames.set(w, wkGames);
   }
   const espnRequests: Promise<void>[] = [];
   for (let w = 1; w <= lastRegularWeek; w++) {
     const week = w;
     espnRequests.push(
-      fetchEspnWeek(season, week, week < currentWeek).then((espn) => {
-        if (!espn || espn.length === 0) return;
+      fetchEspnWeek(season, week, week < currentWeek, signal).then((espn) => {
+        if (signal?.aborted || !espn || espn.length === 0) return;
         const base = sleeperWeekGamesByWeek.get(week) || [];
         if (base.length === 0) {
-          setWeekGames(week, espn);
+          pendingWeekGames.set(week, espn);
           return;
         }
         const pairKey = (a: string, b: string) => [a, b].sort().join(':');
@@ -964,11 +1077,17 @@ export async function loadSeasonContext(
             merged.push(eg);
           }
         }
-        setWeekGames(week, merged);
+        if (!signal?.aborted) {
+          pendingWeekGames.set(week, merged);
+        }
       }),
     );
   }
   await Promise.all([...weekRequests, ...espnRequests]);
+  if (signal?.aborted) return null;
+  for (const [week, wkGames] of pendingWeekGames) {
+    setWeekGames(week, wkGames);
+  }
 
   const byeWeeks = deriveByeWeeks(games);
   const statusByTeam: Record<string, GameStatus> = {};
@@ -1268,7 +1387,11 @@ export async function getUser(usernameOrId: string): Promise<SleeperUser> {
 export async function fetchUserLeagues(
   username: string,
   seasons: string[] = ['2026', '2025', '2024', '2023'],
+  signal?: AbortSignal,
 ): Promise<{user: SleeperUser; leagues: SleeperLeague[]}> {
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
   if (!username || username === 'mock') {
     return {
       user: {
@@ -1314,6 +1437,8 @@ export async function fetchUserLeagues(
 
   let userRes = await fetchWithTimeout(
     `${SLEEPER_BASE_URL}/user/${cleanUsername}`,
+    REQUEST_TIMEOUT_MS,
+    signal,
   );
   if (userRes.status === 429) {
     triggerRateLimitCooldown();
@@ -1321,12 +1446,27 @@ export async function fetchUserLeagues(
   }
 
   let user: SleeperUser | null = null;
+  let primaryUserErr: Error | null = null;
   if (userRes.ok) {
     try {
-      user = await userRes.json();
-    } catch {
+      user = await raceWithAbort(
+        userRes.json() as Promise<SleeperUser | null>,
+        signal,
+        null,
+      );
+    } catch (jsonErr: unknown) {
+      if (signal?.aborted) {
+        throw toAbortError(jsonErr);
+      }
+      primaryUserErr =
+        jsonErr instanceof Error ? jsonErr : new Error(String(jsonErr));
       user = null;
     }
+  } else if (userRes.status !== 404) {
+    primaryUserErr = new Error(`HTTP_${userRes.status}_USER_FETCH_FAILED`);
+  }
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
   }
 
   // Intelligent fallback: if not found (404, non-ok, or null body from Sleeper API), attempt alternate
@@ -1343,48 +1483,87 @@ export async function fetchUserLeagues(
       try {
         const altRes = await fetchWithTimeout(
           `${SLEEPER_BASE_URL}/user/${alternate}`,
+          REQUEST_TIMEOUT_MS,
+          signal,
         );
         if (altRes.status === 429) {
           triggerRateLimitCooldown();
+          throw new Error('HTTP_429_TOO_MANY_REQUESTS');
         } else if (altRes.ok) {
-          const altData = await altRes.json();
+          const altData = await raceWithAbort(
+            altRes.json() as Promise<SleeperUser | null>,
+            signal,
+            null,
+          );
+          if (signal?.aborted) {
+            throw new Error('Sync aborted');
+          }
           if (altData && altData.user_id) {
             user = altData as SleeperUser;
           }
+        } else if (altRes.status !== 404) {
+          throw new Error(`HTTP_${altRes.status}_USER_FETCH_FAILED`);
         }
       } catch (altErr: unknown) {
+        if (signal?.aborted) {
+          throw toAbortError(altErr);
+        }
         logSleeperWarning(
           `[Sleeper] Alternate user lookup for ${alternate} failed:`,
           altErr,
         );
+        throw altErr instanceof Error ? altErr : new Error(String(altErr));
       }
+    } else if (primaryUserErr) {
+      throw primaryUserErr;
     }
   }
 
   if (!user || !user.user_id) {
-    throw new Error(
-      `User '${cleanUsername}' not found on Sleeper (try checking spelling, e.g. OneiroVangard or OneiroVanguard)`,
-    );
+    if (primaryUserErr) {
+      throw primaryUserErr;
+    }
+    throw new SleeperUserNotFoundError(cleanUsername);
   }
 
   const userId = String(user.user_id);
   const allLeagues: SleeperLeague[] = [];
   const seenLeagueIds = new Set<string>();
+  let successfulSeasonCount = 0;
+  let sawSeasonRateLimit = false;
+  let lastSeasonErr: unknown = null;
 
   for (const season of seasons) {
     try {
-      if (isRateLimited()) break;
+      if (signal?.aborted) {
+        throw new Error('Sync aborted');
+      }
+      if (isRateLimited()) {
+        sawSeasonRateLimit = true;
+        break;
+      }
       checkRateLimit();
 
       const leaguesRes = await fetchWithTimeout(
         `${SLEEPER_BASE_URL}/user/${userId}/leagues/nfl/${season}`,
+        REQUEST_TIMEOUT_MS,
+        signal,
       );
       if (leaguesRes.status === 429) {
         triggerRateLimitCooldown();
+        sawSeasonRateLimit = true;
         break;
       }
       if (leaguesRes.ok) {
-        const leagues = await leaguesRes.json();
+        const leagues = await raceWithAbort(
+          leaguesRes.json() as Promise<SleeperLeague[] | null>,
+          signal,
+          null,
+        );
+        if (signal?.aborted) {
+          throw new Error('Sync aborted');
+        }
+        successfulSeasonCount += 1;
         if (Array.isArray(leagues)) {
           for (const l of leagues) {
             if (l && l.league_id && !seenLeagueIds.has(String(l.league_id))) {
@@ -1393,12 +1572,35 @@ export async function fetchUserLeagues(
             }
           }
         }
+      } else if (leaguesRes.status === 404) {
+        successfulSeasonCount += 1;
+      } else {
+        lastSeasonErr = new Error(
+          `HTTP_${leaguesRes.status}_LEAGUES_FETCH_FAILED`,
+        );
       }
     } catch (seasonErr: unknown) {
+      if (signal?.aborted) {
+        throw toAbortError(seasonErr);
+      }
+      lastSeasonErr = seasonErr;
       logSleeperWarning(
         `[Sleeper] Could not fetch leagues for season ${season}:`,
         seasonErr,
       );
+    }
+  }
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
+  if (successfulSeasonCount === 0 && seasons.length > 0) {
+    if (sawSeasonRateLimit) {
+      throw new Error('HTTP_429_TOO_MANY_REQUESTS');
+    }
+    if (lastSeasonErr) {
+      throw lastSeasonErr instanceof Error
+        ? lastSeasonErr
+        : new Error(String(lastSeasonErr));
     }
   }
 
@@ -1446,9 +1648,12 @@ function isSignedActiveNFLPlayer(
   );
 }
 
-export async function fetchNFLPlayers(): Promise<
-  Record<string, SleeperPlayerRecord>
-> {
+export async function fetchNFLPlayers(
+  signal?: AbortSignal,
+): Promise<Record<string, SleeperPlayerRecord>> {
+  if (signal?.aborted) {
+    return playerDictionaryCache ?? {};
+  }
   const now = Date.now();
   if (
     playerDictionaryCache &&
@@ -1461,7 +1666,11 @@ export async function fetchNFLPlayers(): Promise<
   }
 
   if (playerDictionaryPromise) {
-    return playerDictionaryPromise;
+    return raceWithAbort(
+      playerDictionaryPromise,
+      signal,
+      playerDictionaryCache ?? {},
+    );
   }
 
   playerDictionaryPromise = (async () => {
@@ -1499,7 +1708,11 @@ export async function fetchNFLPlayers(): Promise<
     }
   })();
 
-  return playerDictionaryPromise;
+  return raceWithAbort(
+    playerDictionaryPromise,
+    signal,
+    playerDictionaryCache ?? {},
+  );
 }
 
 // ============================================================================
@@ -7081,7 +7294,11 @@ export function transformToDraftState(
 export async function resolveLeagueDraftAndUser(
   leagueId: string,
   username: string,
+  signal?: AbortSignal,
 ): Promise<ResolvedLeagueSetup> {
+  if (signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
   if (!leagueId) {
     throw new Error('League ID must be provided to resolve league setup.');
   }
@@ -7094,6 +7311,8 @@ export async function resolveLeagueDraftAndUser(
   // 1. Fetch league drafts: GET /league/<league_id>/drafts
   const draftsRes = await fetchWithTimeout(
     `${SLEEPER_BASE_URL}/league/${leagueId}/drafts`,
+    REQUEST_TIMEOUT_MS,
+    signal,
   );
   if (draftsRes.status === 429) {
     triggerRateLimitCooldown();
@@ -7120,6 +7339,8 @@ export async function resolveLeagueDraftAndUser(
   // 2. Fetch league users: GET /league/<league_id>/users
   const usersRes = await fetchWithTimeout(
     `${SLEEPER_BASE_URL}/league/${leagueId}/users`,
+    REQUEST_TIMEOUT_MS,
+    signal,
   );
   if (usersRes.status === 429) {
     triggerRateLimitCooldown();
@@ -7212,6 +7433,8 @@ export async function resolveLeagueDraftAndUser(
   try {
     const draftDetailRes = await fetchWithTimeout(
       `${SLEEPER_BASE_URL}/draft/${draft_id}`,
+      REQUEST_TIMEOUT_MS,
+      signal,
     );
     if (draftDetailRes.ok) {
       const draftDetail = await draftDetailRes.json();
@@ -7222,6 +7445,8 @@ export async function resolveLeagueDraftAndUser(
         // Fallback: query league rosters
         const rostersRes = await fetchWithTimeout(
           `${SLEEPER_BASE_URL}/league/${leagueId}/rosters`,
+          REQUEST_TIMEOUT_MS,
+          signal,
         );
         if (rostersRes.ok) {
           const rosters = (await rostersRes.json()) as SleeperRoster[];
@@ -7237,6 +7462,9 @@ export async function resolveLeagueDraftAndUser(
       }
     }
   } catch (slotErr: unknown) {
+    if (signal?.aborted) {
+      throw toAbortError(slotErr);
+    }
     logSleeperWarning(
       '[Sleeper] Draft slot resolution warning, defaulting to slot 1:',
       slotErr,
@@ -7261,8 +7489,11 @@ export async function fetchSleeperDraft(
   draftId?: string,
   userSettings?: Partial<OneiromancySettings>,
   playerDict?: Record<string, SleeperPlayerRecord>,
-  options?: {throwOnError?: boolean},
+  options?: {throwOnError?: boolean; signal?: AbortSignal},
 ): Promise<DraftState> {
+  if (options?.signal?.aborted) {
+    throw new Error('Sync aborted');
+  }
   if (draftId === 'mock') {
     setSeasonContext(null);
     return transformToDraftState(
@@ -7278,7 +7509,7 @@ export async function fetchSleeperDraft(
   let availableLeagues: AvailableLeague[] =
     userSettings?.available_leagues || [];
   const requestedUsername = (
-    userSettings?.sleeper_username || 'OneiroVanguard'
+    userSettings?.sleeper_username ?? (userSettings ? '' : 'OneiroVanguard')
   ).trim();
 
   // If active 429 cooldown is in effect, return offline fallback state immediately without network round-trips
@@ -7361,24 +7592,36 @@ export async function fetchSleeperDraft(
       draftId !== userSettings?.league_id;
 
     if (isExplicitDraft) {
+      if (options?.signal?.aborted) {
+        throw new Error('Sync aborted');
+      }
       const [metadata, picks] = await Promise.all([
-        fetchDraftMetadata(draftId),
-        fetchDraftPicks(draftId),
+        fetchDraftMetadata(draftId, options?.signal),
+        fetchDraftPicks(draftId, options?.signal),
       ]);
+      if (options?.signal?.aborted) {
+        throw new Error('Sync aborted');
+      }
       let activeDict = playerDict || playerDictionaryCache || undefined;
       if (!activeDict || Object.keys(activeDict).length === 0) {
-        activeDict = await fetchNFLPlayers().catch(() => ({}));
+        activeDict = await fetchNFLPlayers(options?.signal).catch(() => ({}));
+      }
+      if (options?.signal?.aborted) {
+        throw new Error('Sync aborted');
       }
       const targetLeagueId = metadata?.league_id || userSettings?.league_id;
 
       if (targetLeagueId) {
         const [leagueUsers, leagueRosters, leagueDetails, nflState] =
           await Promise.all([
-            fetchLeagueUsers(targetLeagueId).catch(() => []),
-            fetchLeagueRosters(targetLeagueId).catch(() => []),
-            fetchLeague(targetLeagueId).catch(() => null),
-            fetchNFLState().catch(() => null),
+            fetchLeagueUsers(targetLeagueId, options?.signal).catch(() => []),
+            fetchLeagueRosters(targetLeagueId, options?.signal).catch(() => []),
+            fetchLeague(targetLeagueId, options?.signal).catch(() => null),
+            fetchNFLState(options?.signal).catch(() => null),
           ]);
+        if (options?.signal?.aborted) {
+          throw new Error('Sync aborted');
+        }
 
         const activeWeek: number =
           typeof (nflState as any)?.week === 'number'
@@ -7391,16 +7634,25 @@ export async function fetchSleeperDraft(
         );
 
         const [leagueMatchups, weeklyProjections] = await Promise.all([
-          fetchLeagueMatchups(targetLeagueId, activeWeek).catch(() => []),
-          fetchWeeklyProjections(season, activeWeek).catch(() => null),
+          fetchLeagueMatchups(targetLeagueId, activeWeek, options?.signal).catch(() => []),
+          fetchWeeklyProjections(season, activeWeek, options?.signal).catch(() => null),
         ]);
+        if (options?.signal?.aborted) {
+          throw new Error('Sync aborted');
+        }
         await loadSeasonContext(
           targetLeagueId,
           season,
           activeWeek,
           leagueMatchups,
           leagueDetails,
-        ).catch(() => setSeasonContext(null));
+          options?.signal,
+        ).catch(() => {
+          if (!options?.signal?.aborted) setSeasonContext(null);
+        });
+        if (options?.signal?.aborted) {
+          throw new Error('Sync aborted');
+        }
 
         if (Array.isArray(leagueUsers)) {
           for (const u of leagueUsers) {
@@ -7424,6 +7676,7 @@ export async function fetchSleeperDraft(
           leagueMatchups,
           weeklyProjections,
           playerDict: activeDict,
+          signal: options?.signal,
         });
 
         const state = transformToDraftState(
@@ -7472,24 +7725,36 @@ export async function fetchSleeperDraft(
     }
 
     const username = (
-      userSettings?.sleeper_username || 'OneiroVanguard'
+      userSettings?.sleeper_username ?? (userSettings ? '' : 'OneiroVanguard')
     ).trim();
     const cleanUser = username.replace(/^@/, '').toLowerCase().trim();
     const isCanonicalUser =
-      !cleanUser ||
       cleanUser.includes('oneirovanguard') ||
       cleanUser === '9000000000000000101' ||
       cleanUser === 'user_oneiromancy_me';
+
+    if (!username) {
+      throw new Error('No Sleeper username configured');
+    }
 
     let resolvedUserId = isCanonicalUser
       ? userSettings?.user_id || '9000000000000000101'
       : undefined;
     let resolvedUsername = username;
     let userLeaguesFound = false;
+    let resolvedUserRecord = false;
+    let userLookupErr: unknown = null;
 
     // Dynamically query user & leagues from Sleeper API
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
+    }
     try {
-      const userLeaguesRes = await fetchUserLeagues(username);
+      const userLeaguesRes = await fetchUserLeagues(
+        username,
+        ['2026', '2025', '2024', '2023'],
+        options?.signal,
+      );
       if (
         userLeaguesRes &&
         userLeaguesRes.leagues &&
@@ -7503,6 +7768,7 @@ export async function fetchSleeperDraft(
         userLeaguesFound = true;
       }
       if (userLeaguesRes && userLeaguesRes.user) {
+        resolvedUserRecord = true;
         resolvedUserId = String(userLeaguesRes.user.user_id);
         resolvedUsername =
           userLeaguesRes.user.display_name ||
@@ -7510,6 +7776,10 @@ export async function fetchSleeperDraft(
           username;
       }
     } catch (ulErr: unknown) {
+      if (options?.signal?.aborted) {
+        throw toAbortError(ulErr);
+      }
+      userLookupErr = ulErr;
       logSleeperWarning('[Sleeper] fetchUserLeagues warning:', ulErr);
       if (
         isCanonicalUser &&
@@ -7519,8 +7789,15 @@ export async function fetchSleeperDraft(
       }
     }
 
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
+    }
+
     // Default to first/only league if none selected or if selected league not in user leagues
     let selectedLeagueId = userSettings?.league_id;
+    if (!isCanonicalUser && selectedLeagueId === '9000000000000000001') {
+      selectedLeagueId = '';
+    }
     if (
       !selectedLeagueId ||
       (availableLeagues.length > 0 &&
@@ -7528,8 +7805,10 @@ export async function fetchSleeperDraft(
     ) {
       if (availableLeagues.length > 0) {
         selectedLeagueId = availableLeagues[0].league_id;
-      } else {
+      } else if (isCanonicalUser) {
         selectedLeagueId = '9000000000000000001';
+      } else {
+        selectedLeagueId = '';
       }
     }
 
@@ -7543,6 +7822,7 @@ export async function fetchSleeperDraft(
         const resolved = await resolveLeagueDraftAndUser(
           selectedLeagueId,
           resolvedUsername || username,
+          options?.signal,
         );
         effectiveDraftId = resolved.draft_id;
         resolvedUserId = resolved.user_id;
@@ -7550,6 +7830,9 @@ export async function fetchSleeperDraft(
         resolvedUsername = resolved.display_name;
         leagueResolved = true;
       } catch (resErr: unknown) {
+        if (options?.signal?.aborted) {
+          throw toAbortError(resErr);
+        }
         logSleeperWarning(
           '[Sleeper] resolveLeagueDraftAndUser warning:',
           resErr,
@@ -7560,9 +7843,29 @@ export async function fetchSleeperDraft(
 
     // If user was not found on Sleeper and could not be resolved from selected league
     if (!leagueResolved && !userLeaguesFound && !isCanonicalUser) {
+      const userLookupErrMsg =
+        userLookupErr instanceof Error
+          ? userLookupErr.message
+          : userLookupErr
+            ? String(userLookupErr)
+            : '';
+      const isTrueNotFound =
+        userLookupErr instanceof SleeperUserNotFoundError ||
+        userLookupErrMsg.includes('not found on Sleeper');
+      if (userLookupErr && !isTrueNotFound) {
+        throw userLookupErr instanceof Error
+          ? userLookupErr
+          : new Error(userLookupErrMsg);
+      }
+      if (leagueResolutionErr instanceof Error) {
+        throw leagueResolutionErr;
+      }
       const detailMsg =
         leagueResolutionErr?.message ||
-        `User '${username}' not found on Sleeper or in league ${selectedLeagueId}`;
+        (resolvedUserRecord
+          ? `No NFL leagues found for @${resolvedUsername || username}`
+          : userLookupErrMsg ||
+            `User '${username}' not found on Sleeper or in league ${selectedLeagueId || 'none'}`);
       throw new Error(detailMsg);
     }
 
@@ -7588,6 +7891,9 @@ export async function fetchSleeperDraft(
     };
 
     if (effectiveDraftId === 'mock_oneiromancy_draft_2025') {
+      if (options?.signal?.aborted) {
+        throw new Error('Sync aborted');
+      }
       setSeasonContext(null);
       const activeDict = playerDict || undefined;
       const state = transformToDraftState(
@@ -7609,6 +7915,9 @@ export async function fetchSleeperDraft(
       };
     }
 
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
+    }
     const [
       metadata,
       picks,
@@ -7617,17 +7926,22 @@ export async function fetchSleeperDraft(
       leagueDetails,
       nflState,
     ] = await Promise.all([
-      fetchDraftMetadata(effectiveDraftId),
-      fetchDraftPicks(effectiveDraftId),
+      fetchDraftMetadata(effectiveDraftId, options?.signal),
+      fetchDraftPicks(effectiveDraftId, options?.signal),
       selectedLeagueId
-        ? fetchLeagueUsers(selectedLeagueId)
+        ? fetchLeagueUsers(selectedLeagueId, options?.signal)
         : Promise.resolve([]),
       selectedLeagueId
-        ? fetchLeagueRosters(selectedLeagueId)
+        ? fetchLeagueRosters(selectedLeagueId, options?.signal)
         : Promise.resolve([]),
-      selectedLeagueId ? fetchLeague(selectedLeagueId) : Promise.resolve(null),
-      fetchNFLState(),
+      selectedLeagueId
+        ? fetchLeague(selectedLeagueId, options?.signal)
+        : Promise.resolve(null),
+      fetchNFLState(options?.signal),
     ]);
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
+    }
 
     const activeWeek: number =
       typeof (nflState as any)?.week === 'number'
@@ -7641,10 +7955,13 @@ export async function fetchSleeperDraft(
 
     const [leagueMatchups, weeklyProjections] = await Promise.all([
       selectedLeagueId
-        ? fetchLeagueMatchups(selectedLeagueId, activeWeek)
+        ? fetchLeagueMatchups(selectedLeagueId, activeWeek, options?.signal)
         : Promise.resolve([]),
-      fetchWeeklyProjections(season, activeWeek),
+      fetchWeeklyProjections(season, activeWeek, options?.signal),
     ]);
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
+    }
     if (selectedLeagueId) {
       await loadSeasonContext(
         selectedLeagueId,
@@ -7652,7 +7969,13 @@ export async function fetchSleeperDraft(
         activeWeek,
         leagueMatchups,
         leagueDetails,
-      ).catch(() => setSeasonContext(null));
+        options?.signal,
+      ).catch(() => {
+        if (!options?.signal?.aborted) setSeasonContext(null);
+      });
+    }
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
     }
 
     if (Array.isArray(leagueUsers)) {
@@ -7672,10 +7995,13 @@ export async function fetchSleeperDraft(
     let activeDict = playerDict || playerDictionaryCache || undefined;
     if (!activeDict || Object.keys(activeDict).length === 0) {
       try {
-        activeDict = await fetchNFLPlayers();
+        activeDict = await fetchNFLPlayers(options?.signal);
       } catch (err) {
         // Continue with available cached data
       }
+    }
+    if (options?.signal?.aborted) {
+      throw new Error('Sync aborted');
     }
     const nextWeekProjectionsByWeek = await fetchNextWeekProjectionsMap({
       season,
@@ -7685,6 +8011,7 @@ export async function fetchSleeperDraft(
       leagueMatchups,
       weeklyProjections,
       playerDict: activeDict,
+      signal: options?.signal,
     });
     const state = transformToDraftState(
       metadata,
@@ -7711,7 +8038,14 @@ export async function fetchSleeperDraft(
     if (options?.throwOnError) {
       throw err;
     }
-    const isMock = !effectiveDraftId && (!draftId || draftId === 'mock' || draftId === 'mock_oneiromancy_draft_2025');
+    const isMock =
+      !effectiveDraftId &&
+      (userSettings?.mode === 'mock' ||
+        draftId === 'mock' ||
+        draftId === 'mock_oneiromancy_draft_2025' ||
+        (!draftId &&
+          userSettings?.mode !== 'live' &&
+          !userSettings?.league_id));
     const retainedLeagues =
       availableLeagues.length > 0
         ? availableLeagues

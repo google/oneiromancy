@@ -71,11 +71,46 @@ export function teamGame(week: number, team?: string | null): NflGame | undefine
 const espnCache = new Map<string, { at: number; games: Promise<NflGame[] | null> }>();
 const ESPN_TTL_MS = 5 * 60 * 1000;
 
+export function raceWithAbort<T>(
+  promise: Promise<T>,
+  signal: AbortSignal | undefined,
+  abortedFallback: T,
+): Promise<T> {
+  if (!signal) return promise;
+  if (signal.aborted) {
+    promise.catch(() => {});
+    return Promise.resolve(abortedFallback);
+  }
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => resolve(abortedFallback);
+    signal.addEventListener('abort', onAbort, { once: true });
+    promise.then(
+      (value) => {
+        signal.removeEventListener('abort', onAbort);
+        resolve(signal.aborted ? abortedFallback : value);
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort);
+        if (signal.aborted) resolve(abortedFallback);
+        else reject(err);
+      },
+    );
+  });
+}
+
 /** ESPN scoreboard for one regular-season week; null on any failure. */
-export function fetchEspnWeek(season: string, week: number, final = false): Promise<NflGame[] | null> {
+export function fetchEspnWeek(
+  season: string,
+  week: number,
+  final = false,
+  signal?: AbortSignal,
+): Promise<NflGame[] | null> {
+  if (signal?.aborted) return Promise.resolve(null);
   const key = `${season}:${week}`;
   const hit = espnCache.get(key);
-  if (hit && (final || Date.now() - hit.at < ESPN_TTL_MS)) return hit.games;
+  if (hit && (final || Date.now() - hit.at < ESPN_TTL_MS)) {
+    return raceWithAbort(hit.games, signal, null);
+  }
   const games = (async (): Promise<NflGame[] | null> => {
     try {
       const res = await fetch(
@@ -115,7 +150,7 @@ export function fetchEspnWeek(season: string, week: number, final = false): Prom
   games.then((g) => {
     if (!g) espnCache.delete(key);
   });
-  return games;
+  return raceWithAbort(games, signal, null);
 }
 
 /** Coordinates of international / neutral-site venues ESPN reports by name. */
